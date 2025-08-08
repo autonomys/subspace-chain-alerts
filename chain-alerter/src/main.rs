@@ -34,6 +34,14 @@ const MAX_CHANNEL_LIST_LIMIT: u16 = 1000;
 /// The duration to wait between some repeated API requests.
 const REQUEST_THROTTLE: Duration = Duration::from_secs(2);
 
+/// The maximum number of retries for Slack API requests.
+/// We set this quite high, so important messages aren't lost due to rate limits.
+const MAX_SLACK_API_RETRIES: usize = 30;
+
+/// The Autonomys Slack Team ID. This is not a secret.
+/// TODO: if we ever operate the bot in multiple workspaces, make this a configurable env/CLI parameter
+const AUTONOMYS_TEAM_ID: &str = "T03LJ85UR5G";
+
 /// A secret used to post to Slack as the chain alerts bot.
 #[derive(Clone)]
 struct SlackSecret(SlackApiToken);
@@ -85,14 +93,18 @@ impl SlackSecret {
 
         let secret = read_to_string(path).await?;
 
-        Ok(Self(SlackApiToken::new(secret.into())))
+        Ok(Self(
+            SlackApiToken::new(secret.into()).with_team_id(AUTONOMYS_TEAM_ID.into()),
+        ))
     }
 }
 
 /// Run the chain alerter process.
 async fn run() -> anyhow::Result<()> {
     info!("setting up Slack client...");
-    let slack_client = SlackClient::new(SlackClientHyperConnector::new()?);
+    let slack_client = SlackClient::new(SlackClientHyperConnector::new()?.with_rate_control(
+        SlackApiRateControlConfig::new().with_max_retries(MAX_SLACK_API_RETRIES),
+    ));
     let slack_secret = SlackSecret::new("slack-secret").await?;
     let session = slack_client.open_session(&slack_secret);
     info!("opened Slack session");
