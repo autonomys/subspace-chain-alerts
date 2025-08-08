@@ -1,0 +1,44 @@
+[workspace.package]
+edition = "2024"
+
+[workspace]
+resolver = "2"
+members = [
+    "chain-alerter",
+    "chain-filter",
+    "slack-alerts",
+]
+
+[workspace.dependencies]
+anyhow = "1.0.89"
+slack-morphism = "2.14.0"
+subspace-process = { version = "0.0.1", git = "https://github.com/autonomys/subspace", rev = "d072d03f6d85302fef0af0a4481833df50147dda" }
+tokio = "1.40.0"
+tracing = { version = "0.1.40", default-features = false }
+zeroize = "1.8.1"
+
+# The list of dependencies below (which can be both direct and indirect dependencies) are crates
+# that are suspected to be CPU-intensive, and that are unlikely to require debugging (as some of
+# their debug info might be missing) or to require to be frequently recompiled. We compile these
+# dependencies with `opt-level=3` even in "dev" mode in order to make "dev" mode more usable.
+[profile.dev.package]
+futures-channel = { opt-level = 3 }
+hashbrown = { opt-level = 3 }
+hmac = { opt-level = 3 }
+httparse = { opt-level = 3 }
+mio = { opt-level = 3 }
+parking_lot = { opt-level = 3 }
+parking_lot_core = { opt-level = 3 }
+percent-encoding = { opt-level = 3 }
+ring = { opt-level = 3 }
+rustls = { opt-level = 3 }
+sha2 = { opt-level = 3 }
+smallvec = { opt-level = 3 }
+
+[profile.release]
+# We have no state that needs to be unwound
+panic = "abort"
+
+[profile.production]
+inherits = "release"
+lto = "fat"

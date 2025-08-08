@@ -1,0 +1,13 @@
+[package]
+name = "subspace-chain-alerter"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = { workspace = true }
+subspace-process.workspace = true
+tokio = { workspace = true, features = ["macros", "parking_lot", "rt-multi-thread", "fs"] }
+tracing.workspace = true
+# TODO: move to the slack crate
+slack-morphism = { workspace = true, features = ["hyper"] }
+zeroize.workspace = true
