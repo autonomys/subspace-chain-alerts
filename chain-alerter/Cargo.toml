@@ -5,6 +5,8 @@ edition = "2024"
 
 [dependencies]
 anyhow = { workspace = true }
+hyper-rustls = { workspace = true }
+hyper-util = { workspace = true }
 subspace-process.workspace = true
 tokio = { workspace = true, features = ["macros", "parking_lot", "rt-multi-thread", "fs"] }
 tracing.workspace = true

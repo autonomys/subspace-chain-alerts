@@ -11,6 +11,8 @@ members = [
 
 [workspace.dependencies]
 anyhow = "1.0.89"
+hyper-rustls = { version = "0.27.7", default-features = false }
+hyper-util = { version = "0.1.16", default-features = false }
 slack-morphism = "2.14.0"
 subspace-process = { version = "0.0.1", git = "https://github.com/autonomys/subspace", rev = "d072d03f6d85302fef0af0a4481833df50147dda" }
 tokio = "1.40.0"

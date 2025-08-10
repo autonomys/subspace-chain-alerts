@@ -1734,6 +1734,8 @@ name = "subspace-chain-alerter"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "hyper-rustls",
+ "hyper-util",
  "slack-morphism",
  "subspace-process",
  "tokio",

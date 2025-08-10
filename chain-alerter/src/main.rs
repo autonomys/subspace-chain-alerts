@@ -1,5 +1,7 @@
 //! Chain alerter process-specific code.
 
+use hyper_rustls::HttpsConnector;
+use hyper_util::client::legacy::connect::HttpConnector;
 use slack_morphism::prelude::*;
 use std::io;
 use std::ops::Deref;
@@ -12,9 +14,10 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 // TODO: move these to the slack crate
 
+/// The path of the file that stores the Slack OAuth secret.
+const SLACK_OAUTH_SECRET_PATH: &str = "slack-secret";
+
 /// The Slack channel to post alerts to.
-/// Some APIs accept channel names and IDs, but some only accept IDs, so we convert this to an ID
-/// at startup.
 ///
 /// TODO: add the production channel and switch to it after startup on mainnet prod instances
 const TEST_CHANNEL_NAME: &str = "chain-alerts-test";
@@ -42,8 +45,29 @@ const MAX_SLACK_API_RETRIES: usize = 30;
 /// TODO: if we ever operate the bot in multiple workspaces, make this a configurable env/CLI parameter
 const AUTONOMYS_TEAM_ID: &str = "T03LJ85UR5G";
 
+/// The connector to use for the Slack client.
+/// TODO: type-erase or generic this if possible/needed
+type SlackConnector = SlackClientHyperConnector<HttpsConnector<HttpConnector>>;
+
+/// A Slack Client with the info it needs to post to Slack as the chain alerts bot.
+#[derive(Debug)]
+struct SlackClientInfo {
+    /// The Slack HTTPS client, used to create new Slack sessions.
+    client: SlackClient<SlackConnector>,
+
+    /// The channel ID to post to.
+    /// Some Slack APIs accept channel names and IDs, but some only accept IDs, so we convert this to an ID
+    /// at startup.
+    ///
+    /// TODO: add test and prod channel IDs in a hashmap
+    pub channel_id: SlackChannelId,
+
+    /// The secret required to post to Slack.
+    secret: SlackSecret,
+}
+
 /// A secret used to post to Slack as the chain alerts bot.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct SlackSecret(SlackApiToken);
 
 impl Deref for SlackSecret {
@@ -99,48 +123,92 @@ impl SlackSecret {
     }
 }
 
+impl SlackClientInfo {
+    /// Load the Slack OAuth secret from a file, and find the channel ID for the test channel.
+    pub async fn new(path: &str) -> Result<Self, anyhow::Error> {
+        let secret = SlackSecret::new(path).await?;
+
+        info!("setting up Slack client...");
+        let client = SlackClient::new(SlackClientHyperConnector::new()?.with_rate_control(
+            SlackApiRateControlConfig::new().with_max_retries(MAX_SLACK_API_RETRIES),
+        ));
+        let session = client.open_session(&secret);
+        info!("opened Slack session");
+
+        info!("finding channel ID for '{TEST_CHANNEL_NAME}'...");
+        let list_req = SlackApiConversationsListRequest::new()
+            .with_limit(MAX_CHANNEL_LIST_LIMIT)
+            .with_exclude_archived(true);
+        let list_scroller = list_req.scroller();
+        let collected_channels: Vec<SlackChannelInfo> = list_scroller
+            .collect_items_stream(&session, REQUEST_THROTTLE)
+            .await?;
+        info!("got {} channels", collected_channels.len());
+
+        let mut channel_id = None;
+        for channel in collected_channels {
+            if channel.name == Some(TEST_CHANNEL_NAME.into()) {
+                channel_id = Some(channel.id);
+                break;
+            }
+        }
+        let Some(channel_id) = channel_id else {
+            anyhow::bail!("channel '{TEST_CHANNEL_NAME}' ID not found");
+        };
+        info!("channel ID: {channel_id:?}");
+
+        Ok(Self {
+            client,
+            channel_id,
+            secret,
+        })
+    }
+
+    /// Open a new Slack session.
+    pub async fn open_session<'this, 'session>(
+        &'this self,
+    ) -> Result<SlackClientSession<'session, SlackConnector>, anyhow::Error>
+    where
+        'this: 'session,
+    {
+        let session = self.client.open_session(&self.secret);
+        Ok(session)
+    }
+
+    /// Post a message to Slack.
+    /// TODO:
+    /// - take a channel here and look up the channel ID
+    /// - split channel ID lookups into their own function
+    /// - spawn this to a background task, so that any retries don't block the main task.
+    pub async fn post_message(
+        &self,
+        message: &str,
+    ) -> Result<SlackApiChatPostMessageResponse, anyhow::Error> {
+        let slack_session = self.open_session().await?;
+
+        info!(
+            "posting message to '{TEST_CHANNEL_NAME}' channel id: {:?}...",
+            self.channel_id,
+        );
+        let post_chat_req = SlackApiChatPostMessageRequest::new(
+            self.channel_id.clone(),
+            SlackMessageContent::new().with_text(message.to_string()),
+        )
+        .with_icon_emoji(ALERTS_BOT_ICON_EMOJI.into())
+        .with_username(ALERTS_BOT_NAME.into());
+        let post_chat_resp = slack_session.chat_post_message(&post_chat_req).await?;
+
+        info!("message posted: {post_chat_req:?} response: {post_chat_resp:?}");
+
+        Ok(post_chat_resp)
+    }
+}
+
 /// Run the chain alerter process.
 async fn run() -> anyhow::Result<()> {
-    info!("setting up Slack client...");
-    let slack_client = SlackClient::new(SlackClientHyperConnector::new()?.with_rate_control(
-        SlackApiRateControlConfig::new().with_max_retries(MAX_SLACK_API_RETRIES),
-    ));
-    let slack_secret = SlackSecret::new("slack-secret").await?;
-    let session = slack_client.open_session(&slack_secret);
-    info!("opened Slack session");
+    let slack_client_info = SlackClientInfo::new(SLACK_OAUTH_SECRET_PATH).await?;
 
-    info!("finding channel ID for '{TEST_CHANNEL_NAME}'...");
-    let list_req = SlackApiConversationsListRequest::new()
-        .with_limit(MAX_CHANNEL_LIST_LIMIT)
-        .with_exclude_archived(true);
-    let list_scroller = list_req.scroller();
-    let collected_channels: Vec<SlackChannelInfo> = list_scroller
-        .collect_items_stream(&session, REQUEST_THROTTLE)
-        .await?;
-    info!("got {} channels", collected_channels.len());
-
-    let mut channel_id = None;
-    for channel in collected_channels {
-        if channel.name == Some(TEST_CHANNEL_NAME.into()) {
-            channel_id = Some(channel.id);
-            break;
-        }
-    }
-    let Some(channel_id) = channel_id else {
-        anyhow::bail!("channel '{TEST_CHANNEL_NAME}' ID not found");
-    };
-    info!("channel ID: {channel_id:?}");
-
-    info!("posting message to '{TEST_CHANNEL_NAME}' channel id: {channel_id:?}...");
-    let post_chat_req = SlackApiChatPostMessageRequest::new(
-        channel_id,
-        SlackMessageContent::new().with_text("Hello from Rust via channel name!".into()),
-    )
-    .with_icon_emoji(ALERTS_BOT_ICON_EMOJI.into())
-    .with_username(ALERTS_BOT_NAME.into());
-    let post_chat_resp = session.chat_post_message(&post_chat_req).await?;
-
-    info!("message posted: {post_chat_req:?} response: {post_chat_resp:?}");
+    slack_client_info.post_message("Hello from Rust!").await?;
 
     Ok(())
 }
