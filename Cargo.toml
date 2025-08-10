@@ -11,10 +11,13 @@ members = [
 
 [workspace.dependencies]
 anyhow = "1.0.89"
+chrono = { version = "0.4.41", default-features = false }
 hyper-rustls = { version = "0.27.7", default-features = false }
 hyper-util = { version = "0.1.16", default-features = false }
+rustls = { version = "0.23.31", default-features = false }
 slack-morphism = "2.14.0"
 subspace-process = { version = "0.0.1", git = "https://github.com/autonomys/subspace", rev = "d072d03f6d85302fef0af0a4481833df50147dda" }
+subxt = { version = "0.43.0", default-features = false }
 tokio = "1.40.0"
 tracing = { version = "0.1.40", default-features = false }
 zeroize = "1.8.1"
@@ -24,6 +27,8 @@ zeroize = "1.8.1"
 # their debug info might be missing) or to require to be frequently recompiled. We compile these
 # dependencies with `opt-level=3` even in "dev" mode in order to make "dev" mode more usable.
 [profile.dev.package]
+aws-lc-rs = { opt-level = 3 }
+aws-lc-sys = { opt-level = 3 }
 futures-channel = { opt-level = 3 }
 hashbrown = { opt-level = 3 }
 hmac = { opt-level = 3 }
@@ -32,6 +37,7 @@ mio = { opt-level = 3 }
 parking_lot = { opt-level = 3 }
 parking_lot_core = { opt-level = 3 }
 percent-encoding = { opt-level = 3 }
+# TODO: remove ring to reduce compile time/size
 ring = { opt-level = 3 }
 rustls = { opt-level = 3 }
 sha2 = { opt-level = 3 }

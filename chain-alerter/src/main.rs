@@ -1,12 +1,17 @@
 //! Chain alerter process-specific code.
 
+use chrono::DateTime;
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
 use slack_morphism::prelude::*;
 use std::io;
 use std::ops::Deref;
 use std::time::Duration;
-use subspace_process::{init_logger, shutdown_signal};
+use subspace_process::{AsyncJoinOnDrop, init_logger, shutdown_signal};
+use subxt::blocks::{Block, Extrinsics};
+use subxt::client::OnlineClientT;
+use subxt::utils::H256;
+use subxt::{OnlineClient, SubstrateConfig};
 use tokio::fs::{metadata, read_to_string};
 use tokio::select;
 use tracing::{error, info};
@@ -47,7 +52,11 @@ const AUTONOMYS_TEAM_ID: &str = "T03LJ85UR5G";
 
 /// The connector to use for the Slack client.
 /// TODO: type-erase or generic this if possible/needed
-type SlackConnector = SlackClientHyperConnector<HttpsConnector<HttpConnector>>;
+pub type SlackConnector = SlackClientHyperConnector<HttpsConnector<HttpConnector>>;
+
+/// The config for basic Subspace block and extrinsic types.
+/// TODO: create a custom SubspaceConfig type
+pub type SubspaceConfig = SubstrateConfig;
 
 /// A Slack Client with the info it needs to post to Slack as the chain alerts bot.
 #[derive(Debug)]
@@ -180,19 +189,57 @@ impl SlackClientInfo {
     /// - take a channel here and look up the channel ID
     /// - split channel ID lookups into their own function
     /// - spawn this to a background task, so that any retries don't block the main task.
-    pub async fn post_message(
+    pub async fn post_message<Client>(
         &self,
         message: &str,
-    ) -> Result<SlackApiChatPostMessageResponse, anyhow::Error> {
+        block: &Block<SubspaceConfig, Client>,
+        extrinsics: &Extrinsics<SubspaceConfig, Client>,
+        genesis_hash: &H256,
+    ) -> Result<SlackApiChatPostMessageResponse, anyhow::Error>
+    where
+        Client: OnlineClientT<SubspaceConfig>,
+    {
         let slack_session = self.open_session().await?;
 
+        let block_height = block.header().number;
+        let block_hash = block.hash();
+
+        // TODO:
+        // - check its the right extrinsic by checking the metadata is Timestamp Set
+        // - proper error handling, log/message with error rather than panic
+        let block_time = extrinsics
+            .iter()
+            .next()
+            .expect("timestamp is always the first extrinsic")
+            .field_values()?
+            .into_values()
+            .next()
+            .expect("timestamp has exactly one field")
+            .as_u128()
+            .expect("timestamp is an integer");
+
+        let human_time = DateTime::from_timestamp_millis(block_time as i64);
+        let human_time = if let Some(human_time) = human_time {
+            human_time.format("%Y-%m-%d %H:%M:%S UTC").to_string()
+        } else {
+            "invalid timestamp".to_string()
+        };
+
+        let message = format!(
+            "{message}\n\n\
+             Block height: {block_height}\n\
+             Block time: {human_time} ({block_time})\n\
+             Block hash: {block_hash:?}\n\
+             Genesis hash: {genesis_hash}"
+        );
         info!(
-            "posting message to '{TEST_CHANNEL_NAME}' channel id: {:?}...",
+            "posting message to '{TEST_CHANNEL_NAME}' channel id: {:?}...\n\
+            {message}",
             self.channel_id,
         );
         let post_chat_req = SlackApiChatPostMessageRequest::new(
             self.channel_id.clone(),
-            SlackMessageContent::new().with_text(message.to_string()),
+            SlackMessageContent::new().with_text(message),
         )
         .with_icon_emoji(ALERTS_BOT_ICON_EMOJI.into())
         .with_username(ALERTS_BOT_NAME.into());
@@ -206,9 +253,58 @@ impl SlackClientInfo {
 
 /// Run the chain alerter process.
 async fn run() -> anyhow::Result<()> {
+    // Avoid a crypto provider conflict: jsonrpsee activates ring, and hyper-rustls activates
+    // aws-lc, but there can only be one per process. We use the library with more formal
+    // verification.
+    //
+    // TODO: remove ring to reduce compile time/size
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .map_err(|_| anyhow::anyhow!("Selecting default TLS crypto provider failed"))?;
+
+    // Connect to Slack and get basic info.
     let slack_client_info = SlackClientInfo::new(SLACK_OAUTH_SECRET_PATH).await?;
 
-    slack_client_info.post_message("Hello from Rust!").await?;
+    // Create a client that subscribes to a local Substrate node.
+    // TODO: make URL configurable
+    let chain_client = OnlineClient::<SubspaceConfig>::from_url("ws://127.0.0.1:9944").await?;
+    let mut first_block = true;
+
+    info!("spawning runtime metadataupdate task...");
+    // Spawn a background task to keep the runtime metadata up to date.
+    // TODO: proper error handling, if an update fails we should restart the process
+    // TODO: do we need to abort the process if the update task fails?
+    let update_task = chain_client.updater();
+    let _update_task = AsyncJoinOnDrop::new(
+        tokio::spawn(async move { update_task.perform_runtime_updates().await }),
+        true,
+    );
+
+    let genesis_hash = chain_client.genesis_hash();
+
+    // Subscribe to best blocks (before they are finalized).
+    // TODO: do we need to subscribe to all blocks from all forks here?
+    let mut blocks_sub = chain_client.blocks().subscribe_best().await?;
+
+    while let Some(block) = blocks_sub.next().await {
+        let block = block?;
+        let extrinsics = block.extrinsics().await?;
+
+        if first_block {
+            // TODO: always post this to the test channel, because it's not an alert.
+            slack_client_info
+                .post_message(
+                    "Launched and connected to the local node",
+                    &block,
+                    &extrinsics,
+                    &genesis_hash,
+                )
+                .await?;
+            first_block = false;
+        }
+
+        // TODO: look for alerts in each block
+    }
 
     Ok(())
 }

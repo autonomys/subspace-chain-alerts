@@ -4,10 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = { workspace = true }
-hyper-rustls = { workspace = true }
-hyper-util = { workspace = true }
+anyhow.workspace = true
+chrono.workspace = true
+hyper-rustls.workspace = true
+hyper-util.workspace = true
+rustls.workspace = true
 subspace-process.workspace = true
+subxt = { workspace = true, features = ["jsonrpsee", "native"] }
 tokio = { workspace = true, features = ["macros", "parking_lot", "rt-multi-thread", "fs"] }
 tracing.workspace = true
 # TODO: move to the slack crate
