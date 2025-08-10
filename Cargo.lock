@@ -3343,6 +3343,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "hex",
  "hyper-rustls",
  "hyper-util",
  "rustls",

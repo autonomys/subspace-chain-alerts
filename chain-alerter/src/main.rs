@@ -14,7 +14,7 @@ use subxt::utils::H256;
 use subxt::{OnlineClient, SubstrateConfig};
 use tokio::fs::{metadata, read_to_string};
 use tokio::select;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 // TODO: move these to the slack crate
@@ -251,6 +251,16 @@ impl SlackClientInfo {
     }
 }
 
+/// Truncate a string to a maximum number of characters, respecting UTF-8 character boundaries.
+fn truncate(s: &mut String, max_chars: usize) {
+    match s.char_indices().nth(max_chars) {
+        None => {}
+        Some((idx, _)) => {
+            s.truncate(idx);
+        }
+    }
+}
+
 /// Run the chain alerter process.
 async fn run() -> anyhow::Result<()> {
     // Avoid a crypto provider conflict: jsonrpsee activates ring, and hyper-rustls activates
@@ -289,6 +299,8 @@ async fn run() -> anyhow::Result<()> {
     while let Some(block) = blocks_sub.next().await {
         let block = block?;
         let extrinsics = block.extrinsics().await?;
+        let block_height = block.header().number;
+        let block_hash = block.hash();
 
         if first_block {
             // TODO: always post this to the test channel, because it's not an alert.
@@ -303,7 +315,53 @@ async fn run() -> anyhow::Result<()> {
             first_block = false;
         }
 
-        // TODO: look for alerts in each block
+        for extrinsic in extrinsics.iter() {
+            let Ok(meta) = extrinsic.extrinsic_metadata() else {
+                // If we can't get the extrinsic pallet and call name, just log it.
+                warn!(
+                    "extrinsic {} pallet/name unavailable in block {block_height} {block_hash:?}",
+                    extrinsic.index()
+                );
+                continue;
+            };
+            let fields = if let Ok(fields) = extrinsic.field_values() {
+                let mut fields = format!("{fields:#?}");
+                truncate(&mut fields, 100);
+                fields
+            } else {
+                let mut bytes = hex::encode(extrinsic.bytes());
+                truncate(&mut bytes, 100);
+
+                warn!(
+                    "extrinsic {} fields unavailable in block {block_height} {block_hash:?}\n\
+                    bytes: {bytes}",
+                    extrinsic.index()
+                );
+
+                bytes
+            };
+
+            // All sudo calls are alerts.
+            // TODO:
+            // - check if the call is from the sudo account
+            // - decode the inner call
+            if meta.pallet.name() == "Sudo" {
+                slack_client_info
+                    .post_message(
+                        format!(
+                            "Sudo::{} call detected at extrinsic {}\n\
+                            {fields}",
+                            meta.variant.name,
+                            extrinsic.index()
+                        )
+                        .as_str(),
+                        &block,
+                        &extrinsics,
+                        &genesis_hash,
+                    )
+                    .await?;
+            }
+        }
     }
 
     Ok(())
