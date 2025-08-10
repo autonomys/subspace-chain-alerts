@@ -47,7 +47,8 @@ const REQUEST_THROTTLE: Duration = Duration::from_secs(2);
 const MAX_SLACK_API_RETRIES: usize = 30;
 
 /// The Autonomys Slack Team ID. This is not a secret.
-/// TODO: if we ever operate the bot in multiple workspaces, make this a configurable env/CLI parameter
+/// TODO: if we ever operate the bot in multiple workspaces, make this a configurable env/CLI
+/// parameter
 const AUTONOMYS_TEAM_ID: &str = "T03LJ85UR5G";
 
 /// The connector to use for the Slack client.
@@ -65,8 +66,8 @@ struct SlackClientInfo {
     client: SlackClient<SlackConnector>,
 
     /// The channel ID to post to.
-    /// Some Slack APIs accept channel names and IDs, but some only accept IDs, so we convert this to an ID
-    /// at startup.
+    /// Some Slack APIs accept channel names and IDs, but some only accept IDs, so we convert this
+    /// to an ID at startup.
     ///
     /// TODO: add test and prod channel IDs in a hashmap
     pub channel_id: SlackChannelId,
@@ -86,7 +87,8 @@ impl Deref for SlackSecret {
     }
 }
 
-// Unfortunately, upstream does not implement Zeroize for SlackApiToken, so we have to do it ourselves.
+// Unfortunately, upstream does not implement Zeroize for SlackApiToken, so we have to do it
+// ourselves.
 impl Zeroize for SlackSecret {
     fn zeroize(&mut self) {
         self.0.token_value.0.zeroize();
@@ -102,7 +104,8 @@ impl Drop for SlackSecret {
 impl ZeroizeOnDrop for SlackSecret {}
 
 impl SlackSecret {
-    /// Load the Slack OAuth secret from a file, which should only be readable by the user running this process.
+    /// Load the Slack OAuth secret from a file, which should only be readable by the user running
+    /// this process.
     pub async fn new(path: &str) -> Result<Self, io::Error> {
         // It is not secure to provide secrets on the command line or in environment variables,
         // because those secrets can be visible to other users of the system via `ps` or `top`.
@@ -227,10 +230,10 @@ impl SlackClientInfo {
 
         let message = format!(
             "{message}\n\n\
-             Block height: {block_height}\n\
-             Block time: {human_time} ({block_time})\n\
-             Block hash: {block_hash:?}\n\
-             Genesis hash: {genesis_hash}"
+            Block height: {block_height}\n\
+            Block time: {human_time} ({block_time})\n\
+            Block hash: {block_hash:?}\n\
+            Genesis hash: {genesis_hash}"
         );
         info!(
             "posting message to '{TEST_CHANNEL_NAME}' channel id: {:?}...\n\
@@ -280,7 +283,7 @@ async fn run() -> anyhow::Result<()> {
     let chain_client = OnlineClient::<SubspaceConfig>::from_url("ws://127.0.0.1:9944").await?;
     let mut first_block = true;
 
-    info!("spawning runtime metadataupdate task...");
+    info!("spawning runtime metadata update task...");
     // Spawn a background task to keep the runtime metadata up to date.
     // TODO: proper error handling, if an update fails we should restart the process
     // TODO: do we need to abort the process if the update task fails?
