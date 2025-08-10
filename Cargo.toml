@@ -16,6 +16,7 @@ hex = "0.4.3"
 hyper-rustls = { version = "0.27.7", default-features = false }
 hyper-util = { version = "0.1.16", default-features = false }
 rustls = { version = "0.23.31", default-features = false }
+scale-value = "0.18.0"
 slack-morphism = "2.14.0"
 subspace-process = { version = "0.0.1", git = "https://github.com/autonomys/subspace", rev = "d072d03f6d85302fef0af0a4481833df50147dda" }
 subxt = { version = "0.43.0", default-features = false }

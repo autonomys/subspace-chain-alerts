@@ -3,6 +3,7 @@
 use chrono::DateTime;
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
+use scale_value::Composite;
 use slack_morphism::prelude::*;
 use std::io;
 use std::ops::Deref;
@@ -50,6 +51,16 @@ const MAX_SLACK_API_RETRIES: usize = 30;
 /// TODO: if we ever operate the bot in multiple workspaces, make this a configurable env/CLI
 /// parameter
 const AUTONOMYS_TEAM_ID: &str = "T03LJ85UR5G";
+
+/// The maximum length for debug-formatted extrinsic fields.
+/// This includes whitespace indentation.
+const MAX_EXTRINSIC_DEBUG_LENGTH: usize = 300;
+
+/// One Subspace Credit, copied from subspace-runtime-primitives.
+const AI3: u128 = 10_u128.pow(18);
+
+/// The minimum balance change to alert on.
+const MIN_BALANCE_CHANGE: u128 = 1_000_000 * AI3;
 
 /// The connector to use for the Slack client.
 /// TODO: type-erase or generic this if possible/needed
@@ -264,6 +275,16 @@ fn truncate(s: &mut String, max_chars: usize) {
     }
 }
 
+/// Format an amount in AI3, accepting `u128` or `Option<u128>`.
+/// If `None`, return "unknown".
+fn fmt_amount(val: impl Into<Option<u128>>) -> String {
+    if let Some(val) = val.into() {
+        format!("{} AI3", val / AI3)
+    } else {
+        "unknown".to_string()
+    }
+}
+
 /// Run the chain alerter process.
 async fn run() -> anyhow::Result<()> {
     // Avoid a crypto provider conflict: jsonrpsee activates ring, and hyper-rustls activates
@@ -293,6 +314,7 @@ async fn run() -> anyhow::Result<()> {
         true,
     );
 
+    // TODO: add a network name table and look up the network name by genesis hash
     let genesis_hash = chain_client.genesis_hash();
 
     // Subscribe to best blocks (before they are finalized).
@@ -318,31 +340,47 @@ async fn run() -> anyhow::Result<()> {
             first_block = false;
         }
 
+        // Extrinsic parsing should never fail, if it does, the runtime metdata is likely wrong.
+        // But we don't want to panic or exit when that happens, instead we warn, and hope to
+        // recover after we pick up the runtime upgrade in the next block.
         for extrinsic in extrinsics.iter() {
             let Ok(meta) = extrinsic.extrinsic_metadata() else {
-                // If we can't get the extrinsic pallet and call name, just log it.
+                // If we can't get the extrinsic pallet and call name, there's nothing we can do.
+                // Just log it and move on.
                 warn!(
                     "extrinsic {} pallet/name unavailable in block {block_height} {block_hash:?}",
-                    extrinsic.index()
+                    extrinsic.index(),
                 );
                 continue;
             };
-            let fields = if let Ok(fields) = extrinsic.field_values() {
-                let mut fields = format!("{fields:#?}");
-                truncate(&mut fields, 100);
-                fields
-            } else {
+
+            // We can always hex-print the extrinsic bytes.
+            let bytes = {
                 let mut bytes = hex::encode(extrinsic.bytes());
-                truncate(&mut bytes, 100);
-
-                warn!(
-                    "extrinsic {} fields unavailable in block {block_height} {block_hash:?}\n\
-                    bytes: {bytes}",
-                    extrinsic.index()
-                );
-
+                truncate(&mut bytes, MAX_EXTRINSIC_DEBUG_LENGTH);
                 bytes
             };
+
+            // We can usually get the extrinsic fields, but we don't need the fields for some
+            // extrinsic alerts. So we just warn and substitute empty fields.
+            let fields = extrinsic.field_values().unwrap_or_else(|_| {
+                warn!(
+                    "extrinsic {} fields unavailable in block {block_height} {block_hash:?}\n\
+                    {bytes}",
+                    extrinsic.index(),
+                );
+                Composite::unnamed(Vec::new())
+            });
+            let fields_str = {
+                // The decoded value debug format is extremely verbose, display seems a bit better.
+                let mut fields_str = format!("{fields}");
+                truncate(&mut fields_str, MAX_EXTRINSIC_DEBUG_LENGTH);
+                fields_str
+            };
+
+            // TODO:
+            // - extract each alert into a pallet-specific function or trait object
+            // - add tests to make sure we can parse the extrinsics for each alert
 
             // All sudo calls are alerts.
             // TODO:
@@ -353,7 +391,8 @@ async fn run() -> anyhow::Result<()> {
                     .post_message(
                         format!(
                             "Sudo::{} call detected at extrinsic {}\n\
-                            {fields}",
+                            {bytes}\n\
+                            {fields_str}",
                             meta.variant.name,
                             extrinsic.index()
                         )
@@ -363,6 +402,77 @@ async fn run() -> anyhow::Result<()> {
                         &genesis_hash,
                     )
                     .await?;
+            } else if meta.pallet.name() == "Balances" {
+                // "force*" calls and large balance changes are alerts.
+
+                // subxt knows these field names, so we can search for the transfer value by
+                // name.
+                // TODO:
+                // - track the total of recent transfers, so the threshold can't be bypassed by
+                //   splitting the transfer into multiple calls
+                // - split this field search into a function which takes a field name,
+                //   and another function which does the numeric conversion and range check
+                let transfer_value = if let Composite::Named(named_fields) = fields
+                    && let Some((_, transfer_value)) = named_fields.iter().find(|(name, _)| {
+                        ["value", "amount", "new_free", "delta"].contains(&name.as_str())
+                    }) {
+                    transfer_value.as_u128()
+                } else {
+                    None
+                };
+
+                if meta.variant.name.starts_with("force") {
+                    slack_client_info
+                        .post_message(
+                            format!(
+                                "Force Balances::{} call detected at extrinsic {}\n\
+                                    Transfer value: {}\n\
+                                    {bytes}\n\
+                                    {fields_str}",
+                                meta.variant.name,
+                                extrinsic.index(),
+                                fmt_amount(transfer_value),
+                            )
+                            .as_str(),
+                            &block,
+                            &extrinsics,
+                            &genesis_hash,
+                        )
+                        .await?;
+                } else if let Some(transfer_value) = transfer_value
+                    && transfer_value >= MIN_BALANCE_CHANGE
+                {
+                    slack_client_info
+                        .post_message(
+                            format!(
+                                "Large Balances::{} call detected at extrinsic {}\n\
+                                    Transfer value: {} (above {})\n\
+                                    {bytes}\n\
+                                    {fields_str}",
+                                meta.variant.name,
+                                extrinsic.index(),
+                                fmt_amount(transfer_value),
+                                fmt_amount(MIN_BALANCE_CHANGE),
+                            )
+                            .as_str(),
+                            &block,
+                            &extrinsics,
+                            &genesis_hash,
+                        )
+                        .await?;
+                } else if !["transfer_all", "upgrade_accounts"]
+                    .contains(&meta.variant.name.as_str())
+                {
+                    // Every other Balances extrinsic should have an amount.
+                    // TODO: check transfer_all by accessing account storage to get the value
+                    warn!(
+                        "Balance extrinsic {} amount unavailable in block \
+                        {block_height} {block_hash:?}\n\
+                        {bytes}\n\
+                        {fields_str}",
+                        extrinsic.index()
+                    );
+                }
             }
         }
     }
