@@ -1,26 +1,26 @@
-## Subspace Chain Alerts (PoC)
+# Subspace Chain Alerts (PoC)
 
 Important event alerts for Subspace blockchains.
 
-### Status: Proof of Concept
+## Status: Proof of Concept
 
 - This repository is in a PoC state. Interfaces, configuration, and behavior may change without notice.
 - Hardcoded settings are used for speed of iteration (Slack channel, WebSocket URL, thresholds, etc.).
 
-### What it does currently
+## What it does currently
 
 - Connects to a local Subspace node over WebSocket (`ws://127.0.0.1:9944`).
 - Keeps runtime metadata up to date via a background updater.
 - Posts applicable alerts to a Slack channel.
 
-### Security notes
+## Security notes
 
 - The Slack OAuth token is loaded from a file and must be readable only by the current user.
   - On Unix, the process enforces `0400` or `0600` permissions. Other modes cause a panic at startup.
 - The token is wrapped and zeroized on drop to reduce in-memory exposure.
-- Do not commit or log the token. The .gitignore and debug impl handle this by default.
+- Do not commit or log the token. The `.gitignore` and `Debug` impl handle this by default.
 
-### Limitations (PoC)
+## Limitations (PoC)
 
 - Hardcoded Slack channel, workspace ID, bot name/icon, node URL, and thresholds.
 - Minimal decoding/validation for some extrinsics; fields are parsed best-effort.
@@ -29,7 +29,7 @@ Important event alerts for Subspace blockchains.
 - No persistent storage, no metrics, no dashboards.
 - Basic error handling: logs warnings on transient decode/metadata mismatches and continues.
 
-### Getting started
+## Getting started
 
 1. Prerequisites
 
@@ -48,15 +48,17 @@ Important event alerts for Subspace blockchains.
    - Follow the Subspace monorepo docs to build/run a local node, or run a dev node suitable for testing. See the Subspace reference implementation for details: [Subspace monorepo](https://github.com/autonomys/subspace).
 
 4. Build and run
-   - `cargo run -p subspace-chain-alerter`
+   - `cargo run`
    - On first observed block, you should see a Slack message in `#chain-alerts-test` summarizing connection and block info.
 
-### Project structure
+## Project structure
 
-- Workspace member: `chain-alerter/`
-  - `src/main.rs`: main process logic
-  - Depends on Subspace crates (e.g., `subspace-process`) and `subxt` for chain interaction
-  - Uses `slack-morphism` with `hyper-rustls` and `aws-lc` crypto provider
+- Crate `chain-alerter`
+  - `alerts.rs`: checks for alerts in each block
+  - `subspace.rs`: Uses `subxt` and `scale-value` for chain interaction
+  - `slack.rs`: Uses `slack-morphism` to send messages to Slack
+  - `main.rs`: main process logic and run loop
+    - Depends on `subspace-process` for process handling utility functions
 
 ### References
 

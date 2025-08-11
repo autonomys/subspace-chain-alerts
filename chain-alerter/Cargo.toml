@@ -15,6 +15,5 @@ subspace-process.workspace = true
 subxt = { workspace = true, features = ["jsonrpsee", "native"] }
 tokio = { workspace = true, features = ["macros", "parking_lot", "rt-multi-thread", "fs"] }
 tracing.workspace = true
-# TODO: move to the slack crate
 slack-morphism = { workspace = true, features = ["hyper"] }
 zeroize.workspace = true
