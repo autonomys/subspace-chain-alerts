@@ -55,7 +55,7 @@ const AUTONOMYS_TEAM_ID: &str = "T03LJ85UR5G";
 
 /// The maximum length for debug-formatted extrinsic fields.
 /// This includes whitespace indentation.
-const MAX_EXTRINSIC_DEBUG_LENGTH: usize = 300;
+const MAX_EXTRINSIC_DEBUG_LENGTH: usize = 200;
 
 /// One Subspace Credit, copied from subspace-runtime-primitives.
 const AI3: u128 = 10_u128.pow(18);
@@ -403,19 +403,15 @@ async fn run() -> anyhow::Result<()> {
                 continue;
             };
 
-            // We can always hex-print the extrinsic bytes.
-            let bytes = {
-                let mut bytes = hex::encode(extrinsic.bytes());
-                truncate(&mut bytes, MAX_EXTRINSIC_DEBUG_LENGTH);
-                bytes
-            };
+            // We can always hex-print the extrinsic hash.
+            let hash = hex::encode(extrinsic.hash());
 
             // We can usually get the extrinsic fields, but we don't need the fields for some
             // extrinsic alerts. So we just warn and substitute empty fields.
             let fields = extrinsic.field_values().unwrap_or_else(|_| {
                 warn!(
                     "extrinsic {}:{} {} fields unavailable in block {block_height} {block_hash:?}\n\
-                    {bytes}",
+                    hash: {hash}",
                     meta.pallet.name(),
                     meta.variant.name,
                     extrinsic.index(),
@@ -432,6 +428,8 @@ async fn run() -> anyhow::Result<()> {
             // TODO:
             // - extract each alert into a pallet-specific function or trait object
             // - add tests to make sure we can parse the extrinsics for each alert
+            // - format account IDs as ss58 with prefix 6094
+            // - link extrinsic and account to subscan
 
             // All sudo calls are alerts.
             // TODO:
@@ -442,7 +440,7 @@ async fn run() -> anyhow::Result<()> {
                     .post_message(
                         format!(
                             "Sudo::{} call detected at extrinsic {}\n\
-                            {bytes}\n\
+                            hash: {hash}\n\
                             {fields_str}",
                             meta.variant.name,
                             extrinsic.index()
@@ -478,7 +476,7 @@ async fn run() -> anyhow::Result<()> {
                             format!(
                                 "Force Balances::{} call detected at extrinsic {}\n\
                                     Transfer value: {}\n\
-                                    {bytes}\n\
+                                    hash: {hash}\n\
                                     {fields_str}",
                                 meta.variant.name,
                                 extrinsic.index(),
@@ -498,7 +496,7 @@ async fn run() -> anyhow::Result<()> {
                             format!(
                                 "Large Balances::{} call detected at extrinsic {}\n\
                                     Transfer value: {} (above {})\n\
-                                    {bytes}\n\
+                                    hash: {hash}\n\
                                     {fields_str}",
                                 meta.variant.name,
                                 extrinsic.index(),
@@ -519,7 +517,7 @@ async fn run() -> anyhow::Result<()> {
                     warn!(
                         "Balance::{} extrinsic {} amount unavailable in block \
                         {block_height} {block_hash:?}\n\
-                        {bytes}\n\
+                        hash: {hash}\n\
                         {fields_str}",
                         meta.variant.name,
                         extrinsic.index()
