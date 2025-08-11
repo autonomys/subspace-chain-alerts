@@ -509,8 +509,8 @@ async fn run() -> anyhow::Result<()> {
                             &genesis_hash,
                         )
                         .await?;
-                } else if !["transfer_all", "upgrade_accounts"]
-                    .contains(&meta.variant.name.as_str())
+                } else if transfer_value.is_none()
+                    && !["transfer_all", "upgrade_accounts"].contains(&meta.variant.name.as_str())
                 {
                     // Every other Balances extrinsic should have an amount.
                     // TODO: check transfer_all by accessing account storage to get the value
