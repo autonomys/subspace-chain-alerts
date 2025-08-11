@@ -1,11 +1,15 @@
 //! Subspace chain connection and block parsing code.
 
 use chrono::{DateTime, Utc};
+use scale_value::Composite;
 use std::fmt::{self, Display};
 use subxt::SubstrateConfig;
-use subxt::blocks::{Block, Extrinsics};
+use subxt::blocks::{Block, ExtrinsicDetails, Extrinsics};
 use subxt::client::OnlineClientT;
 use subxt::utils::H256;
+use tracing::warn;
+
+use crate::format::{MAX_EXTRINSIC_DEBUG_LENGTH, truncate};
 
 /// The Subspace block height type.
 /// Copied from subspace-core-primitives.
@@ -127,5 +131,76 @@ impl BlockTime {
         }
 
         None
+    }
+}
+
+/// Extrinsic info that can be formatted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExtrinsicInfo {
+    pub pallet: String,
+    pub call: String,
+    pub index: u32,
+    pub hash: H256,
+    pub fields: Composite<u32>,
+    pub fields_str: String,
+}
+
+impl Display for ExtrinsicInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "{}::{} (index {})", self.pallet, self.call, self.index)?;
+        writeln!(f, "Hash: {:?}", self.hash)?;
+        writeln!(f, "{}", self.fields_str)?;
+        Ok(())
+    }
+}
+
+impl ExtrinsicInfo {
+    pub fn new<Client>(
+        extrinsic: &ExtrinsicDetails<SubspaceConfig, Client>,
+        block_info: &BlockInfo,
+    ) -> Option<ExtrinsicInfo>
+    where
+        Client: OnlineClientT<SubspaceConfig>,
+    {
+        let Ok(meta) = extrinsic.extrinsic_metadata() else {
+            // If we can't get the extrinsic pallet and call name, there's nothing we can do.
+            // Just log it and move on.
+            warn!(
+                "extrinsic {} pallet/name unavailable in block:\n\
+                {block_info}",
+                extrinsic.index(),
+            );
+            return None;
+        };
+
+        // We can usually get the extrinsic fields, but we don't need the fields for some
+        // extrinsic alerts. So we just warn and substitute empty fields.
+        let fields = extrinsic.field_values().unwrap_or_else(|_| {
+            warn!(
+                "extrinsic {}:{} {} fields unavailable in block:\n\
+                Hash: {:?}\n\
+                {block_info}",
+                meta.pallet.name(),
+                meta.variant.name,
+                extrinsic.index(),
+                extrinsic.hash(),
+            );
+            Composite::unnamed(Vec::new())
+        });
+        let fields_str = {
+            // The decoded value debug format is extremely verbose, display seems a bit better.
+            let mut fields_str = format!("{fields}");
+            truncate(&mut fields_str, MAX_EXTRINSIC_DEBUG_LENGTH);
+            fields_str
+        };
+
+        Some(ExtrinsicInfo {
+            hash: extrinsic.hash(),
+            pallet: meta.pallet.name().to_string(),
+            call: meta.variant.name.to_string(),
+            index: extrinsic.index(),
+            fields,
+            fields_str,
+        })
     }
 }

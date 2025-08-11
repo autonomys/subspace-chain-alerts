@@ -1,8 +1,8 @@
 //! Specific chain alerts.
 
-use crate::format::{MAX_EXTRINSIC_DEBUG_LENGTH, fmt_amount, truncate};
+use crate::format::fmt_amount;
 use crate::slack::SlackClientInfo;
-use crate::subspace::{AI3, BlockInfo, SubspaceConfig};
+use crate::subspace::{AI3, BlockInfo, ExtrinsicInfo, SubspaceConfig};
 use scale_value::Composite;
 use std::time::Duration;
 use subxt::blocks::ExtrinsicDetails;
@@ -20,38 +20,8 @@ pub async fn check_extrinsic<Client>(
 where
     Client: OnlineClientT<SubspaceConfig>,
 {
-    let Ok(meta) = extrinsic.extrinsic_metadata() else {
-        // If we can't get the extrinsic pallet and call name, there's nothing we can do.
-        // Just log it and move on.
-        warn!(
-            "extrinsic {} pallet/name unavailable in block:\n\
-            {block_info}",
-            extrinsic.index(),
-        );
+    let Some(extrinsic_info) = ExtrinsicInfo::new(extrinsic, block_info) else {
         return Ok(());
-    };
-
-    // We can always hex-print the extrinsic hash.
-    let hash = hex::encode(extrinsic.hash());
-
-    // We can usually get the extrinsic fields, but we don't need the fields for some
-    // extrinsic alerts. So we just warn and substitute empty fields.
-    let fields = extrinsic.field_values().unwrap_or_else(|_| {
-        warn!(
-            "extrinsic {}:{} {} fields unavailable in block:\n\
-            hash: {hash}\n\
-            {block_info}",
-            meta.pallet.name(),
-            meta.variant.name,
-            extrinsic.index(),
-        );
-        Composite::unnamed(Vec::new())
-    });
-    let fields_str = {
-        // The decoded value debug format is extremely verbose, display seems a bit better.
-        let mut fields_str = format!("{fields}");
-        truncate(&mut fields_str, MAX_EXTRINSIC_DEBUG_LENGTH);
-        fields_str
     };
 
     // TODO:
@@ -64,20 +34,17 @@ where
     // TODO:
     // - check if the call is from the sudo account
     // - decode the inner call
-    if meta.pallet.name() == "Sudo" {
+    if extrinsic_info.pallet == "Sudo" {
         slack_client_info
             .post_message(
                 format!(
-                    "Sudo::{} call detected at extrinsic {}\n\
-                    hash: {hash}\n\
-                    {fields_str}",
-                    meta.variant.name,
-                    extrinsic.index()
+                    "Sudo call detected\n\
+                    {extrinsic_info}",
                 ),
                 block_info,
             )
             .await?;
-    } else if meta.pallet.name() == "Balances" {
+    } else if extrinsic_info.pallet == "Balances" {
         // "force*" calls and large balance changes are alerts.
 
         // subxt knows these field names, so we can search for the transfer value by
@@ -87,7 +54,7 @@ where
         //   splitting the transfer into multiple calls
         // - split this field search into a function which takes a field name,
         //   and another function which does the numeric conversion and range check
-        let transfer_value = if let Composite::Named(named_fields) = fields
+        let transfer_value = if let Composite::Named(named_fields) = &extrinsic_info.fields
             && let Some((_, transfer_value)) = named_fields
                 .iter()
                 .find(|(name, _)| ["value", "amount", "new_free", "delta"].contains(&name.as_str()))
@@ -97,16 +64,13 @@ where
             None
         };
 
-        if meta.variant.name.starts_with("force") {
+        if extrinsic_info.call.starts_with("force") {
             slack_client_info
                 .post_message(
                     format!(
-                        "Force Balances::{} call detected at extrinsic {}\n\
-                            Transfer value: {}\n\
-                            hash: {hash}\n\
-                            {fields_str}",
-                        meta.variant.name,
-                        extrinsic.index(),
+                        "Force Balances call detected\n\
+                        Transfer value: {}\n\
+                        {extrinsic_info}",
                         fmt_amount(transfer_value),
                     ),
                     block_info,
@@ -118,12 +82,9 @@ where
             slack_client_info
                 .post_message(
                     format!(
-                        "Large Balances::{} call detected at extrinsic {}\n\
-                            Transfer value: {} (above {})\n\
-                            hash: {hash}\n\
-                            {fields_str}",
-                        meta.variant.name,
-                        extrinsic.index(),
+                        "Large Balances call detected\n\
+                        Transfer value: {} (above {})\n\
+                        {extrinsic_info}",
                         fmt_amount(transfer_value),
                         fmt_amount(MIN_BALANCE_CHANGE),
                     ),
@@ -131,17 +92,13 @@ where
                 )
                 .await?;
         } else if transfer_value.is_none()
-            && !["transfer_all", "upgrade_accounts"].contains(&meta.variant.name.as_str())
+            && !["transfer_all", "upgrade_accounts"].contains(&extrinsic_info.call.as_str())
         {
             // Every other Balances extrinsic should have an amount.
             // TODO: check transfer_all by accessing account storage to get the value
             warn!(
-                "Balance::{} extrinsic {} amount unavailable in block:\n\
-                hash: {hash}\n\
-                {fields_str}\n\
-                {block_info}",
-                meta.variant.name,
-                extrinsic.index()
+                "Balance: extrinsic amount unavailable in block:\n\
+                {extrinsic_info}",
             );
         }
     }

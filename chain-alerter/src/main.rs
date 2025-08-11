@@ -12,8 +12,8 @@ use subxt::OnlineClient;
 use tokio::select;
 use tracing::{error, info};
 
-/// Run the chain alerter process.
-async fn run() -> anyhow::Result<()> {
+/// Set up the chain alerter process.
+async fn setup() -> anyhow::Result<(SlackClientInfo, OnlineClient<SubspaceConfig>)> {
     // Avoid a crypto provider conflict: jsonrpsee activates ring, and hyper-rustls activates
     // aws-lc, but there can only be one per process. We use the library with more formal
     // verification.
@@ -29,7 +29,6 @@ async fn run() -> anyhow::Result<()> {
     // Create a client that subscribes to a local Substrate node.
     // TODO: make URL configurable
     let chain_client = OnlineClient::<SubspaceConfig>::from_url("ws://127.0.0.1:9944").await?;
-    let mut first_block = true;
 
     info!("spawning runtime metadata update task...");
     // Spawn a background task to keep the runtime metadata up to date.
@@ -40,6 +39,15 @@ async fn run() -> anyhow::Result<()> {
         tokio::spawn(async move { update_task.perform_runtime_updates().await }),
         true,
     );
+
+    Ok((slack_client_info, chain_client))
+}
+
+/// Run the chain alerter process.
+async fn run() -> anyhow::Result<()> {
+    let (slack_client_info, chain_client) = setup().await?;
+
+    let mut first_block = true;
 
     // TODO: add a network name table and look up the network name by genesis hash
     let genesis_hash = chain_client.genesis_hash();
