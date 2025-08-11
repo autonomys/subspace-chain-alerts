@@ -1,5 +1,6 @@
 //! Subspace chain connection and block parsing code.
 
+use crate::format::{MAX_EXTRINSIC_DEBUG_LENGTH, truncate};
 use chrono::{DateTime, Utc};
 use scale_value::Composite;
 use std::fmt::{self, Display};
@@ -8,8 +9,6 @@ use subxt::blocks::{Block, ExtrinsicDetails, Extrinsics};
 use subxt::client::OnlineClientT;
 use subxt::utils::H256;
 use tracing::warn;
-
-use crate::format::{MAX_EXTRINSIC_DEBUG_LENGTH, truncate};
 
 /// The Subspace block height type.
 /// Copied from subspace-core-primitives.
@@ -51,6 +50,7 @@ impl Display for BlockInfo {
 }
 
 impl BlockInfo {
+    /// Create a block info from a block and its extrinsics.
     pub fn new<Client>(
         block: &Block<SubspaceConfig, Client>,
         extrinsics: &Extrinsics<SubspaceConfig, Client>,
@@ -155,6 +155,7 @@ impl Display for ExtrinsicInfo {
 }
 
 impl ExtrinsicInfo {
+    /// Check and collect an extrinsic's info.
     pub fn new<Client>(
         extrinsic: &ExtrinsicDetails<SubspaceConfig, Client>,
         block_info: &BlockInfo,

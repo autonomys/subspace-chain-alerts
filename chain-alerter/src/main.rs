@@ -80,6 +80,7 @@ async fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The main function, which runs the chain alerter process until Ctrl-C is pressed.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     init_logger();
