@@ -1,10 +1,11 @@
 //! Chain alerter process-specific code.
 
-use chrono::DateTime;
+use chrono::{DateTime, Utc};
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
 use scale_value::Composite;
 use slack_morphism::prelude::*;
+use std::fmt::{self, Display};
 use std::io;
 use std::ops::Deref;
 use std::time::Duration;
@@ -218,31 +219,15 @@ impl SlackClientInfo {
         let block_height = block.header().number;
         let block_hash = block.hash();
 
-        // TODO:
-        // - check its the right extrinsic by checking the metadata is Timestamp Set
-        // - proper error handling, log/message with error rather than panic
-        let block_time = extrinsics
-            .iter()
-            .next()
-            .expect("timestamp is always the first extrinsic")
-            .field_values()?
-            .into_values()
-            .next()
-            .expect("timestamp has exactly one field")
-            .as_u128()
-            .expect("timestamp is an integer");
-
-        let human_time = DateTime::from_timestamp_millis(block_time as i64);
-        let human_time = if let Some(human_time) = human_time {
-            human_time.format("%Y-%m-%d %H:%M:%S UTC").to_string()
-        } else {
-            "invalid timestamp".to_string()
-        };
+        let block_time = block_time(extrinsics);
+        let block_time = block_time
+            .map(|bt| bt.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
 
         let message = format!(
             "{message}\n\n\
             Block height: {block_height}\n\
-            Block time: {human_time} ({block_time})\n\
+            Block time: {block_time}\n\
             Block hash: {block_hash:?}\n\
             Genesis hash: {genesis_hash}"
         );
@@ -283,6 +268,70 @@ fn fmt_amount(val: impl Into<Option<u128>>) -> String {
     } else {
         "unknown".to_string()
     }
+}
+
+/// A block time formatted different ways.
+#[derive(Clone, Debug, PartialEq, Eq, Ord, PartialOrd)]
+struct BlockTime {
+    /// The block UNIX time (in milliseconds).
+    unix_time: u128,
+
+    /// A date time type.
+    date_time: DateTime<Utc>,
+
+    /// A human-readable time string.
+    human_time: String,
+}
+
+impl Display for BlockTime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} ({})", self.human_time, self.unix_time)
+    }
+}
+
+/// Returns the block UNIX time (in milliseconds), a date time type, and a human-readable time
+/// string.
+///
+/// If the block does not have a timestamp set extrinsic, or parsing fails, returns `None`.
+fn block_time<Client>(extrinsics: &Extrinsics<SubspaceConfig, Client>) -> Option<BlockTime>
+where
+    Client: OnlineClientT<SubspaceConfig>,
+{
+    // TODO: return a struct rather than a tuple
+
+    // Find the timestamp set extrinsic (usually the first extrinsic).
+    for extrinsic in extrinsics.iter() {
+        let Ok(meta) = extrinsic.extrinsic_metadata() else {
+            // If we can't get the extrinsic pallet and call name, there's nothing we can do.
+            // We'll log it elsewhere, so just move on.
+            continue;
+        };
+
+        if meta.pallet.name() != "Timestamp" || meta.variant.name != "set" {
+            // Not the timestamp set extrinsic.
+            continue;
+        }
+
+        // If we can't get the field value, there's only one timestamp extrinsic per block, and
+        // only one field in it, so we just return None.
+        let unix_time = extrinsic
+            .field_values()
+            .ok()?
+            .into_values()
+            .next()?
+            .as_u128()?;
+
+        let date_time = DateTime::from_timestamp_millis(unix_time as i64)?;
+        let human_time = date_time.format("%Y-%m-%d %H:%M:%S UTC").to_string();
+
+        return Some(BlockTime {
+            unix_time,
+            date_time,
+            human_time,
+        });
+    }
+
+    None
 }
 
 /// Run the chain alerter process.
