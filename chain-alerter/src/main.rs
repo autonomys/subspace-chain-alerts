@@ -414,8 +414,10 @@ async fn run() -> anyhow::Result<()> {
             // extrinsic alerts. So we just warn and substitute empty fields.
             let fields = extrinsic.field_values().unwrap_or_else(|_| {
                 warn!(
-                    "extrinsic {} fields unavailable in block {block_height} {block_hash:?}\n\
+                    "extrinsic {}:{} {} fields unavailable in block {block_height} {block_hash:?}\n\
                     {bytes}",
+                    meta.pallet.name(),
+                    meta.variant.name,
                     extrinsic.index(),
                 );
                 Composite::unnamed(Vec::new())
@@ -515,10 +517,11 @@ async fn run() -> anyhow::Result<()> {
                     // Every other Balances extrinsic should have an amount.
                     // TODO: check transfer_all by accessing account storage to get the value
                     warn!(
-                        "Balance extrinsic {} amount unavailable in block \
+                        "Balance::{} extrinsic {} amount unavailable in block \
                         {block_height} {block_hash:?}\n\
                         {bytes}\n\
                         {fields_str}",
+                        meta.variant.name,
                         extrinsic.index()
                     );
                 }
