@@ -3357,14 +3357,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "subspace-chain-alerts-filter"
-version = "0.1.0"
-
-[[package]]
-name = "subspace-chain-alerts-slack"
-version = "0.1.0"
-
-[[package]]
 name = "subspace-process"
 version = "0.0.1"
 source = "git+https://github.com/autonomys/subspace?rev=d072d03f6d85302fef0af0a4481833df50147dda#d072d03f6d85302fef0af0a4481833df50147dda"
