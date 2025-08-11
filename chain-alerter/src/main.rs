@@ -252,11 +252,13 @@ impl SlackClientInfo {
 
 /// Truncate a string to a maximum number of characters, respecting UTF-8 character boundaries.
 fn truncate(s: &mut String, max_chars: usize) {
-    match s.char_indices().nth(max_chars) {
-        None => {}
-        Some((idx, _)) => {
-            s.truncate(idx);
-        }
+    if let (Some((start_idx, _)), Some((end_idx, _))) = (
+        s.char_indices().nth(max_chars / 2),
+        s.char_indices().nth_back(max_chars / 2),
+    ) && start_idx < end_idx
+    {
+        // Truncate the string in the middle, inserting "...".
+        s.replace_range(start_idx..=end_idx, "...");
     }
 }
 
