@@ -3347,6 +3347,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "rustls",
+ "scale-value",
  "slack-morphism",
  "subspace-process",
  "subxt",

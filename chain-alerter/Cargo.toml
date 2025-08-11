@@ -10,6 +10,7 @@ hex.workspace = true
 hyper-rustls.workspace = true
 hyper-util.workspace = true
 rustls.workspace = true
+scale-value.workspace = true
 subspace-process.workspace = true
 subxt = { workspace = true, features = ["jsonrpsee", "native"] }
 tokio = { workspace = true, features = ["macros", "parking_lot", "rt-multi-thread", "fs"] }
