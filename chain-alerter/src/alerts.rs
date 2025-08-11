@@ -1,10 +1,10 @@
 //! Specific chain alerts.
 
-use crate::format::fmt_amount;
+use crate::format::{fmt_amount, fmt_duration};
 use crate::slack::SlackClientInfo;
 use crate::subspace::{AI3, BlockInfo, ExtrinsicInfo, SubspaceConfig};
+use chrono::TimeDelta;
 use scale_value::Composite;
-use std::time::Duration;
 use subxt::blocks::ExtrinsicDetails;
 use subxt::client::OnlineClientT;
 use tracing::warn;
@@ -12,6 +12,61 @@ use tracing::warn;
 /// The minimum balance change to alert on.
 const MIN_BALANCE_CHANGE: u128 = 1_000_000_000 * AI3;
 
+/// The minimum gap between block timestamps to alert on.
+/// The target block gap is 6 seconds, so we alert if it takes substantially longer.
+///
+/// `pallet-timestamp` enforces a `MinimumPeriod` of 3 seconds in Subspace, and a
+/// `MAX_TIMESTAMP_DRIFT_MILLIS` of 30 seconds from each node's local clock.
+/// <https://github.com/paritytech/polkadot-sdk/blob/0034d178fff88a0fd87cf0ec1d8f122ae0011d78/substrate/frame/timestamp/src/lib.rs#L307>
+const MIN_BLOCK_GAP: TimeDelta = TimeDelta::seconds(60);
+
+/// Check a block for alerts, against the previous block.
+pub async fn check_block(
+    slack_client_info: &SlackClientInfo,
+    block_info: &BlockInfo,
+    prev_block_info: &Option<BlockInfo>,
+) -> anyhow::Result<()> {
+    let Some(prev_block_info) = prev_block_info else {
+        // No last block to check against.
+        return Ok(());
+    };
+
+    // Because it depends on the next block, this check logs after block production resumes.
+    if let (Some(block_time), Some(prev_block_time)) = (
+        block_info.block_time.as_ref(),
+        prev_block_info.block_time.as_ref(),
+    ) {
+        let gap = block_time
+            .date_time
+            .signed_duration_since(prev_block_time.date_time);
+        if gap >= MIN_BLOCK_GAP {
+            slack_client_info
+                .post_message(
+                    format!(
+                        "Block production resumed\n\
+                        Gap: {}\n\n\
+                        Previous block:\n\
+                        {prev_block_info}",
+                        fmt_duration(&gap),
+                    ),
+                    block_info,
+                )
+                .await?;
+        }
+    } else {
+        // No block time to check against.
+        warn!(
+            "Block time unavailable in block:\n\
+            {block_info}\n\
+            Previous block:\n\
+            {prev_block_info}"
+        );
+    };
+
+    Ok(())
+}
+
+/// Check an extrinsic for alerts.
 pub async fn check_extrinsic<Client>(
     slack_client_info: &SlackClientInfo,
     extrinsic: &ExtrinsicDetails<SubspaceConfig, Client>,

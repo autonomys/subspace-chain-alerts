@@ -46,13 +46,16 @@ async fn setup() -> anyhow::Result<(SlackClientInfo, OnlineClient<SubspaceConfig
 /// Run the chain alerter process.
 async fn run() -> anyhow::Result<()> {
     let (slack_client_info, chain_client) = setup().await?;
-
-    let mut first_block = true;
-
     // TODO: add a network name table and look up the network name by genesis hash
     let genesis_hash = chain_client.genesis_hash();
 
-    // Subscribe to best blocks (before they are finalized).
+    // Tracks special actions for the first block.
+    let mut first_block = true;
+
+    // Keep the previous block's info for block to block alerts.
+    let mut prev_block_info = None;
+
+    // Subscribe to best blocks (before they are finalized, because finalization can take hours or days).
     // TODO: do we need to subscribe to all blocks from all forks here?
     let mut blocks_sub = chain_client.blocks().subscribe_best().await?;
 
@@ -69,12 +72,16 @@ async fn run() -> anyhow::Result<()> {
             first_block = false;
         }
 
+        alerts::check_block(&slack_client_info, &block_info, &prev_block_info).await?;
+
         // Extrinsic parsing should never fail, if it does, the runtime metdata is likely wrong.
         // But we don't want to panic or exit when that happens, instead we warn, and hope to
         // recover after we pick up the runtime upgrade in the next block.
         for extrinsic in extrinsics.iter() {
             alerts::check_extrinsic(&slack_client_info, &extrinsic, &block_info).await?;
         }
+
+        prev_block_info = Some(block_info);
     }
 
     Ok(())

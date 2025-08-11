@@ -45,7 +45,7 @@ impl Display for BlockInfo {
         )?;
         // Show full block hash but truncated genesis hash.
         writeln!(f, "Hash: {:?}", self.block_hash)?;
-        writeln!(f, "Genesis: {}", self.genesis_hash)?;
+        write!(f, "Genesis: {}", self.genesis_hash)?;
         Ok(())
     }
 }
@@ -149,7 +149,7 @@ impl Display for ExtrinsicInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "{}::{} (index {})", self.pallet, self.call, self.index)?;
         writeln!(f, "Hash: {:?}", self.hash)?;
-        writeln!(f, "{}", self.fields_str)?;
+        write!(f, "{}", self.fields_str)?;
         Ok(())
     }
 }
