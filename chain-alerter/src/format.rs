@@ -46,10 +46,14 @@ pub fn fmt_duration(duration: impl Into<Option<Duration>>) -> String {
         return "missing".to_string();
     };
 
+    // Truncate the duration, sub-second amounts don't matter to us.
+    let duration = duration - Duration::from_nanos(duration.subsec_nanos().into());
+
     humantime::format_duration(duration).to_string()
 }
 
 /// Format a time delta (a signed amount of time) as a human-readable string.
+#[expect(dead_code)]
 pub fn fmt_time_delta(time_delta: impl Into<Option<TimeDelta>>) -> String {
     let Some(time_delta) = time_delta.into() else {
         return "missing".to_string();

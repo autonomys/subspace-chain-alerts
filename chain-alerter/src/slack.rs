@@ -16,6 +16,7 @@ use slack_morphism::{
 };
 use std::io;
 use std::ops::Deref;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::fs;
 use tracing::info;
@@ -136,7 +137,7 @@ impl SlackSecret {
 
 impl SlackClientInfo {
     /// Load the Slack OAuth secret from a file, and find the channel ID for the test channel.
-    pub async fn new(path: &str) -> Result<Self, anyhow::Error> {
+    pub async fn new(path: &str) -> Result<Arc<Self>, anyhow::Error> {
         let secret = SlackSecret::new(path).await?;
 
         info!("setting up Slack client...");
@@ -168,11 +169,11 @@ impl SlackClientInfo {
         };
         info!("channel ID: {channel_id:?}");
 
-        Ok(Self {
+        Ok(Arc::new(Self {
             client,
             channel_id,
             secret,
-        })
+        }))
     }
 
     /// Post a message to Slack.

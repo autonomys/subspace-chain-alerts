@@ -121,7 +121,8 @@ impl BlockTime {
                 .next()?
                 .as_u128()?;
 
-            let date_time = DateTime::from_timestamp_millis(unix_time as i64)?;
+            // If the time is out of range, return None.
+            let date_time = DateTime::from_timestamp_millis(i64::try_from(unix_time).ok()?)?;
 
             return Some(BlockTime {
                 unix_time,
