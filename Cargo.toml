@@ -15,9 +15,11 @@ hex = "0.4.3"
 humantime = "2.2.0"
 hyper-rustls = { version = "0.27.7", default-features = false }
 hyper-util = { version = "0.1.16", default-features = false }
+reqwest = { version = "0.12.22", default-features = false }
 rustls = { version = "0.23.31", default-features = false }
-scale-value = "0.18.0"
+scale-value = { version = "0.18.0", default-features = false }
 slack-morphism = "2.14.0"
+serde_json = { version = "1.0.142", default-features = false }
 subspace-process = { version = "0.0.1", git = "https://github.com/autonomys/subspace", rev = "d072d03f6d85302fef0af0a4481833df50147dda" }
 subxt = { version = "0.43.0", default-features = false }
 tokio = "1.40.0"

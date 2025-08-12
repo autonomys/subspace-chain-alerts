@@ -34,6 +34,13 @@ const TEST_CHANNEL_NAME: &str = "chain-alerts-test";
 /// TODO: take "test" out of this name once we're production-ready
 const ALERTS_BOT_NAME_SUFFIX: &str = "Chain Alerts Tester";
 
+/// The default emoji the bot uses to post alerts to Slack, if there is no icon provided on the
+/// command line, and no flag emoji can be found for the instance's external IP.
+const DEFAULT_BOT_ICON: &str = "robot_face";
+
+/// The GeoIP server to use for country flag emoji lookups.
+const GEOIP_SERVER: &str = "https://api.geoip.rs";
+
 /// The maximum number of channels to list when searching for the channel ID.
 /// The API might return fewer than this number even if there are more channels.
 const MAX_CHANNEL_LIST_LIMIT: u16 = 1000;
@@ -142,7 +149,7 @@ impl SlackClientInfo {
     /// Keeps track of the supplied bot name and icon for use when posting alerts.
     pub async fn new(
         bot_name: impl AsRef<str>,
-        bot_icon: impl AsRef<str>,
+        bot_icon: impl Into<Option<String>>,
         secret_path: impl AsRef<str>,
     ) -> Result<Arc<Self>, anyhow::Error> {
         let secret = SlackSecret::new(secret_path.as_ref()).await?;
@@ -151,7 +158,35 @@ impl SlackClientInfo {
         let client = SlackClient::new(SlackClientHyperConnector::new()?.with_rate_control(
             SlackApiRateControlConfig::new().with_max_retries(MAX_SLACK_API_RETRIES),
         ));
-        let session = client.open_session(&secret);
+
+        let channel_id = Self::find_channel_id(&client, &secret).await?;
+        info!("channel ID: {channel_id:?}");
+
+        let bot_icon = match bot_icon.into() {
+            Some(icon) => icon,
+            None => match Self::find_geoip_emoji().await {
+                Ok(emoji) => emoji,
+                Err(e) => {
+                    info!("error finding instance geoip emoji: {e}");
+                    DEFAULT_BOT_ICON.to_string()
+                }
+            },
+        };
+
+        Ok(Arc::new(Self {
+            client,
+            channel_id,
+            bot_name: bot_name.as_ref().to_string(),
+            bot_icon,
+            secret,
+        }))
+    }
+
+    async fn find_channel_id(
+        client: &SlackClient<SlackConnector>,
+        secret: &SlackSecret,
+    ) -> Result<SlackChannelId, anyhow::Error> {
+        let session = client.open_session(secret);
         info!("opened Slack session");
 
         info!("finding channel ID for '{TEST_CHANNEL_NAME}'...");
@@ -174,15 +209,27 @@ impl SlackClientInfo {
         let Some(channel_id) = channel_id else {
             anyhow::bail!("channel '{TEST_CHANNEL_NAME}' ID not found");
         };
-        info!("channel ID: {channel_id:?}");
 
-        Ok(Arc::new(Self {
-            client,
-            channel_id,
-            bot_name: bot_name.as_ref().to_string(),
-            bot_icon: bot_icon.as_ref().to_string(),
-            secret,
-        }))
+        Ok(channel_id)
+    }
+
+    /// Finds the country flag emoji for this instance's external IP.
+    ///
+    /// GeoIP databases are notoriously unreliable, particularly for data centres, so this flag
+    /// could be from a completely different country. There's also no guarantee that Slack has a
+    /// flag emoji for the country.
+    async fn find_geoip_emoji() -> Result<String, anyhow::Error> {
+        info!("finding country flag emoji for instance external IP...");
+        let geoip_resp = reqwest::get(GEOIP_SERVER).await?;
+        let geoip_body = geoip_resp.text().await?;
+        info!("geoip response: {geoip_body}");
+
+        let geoip_json: serde_json::Value = serde_json::from_str(&geoip_body)?;
+        let Some(country_code) = geoip_json["country_code"].as_str() else {
+            anyhow::bail!("country code not found in geoip response");
+        };
+
+        Ok(format!("flag-{}", country_code.to_lowercase()))
     }
 
     /// Post a message to Slack.

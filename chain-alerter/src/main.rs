@@ -33,8 +33,8 @@ struct Args {
     ///
     /// Uses Short Names (but without the ':') from:
     /// <https://projects.iamcal.com/emoji-data/table.htm>
-    #[arg(long, default_value = "robot_face")]
-    icon: String,
+    #[arg(long)]
+    icon: Option<String>,
 }
 
 /// Set up the chain alerter process.

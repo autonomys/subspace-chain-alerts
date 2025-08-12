@@ -51,6 +51,7 @@ Important event alerts for Subspace blockchains.
 4. Build and run
    - `cargo run -- --name "My Test Bot" --icon "warning"`
    - On first observed block, you should see a Slack message in `#chain-alerts-test` summarizing connection and block info.
+   - The name and icon are optional. The default icon is the instance external IP address country flag.
 
 ## Project structure
 

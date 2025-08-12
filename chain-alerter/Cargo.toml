@@ -11,8 +11,10 @@ hex.workspace = true
 humantime.workspace = true
 hyper-rustls.workspace = true
 hyper-util.workspace = true
+reqwest = { workspace = true, features = ["http2", "rustls-tls", "charset"] }
 rustls.workspace = true
 scale-value.workspace = true
+serde_json.workspace = true
 subspace-process.workspace = true
 subxt = { workspace = true, features = ["jsonrpsee", "native"] }
 tokio = { workspace = true, features = ["macros", "parking_lot", "rt-multi-thread", "fs"] }
