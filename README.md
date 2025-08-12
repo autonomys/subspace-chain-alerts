@@ -24,7 +24,8 @@ Important event alerts for Subspace blockchains.
 
 - Hardcoded Slack channel, workspace ID, bot name/icon, node URL, and thresholds.
 - Minimal decoding/validation for some extrinsics; fields are parsed best-effort.
-- No stateful aggregation (e.g., summing multiple related transfers) or deduplication.
+- Minimal stateful aggregation (e.g., summing multiple related transfers)
+- No alert deduplication when multiple instances are running.
 - No CLI/config file/env var configuration surface yet.
 - No persistent storage, no metrics, no dashboards.
 - Basic error handling: logs warnings on transient decode/metadata mismatches and continues.
@@ -54,7 +55,7 @@ Important event alerts for Subspace blockchains.
 ## Project structure
 
 - Crate `chain-alerter`
-  - `alerts.rs`: checks for alerts in each block
+  - `alerts.rs`: checks for alerts in each block and extrinsic
   - `subspace.rs`: Uses `subxt` and `scale-value` for chain interaction
   - `slack.rs`: Uses `slack-morphism` to send messages to Slack
   - `main.rs`: main process logic and run loop
