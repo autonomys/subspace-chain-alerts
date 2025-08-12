@@ -6,7 +6,7 @@ mod slack;
 mod subspace;
 
 use crate::slack::{SLACK_OAUTH_SECRET_PATH, SlackClientInfo};
-use crate::subspace::{BlockInfo, SubspaceConfig};
+use crate::subspace::{BlockInfo, BlockNumber, SubspaceConfig};
 use clap::Parser;
 use std::panic;
 use std::process::exit;
@@ -16,6 +16,10 @@ use subxt::OnlineClient;
 use tokio::select;
 use tokio::sync::watch;
 use tracing::{error, info};
+
+/// The number of blocks between info-level block number logs.
+/// TODO: make this configurable
+const BLOCK_UPDATE_LOGGING_INTERVAL: BlockNumber = 100;
 
 /// The name and emoji used by this bot instance.
 #[derive(Parser, Debug)]
@@ -99,6 +103,15 @@ async fn run() -> anyhow::Result<()> {
                 .post_message("Launched and connected to the local node", &block_info)
                 .await?;
             first_block = false;
+        } else if block_info
+            .block_height
+            .is_multiple_of(BLOCK_UPDATE_LOGGING_INTERVAL)
+        {
+            // Let the user know we're still alive
+            info!(
+                "Processed block:\n\
+                {block_info}"
+            );
         }
 
         alerts::check_for_block_stall(
