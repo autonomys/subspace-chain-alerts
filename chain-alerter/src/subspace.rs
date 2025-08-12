@@ -1,9 +1,10 @@
 //! Subspace chain connection and block parsing code.
 
-use crate::format::{MAX_EXTRINSIC_DEBUG_LENGTH, truncate};
+use crate::format::{MAX_EXTRINSIC_DEBUG_LENGTH, fmt_timestamp, truncate};
 use chrono::{DateTime, Utc};
 use scale_value::Composite;
 use std::fmt::{self, Display};
+use std::time::Duration;
 use subxt::SubstrateConfig;
 use subxt::blocks::{Block, ExtrinsicDetails, Extrinsics};
 use subxt::client::OnlineClientT;
@@ -121,12 +122,11 @@ impl BlockTime {
                 .as_u128()?;
 
             let date_time = DateTime::from_timestamp_millis(unix_time as i64)?;
-            let human_time = date_time.format("%Y-%m-%d %H:%M:%S UTC").to_string();
 
             return Some(BlockTime {
                 unix_time,
                 date_time,
-                human_time,
+                human_time: fmt_timestamp(&date_time),
             });
         }
 
@@ -204,4 +204,30 @@ impl ExtrinsicInfo {
             fields_str,
         })
     }
+}
+
+/// Calculates the timestamp gap between a block and a later time, if the block is present and has a timestamp.
+/// Returns `None` if the block info is missing, or the block is missing a timestamp.
+pub fn gap_since_time(
+    latest_time: DateTime<Utc>,
+    prev_block_info: impl Into<Option<BlockInfo>>,
+) -> Option<Duration> {
+    let prev_block_info = prev_block_info.into()?;
+    let prev_block_time = prev_block_info.block_time?;
+
+    let gap = latest_time.signed_duration_since(prev_block_time.date_time);
+
+    gap.to_std().ok()
+}
+
+/// Calculates the timestamp gap between two blocks, if both are present and have timestamps.
+/// Returns `None` if either block info is missing, or a block is missing a timestamp.
+pub fn gap_since_last_block(
+    block_info: impl Into<Option<BlockInfo>>,
+    prev_block_info: impl Into<Option<BlockInfo>>,
+) -> Option<Duration> {
+    let block_info = block_info.into()?;
+    let block_time = block_info.block_time?;
+
+    gap_since_time(block_time.date_time, prev_block_info)
 }
