@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
+clap = { workspace = true, features = ["derive"] }
 hex.workspace = true
 humantime.workspace = true
 hyper-rustls.workspace = true

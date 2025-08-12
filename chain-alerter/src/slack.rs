@@ -31,12 +31,8 @@ pub const SLACK_OAUTH_SECRET_PATH: &str = "slack-secret";
 const TEST_CHANNEL_NAME: &str = "chain-alerts-test";
 
 /// The name the bot uses to post alerts to Slack.
-/// TODO: make this configurable per instance, default to the instance external IP
-const ALERTS_BOT_NAME: &str = "Teor's Chain Alerts Tester";
-
-/// The emoji the bot uses to post alerts to Slack.
-/// TODO: make this configurable per instance, default to the external IP country flag
-const ALERTS_BOT_ICON_EMOJI: &str = "flag-au";
+/// TODO: take "test" out of this name once we're production-ready
+const ALERTS_BOT_NAME_SUFFIX: &str = "Chain Alerts Tester";
 
 /// The maximum number of channels to list when searching for the channel ID.
 /// The API might return fewer than this number even if there are more channels.
@@ -70,6 +66,12 @@ pub struct SlackClientInfo {
     ///
     /// TODO: add test and prod channel IDs in a hashmap
     pub channel_id: SlackChannelId,
+
+    /// The name the bot uses to post alerts to Slack.
+    pub bot_name: String,
+
+    /// The emoji the bot uses to post alerts to Slack.
+    pub bot_icon: String,
 
     /// The secret required to post to Slack.
     secret: SlackSecret,
@@ -137,8 +139,13 @@ impl SlackSecret {
 
 impl SlackClientInfo {
     /// Load the Slack OAuth secret from a file, and find the channel ID for the test channel.
-    pub async fn new(path: &str) -> Result<Arc<Self>, anyhow::Error> {
-        let secret = SlackSecret::new(path).await?;
+    /// Keeps track of the supplied bot name and icon for use when posting alerts.
+    pub async fn new(
+        bot_name: impl AsRef<str>,
+        bot_icon: impl AsRef<str>,
+        secret_path: impl AsRef<str>,
+    ) -> Result<Arc<Self>, anyhow::Error> {
+        let secret = SlackSecret::new(secret_path.as_ref()).await?;
 
         info!("setting up Slack client...");
         let client = SlackClient::new(SlackClientHyperConnector::new()?.with_rate_control(
@@ -172,6 +179,8 @@ impl SlackClientInfo {
         Ok(Arc::new(Self {
             client,
             channel_id,
+            bot_name: bot_name.as_ref().to_string(),
+            bot_icon: bot_icon.as_ref().to_string(),
             secret,
         }))
     }
@@ -202,8 +211,8 @@ impl SlackClientInfo {
             self.channel_id.clone(),
             SlackMessageContent::new().with_text(message),
         )
-        .with_icon_emoji(ALERTS_BOT_ICON_EMOJI.into())
-        .with_username(ALERTS_BOT_NAME.into());
+        .with_icon_emoji(self.bot_icon.clone())
+        .with_username(format!("{} {ALERTS_BOT_NAME_SUFFIX}", self.bot_name));
         let post_chat_resp = slack_session.chat_post_message(&post_chat_req).await?;
 
         info!("message posted: {post_chat_req:?} response: {post_chat_resp:?}");
