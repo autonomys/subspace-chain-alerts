@@ -234,5 +234,21 @@ pub async fn check_event(
     // - format account IDs as ss58 with prefix 6094
     // - link event and account to subscan
 
+    // All operator slashes are alerts.
+    // TODO:
+    // - test this alert by checking a historic block with an operator slash event
+    // - check the case of these names
+    if event_info.pallet == "Domains" && event_info.kind == "OperatorSlashed" {
+        slack_client_info
+            .post_message(
+                format!(
+                    "Operator slash detected\n\
+                    {event_info}",
+                ),
+                block_info,
+            )
+            .await?;
+    }
+
     Ok(())
 }
