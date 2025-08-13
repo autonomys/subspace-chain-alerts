@@ -248,6 +248,17 @@ pub async fn check_event(
                 block_info,
             )
             .await?;
+    } else if event_info.pallet == "Sudo" {
+        // We already alert on sudo calls, so this exists mainly to test events.
+        slack_client_info
+            .post_message(
+                format!(
+                    "Sudo event detected\n\
+                    {event_info}",
+                ),
+                block_info,
+            )
+            .await?;
     }
 
     Ok(())
