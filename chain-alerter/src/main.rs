@@ -15,7 +15,7 @@ use subspace_process::{AsyncJoinOnDrop, init_logger, shutdown_signal};
 use subxt::OnlineClient;
 use tokio::select;
 use tokio::sync::watch;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 /// The number of blocks between info-level block number logs.
 /// TODO: make this configurable
@@ -97,6 +97,7 @@ async fn run() -> anyhow::Result<()> {
         let block = block?;
         // These errors represent a connection failure or similar, and require a restart.
         let extrinsics = block.extrinsics().await?;
+        let events = block.events().await?;
         let block_info = BlockInfo::new(&block, &extrinsics, &genesis_hash);
 
         // Notify spawned tasks that a new block has arrived.
@@ -135,6 +136,17 @@ async fn run() -> anyhow::Result<()> {
         // Check each extrinsic and event for alerts.
         for extrinsic in extrinsics.iter() {
             alerts::check_extrinsic(&slack_client_info, &extrinsic, &block_info).await?;
+        }
+
+        for event in events.iter() {
+            match event {
+                Ok(event) => {
+                    alerts::check_event(&slack_client_info, &event, &block_info).await?;
+                }
+                Err(e) => {
+                    warn!("error parsing event, other events in this block have been skipped: {e}");
+                }
+            }
         }
 
         prev_block_info = Some(block_info);
