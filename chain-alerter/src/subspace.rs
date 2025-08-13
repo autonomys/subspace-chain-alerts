@@ -1,6 +1,6 @@
 //! Subspace chain connection and block parsing code.
 
-use crate::format::{MAX_EXTRINSIC_DEBUG_LENGTH, fmt_timestamp, truncate};
+use crate::format::{fmt_fields, fmt_timestamp};
 use chrono::{DateTime, Utc};
 use scale_value::Composite;
 use std::fmt::{self, Display};
@@ -41,7 +41,7 @@ pub struct BlockInfo {
 
 impl Display for BlockInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "Height: {}", self.block_height)?;
+        writeln!(f, "Block Height: {}", self.block_height)?;
         writeln!(
             f,
             "Time: {}",
@@ -81,17 +81,11 @@ impl BlockInfo {
 pub struct BlockTime {
     /// The block UNIX time (in milliseconds).
     pub unix_time: u128,
-
-    /// A date time type.
-    pub date_time: DateTime<Utc>,
-
-    /// A human-readable time string.
-    pub human_time: String,
 }
 
 impl Display for BlockTime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} ({})", self.human_time, self.unix_time)
+        write!(f, "{} ({})", self.human_time(), self.unix_time)
     }
 }
 
@@ -128,27 +122,32 @@ impl BlockTime {
                 .next()?
                 .as_u128()?;
 
-            // If the time is out of range, return None.
-            let date_time = DateTime::from_timestamp_millis(i64::try_from(unix_time).ok()?)?;
-
-            return Some(BlockTime {
-                unix_time,
-                date_time,
-                human_time: fmt_timestamp(&date_time),
-            });
+            return Some(BlockTime { unix_time });
         }
 
         None
+    }
+
+    /// Returns the block time as a date time type.
+    pub fn date_time(&self) -> Option<DateTime<Utc>> {
+        // If the time is out of range, return None.
+        // This should never happen due to consensus rules.
+        DateTime::from_timestamp_millis(i64::try_from(self.unix_time).ok()?)
+    }
+
+    /// Returns a human-readable time string.
+    pub fn human_time(&self) -> String {
+        fmt_timestamp(self.date_time())
     }
 }
 
 /// Extrinsic info that can be formatted.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExtrinsicInfo {
-    /// The extrinsic pallet name.
+    /// The extrinsic pallet name, also known as section.
     pub pallet: String,
 
-    /// The extrinsic call name.
+    /// The extrinsic call name, also known as module or variant.
     pub call: String,
 
     /// The extrinsic index.
@@ -159,16 +158,17 @@ pub struct ExtrinsicInfo {
 
     /// The extrinsic fields, with the extrinsic index as a context.
     pub fields: Composite<u32>,
-
-    /// The extrinsic fields, formatted as a string and truncated if too long.
-    pub fields_str: String,
 }
 
 impl Display for ExtrinsicInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "{}::{} (index {})", self.pallet, self.call, self.index)?;
+        writeln!(
+            f,
+            "Extrinsic {}::{} (index {})",
+            self.pallet, self.call, self.index
+        )?;
         writeln!(f, "Hash: {:?}", self.hash)?;
-        write!(f, "{}", self.fields_str)?;
+        write!(f, "{}", self.fields_str())?;
         Ok(())
     }
 }
@@ -197,7 +197,7 @@ impl ExtrinsicInfo {
         // extrinsic alerts. So we just warn and substitute empty fields.
         let fields = extrinsic.field_values().unwrap_or_else(|_| {
             warn!(
-                "extrinsic {}:{} {} fields unavailable in block:\n\
+                "extrinsic {}:{} ({}) fields unavailable in block:\n\
                 Hash: {:?}\n\
                 {block_info}",
                 meta.pallet.name(),
@@ -207,21 +207,19 @@ impl ExtrinsicInfo {
             );
             Composite::unnamed(Vec::new())
         });
-        let fields_str = {
-            // The decoded value debug format is extremely verbose, display seems a bit better.
-            let mut fields_str = format!("{fields}");
-            truncate(&mut fields_str, MAX_EXTRINSIC_DEBUG_LENGTH);
-            fields_str
-        };
 
         Some(ExtrinsicInfo {
-            hash: extrinsic.hash(),
             pallet: meta.pallet.name().to_string(),
             call: meta.variant.name.to_string(),
             index: extrinsic.index(),
+            hash: extrinsic.hash(),
             fields,
-            fields_str,
         })
+    }
+
+    /// Format the extrinsic's fields as a string, truncating it if it is too long.
+    pub fn fields_str(&self) -> String {
+        fmt_fields(&self.fields)
     }
 }
 
@@ -234,7 +232,7 @@ pub fn gap_since_time(
     let prev_block_info = prev_block_info.into()?;
     let prev_block_time = prev_block_info.block_time?;
 
-    let gap = latest_time.signed_duration_since(prev_block_time.date_time);
+    let gap = latest_time.signed_duration_since(prev_block_time.date_time()?);
 
     gap.to_std().ok()
 }
@@ -248,5 +246,5 @@ pub fn gap_since_last_block(
     let block_info = block_info.into()?;
     let block_time = block_info.block_time?;
 
-    gap_since_time(block_time.date_time, prev_block_info)
+    gap_since_time(block_time.date_time()?, prev_block_info)
 }
