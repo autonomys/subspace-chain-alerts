@@ -2,6 +2,7 @@
 
 use crate::subspace::AI3;
 use chrono::{DateTime, TimeDelta, Utc};
+use scale_value::Composite;
 use std::time::Duration;
 
 /// The maximum length for debug-formatted extrinsic fields.
@@ -26,7 +27,8 @@ pub fn truncate(s: &mut String, max_chars: usize) {
 }
 
 /// Format an amount in AI3, accepting `u128` or `Option<u128>`.
-/// If `None`, return "unknown".
+///
+/// Returns a placeholder value if the input is missing.
 pub fn fmt_amount(val: impl Into<Option<u128>>) -> String {
     if let Some(val) = val.into() {
         format!("{} AI3", val / AI3)
@@ -36,11 +38,19 @@ pub fn fmt_amount(val: impl Into<Option<u128>>) -> String {
 }
 
 /// Format a timestamp (a moment in time) as a human-readable string.
-pub fn fmt_timestamp(date_time: &DateTime<Utc>) -> String {
-    date_time.format("%Y-%m-%d %H:%M:%S UTC").to_string()
+///
+/// Returns a placeholder value if the input is missing.
+pub fn fmt_timestamp(date_time: impl Into<Option<DateTime<Utc>>>) -> String {
+    if let Some(date_time) = date_time.into() {
+        date_time.format("%Y-%m-%d %H:%M:%S UTC").to_string()
+    } else {
+        "unknown".to_string()
+    }
 }
 
 /// Format a duration (an unsigned amount of time) as a human-readable string.
+///
+/// Returns a placeholder value if the input is missing.
 pub fn fmt_duration(duration: impl Into<Option<Duration>>) -> String {
     let Some(duration) = duration.into() else {
         return "missing".to_string();
@@ -53,6 +63,8 @@ pub fn fmt_duration(duration: impl Into<Option<Duration>>) -> String {
 }
 
 /// Format a time delta (a signed amount of time) as a human-readable string.
+///
+/// Returns a placeholder value if the input is missing or out of range.
 #[expect(dead_code)]
 pub fn fmt_time_delta(time_delta: impl Into<Option<TimeDelta>>) -> String {
     let Some(time_delta) = time_delta.into() else {
@@ -70,4 +82,13 @@ pub fn fmt_time_delta(time_delta: impl Into<Option<TimeDelta>>) -> String {
     };
 
     format!("{prefix}{}", fmt_duration(duration))
+}
+
+/// Format runtime fields as a string, truncating it if it is too long.
+pub fn fmt_fields(fields: &Composite<u32>) -> String {
+    // The decoded value debug format is extremely verbose, display seems a bit better.
+    let mut fields_str = format!("{fields}");
+    truncate(&mut fields_str, MAX_EXTRINSIC_DEBUG_LENGTH);
+
+    fields_str
 }
