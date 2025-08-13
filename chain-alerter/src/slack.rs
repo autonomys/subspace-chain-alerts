@@ -125,6 +125,8 @@ impl ZeroizeOnDrop for SlackSecret {}
 impl SlackSecret {
     /// Load the Slack OAuth secret from a file, which should only be readable by the user running
     /// this process.
+    ///
+    /// Any returned errors are fatal and require a restart.
     async fn new(path: &str) -> Result<Self, io::Error> {
         // It is not secure to provide secrets on the command line or in environment variables,
         // because those secrets can be visible to other users of the system via `ps` or `top`.
@@ -158,6 +160,8 @@ impl SlackSecret {
 impl SlackClientInfo {
     /// Load the Slack OAuth secret from a file, and find the channel ID for the test channel.
     /// Keeps track of the supplied bot name and icon for use when posting alerts.
+    ///
+    /// Any returned errors are fatal and require a restart.
     pub async fn new(
         bot_name: impl AsRef<str>,
         bot_icon: impl Into<Option<String>>,
@@ -202,6 +206,9 @@ impl SlackClientInfo {
         }))
     }
 
+    /// Find the channel ID for the test channel.
+    ///
+    /// Any returned errors are fatal and require a restart.
     async fn find_channel_id(
         client: &SlackClient<SlackConnector>,
         secret: &SlackSecret,
@@ -238,6 +245,9 @@ impl SlackClientInfo {
     /// GeoIP databases are notoriously unreliable, particularly for data centres, so this flag
     /// could be from a completely different country. There's also no guarantee that Slack has a
     /// flag emoji for the country.
+    ///
+    /// Returned errors should be ignored, because this is an optional feature with a default
+    /// fallback.
     async fn find_external_geoip() -> Result<(Option<String>, Option<String>), anyhow::Error> {
         info!("finding instance external IP...");
         // Timeout if the server takes too long, showing the bot location is non-essential.
@@ -270,6 +280,9 @@ impl SlackClientInfo {
     }
 
     /// Post a message to Slack.
+    ///
+    /// Any returned errors are fatal and require a restart.
+    ///
     /// TODO:
     /// - take a channel here and look up the channel ID
     /// - split channel ID lookups into their own function
@@ -279,7 +292,7 @@ impl SlackClientInfo {
         message: impl AsRef<str>,
         block_info: &BlockInfo,
     ) -> Result<SlackApiChatPostMessageResponse, anyhow::Error> {
-        let slack_session = self.open_session().await?;
+        let slack_session = self.open_session();
 
         info!(
             "posting message to '{TEST_CHANNEL_NAME}' channel id: {:?}...\n\
@@ -320,13 +333,11 @@ impl SlackClientInfo {
     }
 
     /// Open a new Slack session.
-    async fn open_session<'this, 'session>(
-        &'this self,
-    ) -> Result<SlackClientSession<'session, SlackConnector>, anyhow::Error>
+    /// Sessions are cheap, so they don't need to be re-used, and should not be stored.
+    fn open_session<'this, 'session>(&'this self) -> SlackClientSession<'session, SlackConnector>
     where
         'this: 'session,
     {
-        let session = self.client.open_session(&self.secret);
-        Ok(session)
+        self.client.open_session(&self.secret)
     }
 }

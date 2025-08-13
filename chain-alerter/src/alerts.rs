@@ -27,6 +27,8 @@ const MIN_BALANCE_CHANGE: u128 = 1_000_000_000 * AI3;
 const MIN_BLOCK_GAP: Duration = Duration::from_secs(60);
 
 /// Check a block for alerts, against the previous block.
+///
+/// Any returned errors are fatal and require a restart.
 pub async fn check_block(
     slack_client_info: &SlackClientInfo,
     block_info: &BlockInfo,
@@ -68,6 +70,8 @@ pub async fn check_block(
 
 /// Spawn a task that waits for `MIN_BLOCK_GAP`, then alerts if there was no block received on
 /// `latest_block_rx` in that gap.
+///
+/// Fatal errors will panic in the spawned task.
 pub async fn check_for_block_stall(
     slack_client_info: Arc<SlackClientInfo>,
     block_info: BlockInfo,
@@ -108,6 +112,12 @@ pub async fn check_for_block_stall(
 }
 
 /// Check an extrinsic for alerts.
+///
+/// Extrinsic parsing should never fail, if it does, the runtime metdata is likely wrong.
+/// But we don't want to panic or exit when that happens, instead we warn, and hope to
+/// recover after we pick up the runtime upgrade in the next block.
+///
+/// Any returned errors are fatal and require a restart.
 pub async fn check_extrinsic<Client>(
     slack_client_info: &SlackClientInfo,
     extrinsic: &ExtrinsicDetails<SubspaceConfig, Client>,

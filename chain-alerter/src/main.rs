@@ -38,6 +38,8 @@ struct Args {
 }
 
 /// Set up the chain alerter process.
+///
+/// Any returned errors are fatal and require a restart.
 async fn setup(args: Args) -> anyhow::Result<(Arc<SlackClientInfo>, OnlineClient<SubspaceConfig>)> {
     // Avoid a crypto provider conflict: jsonrpsee activates ring, and hyper-rustls activates
     // aws-lc, but there can only be one per process. We use the library with more formal
@@ -70,6 +72,8 @@ async fn setup(args: Args) -> anyhow::Result<(Arc<SlackClientInfo>, OnlineClient
 }
 
 /// Run the chain alerter process.
+///
+/// Returns fatal errors like connection failures, but logs and ignores recoverable errors.
 async fn run() -> anyhow::Result<()> {
     let args = Args::parse();
 
@@ -91,6 +95,7 @@ async fn run() -> anyhow::Result<()> {
 
     while let Some(block) = blocks_sub.next().await {
         let block = block?;
+        // These errors represent a connection failure or similar, and require a restart.
         let extrinsics = block.extrinsics().await?;
         let block_info = BlockInfo::new(&block, &extrinsics, &genesis_hash);
 
@@ -117,17 +122,17 @@ async fn run() -> anyhow::Result<()> {
             );
         }
 
+        // Check for block stalls, and check the block itself for alerts.
         alerts::check_for_block_stall(
             slack_client_info.clone(),
             block_info.clone(),
             latest_block_tx.subscribe(),
         )
         .await;
+
         alerts::check_block(&slack_client_info, &block_info, &prev_block_info).await?;
 
-        // Extrinsic parsing should never fail, if it does, the runtime metdata is likely wrong.
-        // But we don't want to panic or exit when that happens, instead we warn, and hope to
-        // recover after we pick up the runtime upgrade in the next block.
+        // Check each extrinsic and event for alerts.
         for extrinsic in extrinsics.iter() {
             alerts::check_extrinsic(&slack_client_info, &extrinsic, &block_info).await?;
         }
@@ -139,6 +144,8 @@ async fn run() -> anyhow::Result<()> {
 }
 
 /// The main function, which runs the chain alerter process until Ctrl-C is pressed.
+///
+/// Any returned errors are fatal and require a restart.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     set_exit_on_panic();

@@ -26,7 +26,8 @@ pub fn truncate(s: &mut String, max_chars: usize) {
 }
 
 /// Format an amount in AI3, accepting `u128` or `Option<u128>`.
-/// If `None`, return "unknown".
+///
+/// Returns a placeholder value if the input is missing.
 pub fn fmt_amount(val: impl Into<Option<u128>>) -> String {
     if let Some(val) = val.into() {
         format!("{} AI3", val / AI3)
@@ -41,6 +42,8 @@ pub fn fmt_timestamp(date_time: &DateTime<Utc>) -> String {
 }
 
 /// Format a duration (an unsigned amount of time) as a human-readable string.
+///
+/// Returns a placeholder value if the input is missing.
 pub fn fmt_duration(duration: impl Into<Option<Duration>>) -> String {
     let Some(duration) = duration.into() else {
         return "missing".to_string();
@@ -53,6 +56,8 @@ pub fn fmt_duration(duration: impl Into<Option<Duration>>) -> String {
 }
 
 /// Format a time delta (a signed amount of time) as a human-readable string.
+///
+/// Returns a placeholder value if the input is missing or out of range.
 #[expect(dead_code)]
 pub fn fmt_time_delta(time_delta: impl Into<Option<TimeDelta>>) -> String {
     let Some(time_delta) = time_delta.into() else {
