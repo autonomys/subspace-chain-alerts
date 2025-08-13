@@ -8,6 +8,7 @@ use std::time::Duration;
 use subxt::SubstrateConfig;
 use subxt::blocks::{Block, ExtrinsicDetails, Extrinsics};
 use subxt::client::OnlineClientT;
+use subxt::events::{EventDetails, Phase};
 use subxt::utils::H256;
 use tracing::warn;
 
@@ -218,6 +219,71 @@ impl ExtrinsicInfo {
     }
 
     /// Format the extrinsic's fields as a string, truncating it if it is too long.
+    pub fn fields_str(&self) -> String {
+        fmt_fields(&self.fields)
+    }
+}
+
+/// Event info that can be formatted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EventInfo {
+    /// The event pallet name, also known as section.
+    pub pallet: String,
+
+    /// The event kind, also known as module or variant.
+    pub kind: String,
+
+    /// The event index in the block.
+    pub index: u32,
+
+    /// The phase the event was emitted in.
+    pub phase: Phase,
+
+    /// The event fields, with the event index as a context.
+    pub fields: Composite<u32>,
+}
+
+impl Display for EventInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(
+            f,
+            "Event {}::{} (index {})",
+            self.pallet, self.kind, self.index
+        )?;
+        writeln!(f, "Phase: {:?}", self.phase)?;
+        write!(f, "{}", self.fields_str())?;
+        Ok(())
+    }
+}
+
+impl EventInfo {
+    /// Check and collect an event's info.
+    pub fn new(event: &EventDetails<SubspaceConfig>, block_info: &BlockInfo) -> EventInfo {
+        let meta = event.event_metadata();
+
+        // We can usually get the event fields, but we don't need the fields for some
+        // event alerts. So we just warn and substitute empty fields.
+        let fields = event.field_values().unwrap_or_else(|_| {
+            warn!(
+                "event {}:{} ({}) fields unavailable in block:\n\
+                {block_info}",
+                meta.pallet.name(),
+                meta.variant.name,
+                event.index(),
+            );
+            Composite::unnamed(Vec::new())
+        });
+
+        EventInfo {
+            pallet: meta.pallet.name().to_string(),
+            kind: meta.variant.name.to_string(),
+            phase: event.phase(),
+            index: event.index(),
+            fields,
+        }
+    }
+
+    /// Format the event's fields as a string, truncating it if it is too long.
     pub fn fields_str(&self) -> String {
         fmt_fields(&self.fields)
     }
