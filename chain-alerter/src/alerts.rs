@@ -128,6 +128,7 @@ where
 
     // All sudo calls are alerts.
     // TODO:
+    // - test this alert by checking a historic block with a sudo call
     // - check if the call is from the sudo account
     // - decode the inner call
     if extrinsic_info.pallet == "Sudo" {
@@ -160,6 +161,8 @@ where
             None
         };
 
+        // TODO:
+        // - test force alerts by checking a historic block with that call
         if extrinsic_info.call.starts_with("force") {
             slack_client_info
                 .post_message(

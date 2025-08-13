@@ -98,7 +98,10 @@ async fn run() -> anyhow::Result<()> {
         latest_block_tx.send_replace(Some(block_info.clone()));
 
         if first_block {
-            // TODO: always post this to the test channel, because it's not an alert.
+            // TODO:
+            // - always post this to the test channel, because it's not an alert
+            // - link to the prod channel from this message:
+            //   <https://docs.slack.dev/messaging/formatting-message-text/#linking-channels>
             slack_client_info
                 .post_message("Launched and connected to the local node", &block_info)
                 .await?;

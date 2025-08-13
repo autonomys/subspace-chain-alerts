@@ -26,9 +26,16 @@ pub type SubspaceConfig = SubstrateConfig;
 /// Block info that can be formatted.
 #[derive(Clone, Debug, PartialEq, Eq, Ord, PartialOrd)]
 pub struct BlockInfo {
+    /// The block number.
     pub block_height: BlockNumber,
+
+    /// The time extrinsic in the block, if it exists.
     pub block_time: Option<BlockTime>,
+
+    /// The block hash.
     pub block_hash: H256,
+
+    /// The genesis block hash for this network.
     pub genesis_hash: H256,
 }
 
@@ -138,11 +145,22 @@ impl BlockTime {
 /// Extrinsic info that can be formatted.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExtrinsicInfo {
+    /// The extrinsic pallet name.
     pub pallet: String,
+
+    /// The extrinsic call name.
     pub call: String,
+
+    /// The extrinsic index.
     pub index: u32,
+
+    /// The extrinsic hash.
     pub hash: H256,
+
+    /// The extrinsic fields, with the extrinsic index as a context.
     pub fields: Composite<u32>,
+
+    /// The extrinsic fields, formatted as a string and truncated if too long.
     pub fields_str: String,
 }
 
