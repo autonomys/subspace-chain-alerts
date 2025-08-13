@@ -6,7 +6,8 @@ mod slack;
 mod subspace;
 
 use crate::slack::{SLACK_OAUTH_SECRET_PATH, SlackClientInfo};
-use crate::subspace::{BlockInfo, SubspaceConfig};
+use crate::subspace::{BlockInfo, BlockNumber, SubspaceConfig};
+use clap::Parser;
 use std::panic;
 use std::process::exit;
 use std::sync::Arc;
@@ -16,8 +17,28 @@ use tokio::select;
 use tokio::sync::watch;
 use tracing::{error, info};
 
+/// The number of blocks between info-level block number logs.
+/// TODO: make this configurable
+const BLOCK_UPDATE_LOGGING_INTERVAL: BlockNumber = 100;
+
+/// The name and emoji used by this bot instance.
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    /// The name used by the bot when posting alerts to Slack.
+    #[arg(long, default_value = "Dev")]
+    name: String,
+
+    /// The Slack icon used by the bot when posting.
+    ///
+    /// Uses Short Names (but without the ':') from:
+    /// <https://projects.iamcal.com/emoji-data/table.htm>
+    #[arg(long)]
+    icon: Option<String>,
+}
+
 /// Set up the chain alerter process.
-async fn setup() -> anyhow::Result<(Arc<SlackClientInfo>, OnlineClient<SubspaceConfig>)> {
+async fn setup(args: Args) -> anyhow::Result<(Arc<SlackClientInfo>, OnlineClient<SubspaceConfig>)> {
     // Avoid a crypto provider conflict: jsonrpsee activates ring, and hyper-rustls activates
     // aws-lc, but there can only be one per process. We use the library with more formal
     // verification.
@@ -28,7 +49,8 @@ async fn setup() -> anyhow::Result<(Arc<SlackClientInfo>, OnlineClient<SubspaceC
         .map_err(|_| anyhow::anyhow!("Selecting default TLS crypto provider failed"))?;
 
     // Connect to Slack and get basic info.
-    let slack_client_info = SlackClientInfo::new(SLACK_OAUTH_SECRET_PATH).await?;
+    let slack_client_info =
+        SlackClientInfo::new(args.name, args.icon, SLACK_OAUTH_SECRET_PATH).await?;
 
     // Create a client that subscribes to a local Substrate node.
     // TODO: make URL configurable
@@ -49,7 +71,9 @@ async fn setup() -> anyhow::Result<(Arc<SlackClientInfo>, OnlineClient<SubspaceC
 
 /// Run the chain alerter process.
 async fn run() -> anyhow::Result<()> {
-    let (slack_client_info, chain_client) = setup().await?;
+    let args = Args::parse();
+
+    let (slack_client_info, chain_client) = setup(args).await?;
     // TODO: add a network name table and look up the network name by genesis hash
     let genesis_hash = chain_client.genesis_hash();
 
@@ -74,11 +98,23 @@ async fn run() -> anyhow::Result<()> {
         latest_block_tx.send_replace(Some(block_info.clone()));
 
         if first_block {
-            // TODO: always post this to the test channel, because it's not an alert.
+            // TODO:
+            // - always post this to the test channel, because it's not an alert
+            // - link to the prod channel from this message:
+            //   <https://docs.slack.dev/messaging/formatting-message-text/#linking-channels>
             slack_client_info
                 .post_message("Launched and connected to the local node", &block_info)
                 .await?;
             first_block = false;
+        } else if block_info
+            .block_height
+            .is_multiple_of(BLOCK_UPDATE_LOGGING_INTERVAL)
+        {
+            // Let the user know we're still alive
+            info!(
+                "Processed block:\n\
+                {block_info}"
+            );
         }
 
         alerts::check_for_block_stall(

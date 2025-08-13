@@ -7,6 +7,10 @@ use slack_morphism::api::{
     SlackApiChatPostMessageRequest, SlackApiChatPostMessageResponse,
     SlackApiConversationsListRequest,
 };
+use slack_morphism::blocks::{
+    SlackBlock, SlackBlockMarkDownText, SlackBlockPlainText, SlackContextBlock, SlackDividerBlock,
+    SlackMarkdownBlock,
+};
 use slack_morphism::prelude::{
     SlackApiRateControlConfig, SlackApiResponseScrollerExt, SlackClientHyperConnector,
 };
@@ -19,6 +23,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::fs;
+use tokio::time::timeout;
 use tracing::info;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -31,12 +36,18 @@ pub const SLACK_OAUTH_SECRET_PATH: &str = "slack-secret";
 const TEST_CHANNEL_NAME: &str = "chain-alerts-test";
 
 /// The name the bot uses to post alerts to Slack.
-/// TODO: make this configurable per instance, default to the instance external IP
-const ALERTS_BOT_NAME: &str = "Teor's Chain Alerts Tester";
+/// TODO: take "test" out of this name once we're production-ready
+const ALERTS_BOT_NAME_SUFFIX: &str = "Chain Alerts Tester";
 
-/// The emoji the bot uses to post alerts to Slack.
-/// TODO: make this configurable per instance, default to the external IP country flag
-const ALERTS_BOT_ICON_EMOJI: &str = "flag-au";
+/// The default emoji the bot uses to post alerts to Slack, if there is no icon provided on the
+/// command line, and no flag emoji can be found for the instance's external IP.
+const DEFAULT_BOT_ICON: &str = "robot_face";
+
+/// The GeoIP server to use for country flag emoji lookups.
+const GEOIP_SERVER: &str = "https://api.geoip.rs";
+
+/// The timeout for the GeoIP server.
+const GEOIP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The maximum number of channels to list when searching for the channel ID.
 /// The API might return fewer than this number even if there are more channels.
@@ -70,6 +81,15 @@ pub struct SlackClientInfo {
     ///
     /// TODO: add test and prod channel IDs in a hashmap
     pub channel_id: SlackChannelId,
+
+    /// The name the bot uses to post alerts to Slack.
+    pub bot_name: String,
+
+    /// The IP address and country code used to identify the bot instance.
+    pub bot_ip_cc: Option<String>,
+
+    /// The emoji the bot uses to post alerts to Slack.
+    pub bot_icon: String,
 
     /// The secret required to post to Slack.
     secret: SlackSecret,
@@ -137,14 +157,56 @@ impl SlackSecret {
 
 impl SlackClientInfo {
     /// Load the Slack OAuth secret from a file, and find the channel ID for the test channel.
-    pub async fn new(path: &str) -> Result<Arc<Self>, anyhow::Error> {
-        let secret = SlackSecret::new(path).await?;
+    /// Keeps track of the supplied bot name and icon for use when posting alerts.
+    pub async fn new(
+        bot_name: impl AsRef<str>,
+        bot_icon: impl Into<Option<String>>,
+        secret_path: impl AsRef<str>,
+    ) -> Result<Arc<Self>, anyhow::Error> {
+        let secret = SlackSecret::new(secret_path.as_ref()).await?;
 
         info!("setting up Slack client...");
         let client = SlackClient::new(SlackClientHyperConnector::new()?.with_rate_control(
             SlackApiRateControlConfig::new().with_max_retries(MAX_SLACK_API_RETRIES),
         ));
-        let session = client.open_session(&secret);
+
+        let channel_id = Self::find_channel_id(&client, &secret).await?;
+        info!("channel ID: {channel_id:?}");
+
+        let geoip = match Self::find_external_geoip().await {
+            Ok(geoip) => geoip,
+            Err(e) => {
+                info!("error finding instance geoip: {e}");
+                (None, None)
+            }
+        };
+
+        let bot_icon = match bot_icon.into() {
+            Some(icon) => icon,
+            None => match geoip.1 {
+                Some(bot_country_flag) => bot_country_flag,
+                None => {
+                    info!("no country in geoip response");
+                    DEFAULT_BOT_ICON.to_string()
+                }
+            },
+        };
+
+        Ok(Arc::new(Self {
+            client,
+            channel_id,
+            bot_name: bot_name.as_ref().to_string(),
+            bot_ip_cc: geoip.0,
+            bot_icon,
+            secret,
+        }))
+    }
+
+    async fn find_channel_id(
+        client: &SlackClient<SlackConnector>,
+        secret: &SlackSecret,
+    ) -> Result<SlackChannelId, anyhow::Error> {
+        let session = client.open_session(secret);
         info!("opened Slack session");
 
         info!("finding channel ID for '{TEST_CHANNEL_NAME}'...");
@@ -167,13 +229,44 @@ impl SlackClientInfo {
         let Some(channel_id) = channel_id else {
             anyhow::bail!("channel '{TEST_CHANNEL_NAME}' ID not found");
         };
-        info!("channel ID: {channel_id:?}");
 
-        Ok(Arc::new(Self {
-            client,
-            channel_id,
-            secret,
-        }))
+        Ok(channel_id)
+    }
+
+    /// Finds the external IP and country flag emoji for this instance.
+    ///
+    /// GeoIP databases are notoriously unreliable, particularly for data centres, so this flag
+    /// could be from a completely different country. There's also no guarantee that Slack has a
+    /// flag emoji for the country.
+    async fn find_external_geoip() -> Result<(Option<String>, Option<String>), anyhow::Error> {
+        info!("finding instance external IP...");
+        // Timeout if the server takes too long, showing the bot location is non-essential.
+        let geoip_resp = timeout(GEOIP_TIMEOUT, reqwest::get(GEOIP_SERVER)).await??;
+        if !geoip_resp.status().is_success() {
+            anyhow::bail!(
+                "GeoIP server returned non-success status: {}",
+                geoip_resp.status()
+            );
+        }
+        let geoip_body = timeout(GEOIP_TIMEOUT, geoip_resp.text()).await??;
+        info!("geoip response: {geoip_body}");
+
+        let geoip_json: serde_json::Value = serde_json::from_str(&geoip_body)?;
+        let ip = geoip_json["ip_address"].as_str().map(|ip| ip.to_string());
+        let country_code = geoip_json["country_code"].as_str().map(|cc| cc.to_string());
+        info!("instance external IP: {ip:?}, country code: {country_code:?}");
+
+        let flag_emoji = country_code
+            .as_ref()
+            .map(|c| format!("flag-{}", c.to_lowercase()));
+
+        let ip_cc = if let (Some(country_code), Some(ip)) = (&country_code, &ip) {
+            Some(format!("{} ({})", country_code, ip))
+        } else {
+            country_code.or(ip)
+        };
+
+        Ok((ip_cc, flag_emoji))
     }
 
     /// Post a message to Slack.
@@ -188,22 +281,37 @@ impl SlackClientInfo {
     ) -> Result<SlackApiChatPostMessageResponse, anyhow::Error> {
         let slack_session = self.open_session().await?;
 
-        let message = format!(
-            "{}\n\n\
-            {block_info}",
-            message.as_ref(),
-        );
         info!(
             "posting message to '{TEST_CHANNEL_NAME}' channel id: {:?}...\n\
-            {message}",
+            {}",
             self.channel_id,
+            message.as_ref(),
         );
+
+        // Format the message as Slack message blocks:
+        // <https://api.slack.com/reference/block-kit/blocks>
+        let mut message_blocks: Vec<SlackBlock> = vec![];
+        message_blocks.push(SlackMarkdownBlock::new(message.as_ref().to_string()).into());
+        message_blocks.push(SlackDividerBlock::new().into());
+        message_blocks.push(
+            SlackContextBlock::new(vec![
+                SlackBlockPlainText::new(format!("{block_info}")).into(),
+            ])
+            .into(),
+        );
+
+        if let Some(ip_cc) = self.bot_ip_cc.as_ref() {
+            let mut ip_cc_block = SlackBlockMarkDownText::from(format!("🌐 Instance: {}", ip_cc));
+            ip_cc_block.verbatim = Some(true);
+            message_blocks.push(SlackContextBlock::new(vec![ip_cc_block.into()]).into());
+        }
+
         let post_chat_req = SlackApiChatPostMessageRequest::new(
             self.channel_id.clone(),
-            SlackMessageContent::new().with_text(message),
+            SlackMessageContent::new().with_blocks(message_blocks),
         )
-        .with_icon_emoji(ALERTS_BOT_ICON_EMOJI.into())
-        .with_username(ALERTS_BOT_NAME.into());
+        .with_icon_emoji(self.bot_icon.clone())
+        .with_username(format!("{} {ALERTS_BOT_NAME_SUFFIX}", self.bot_name));
         let post_chat_resp = slack_session.chat_post_message(&post_chat_req).await?;
 
         info!("message posted: {post_chat_req:?} response: {post_chat_resp:?}");

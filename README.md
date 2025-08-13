@@ -22,11 +22,11 @@ Important event alerts for Subspace blockchains.
 
 ## Limitations (PoC)
 
-- Hardcoded Slack channel, workspace ID, bot name/icon, node URL, and thresholds.
+- Hardcoded Slack channel, workspace ID, node URL, and thresholds.
 - Minimal decoding/validation for some extrinsics; fields are parsed best-effort.
 - Minimal stateful aggregation (e.g., summing multiple related transfers)
 - No alert deduplication when multiple instances are running.
-- No CLI/config file/env var configuration surface yet.
+- Limited CLI/config file/env var configuration.
 - No persistent storage, no metrics, no dashboards.
 - Basic error handling: logs warnings on transient decode/metadata mismatches and continues.
 
@@ -49,8 +49,9 @@ Important event alerts for Subspace blockchains.
    - Follow the Subspace monorepo docs to build/run a local node, or run a dev node suitable for testing. See the Subspace reference implementation for details: [Subspace monorepo](https://github.com/autonomys/subspace).
 
 4. Build and run
-   - `cargo run`
+   - `cargo run -- --name "My Test Bot" --icon "warning"`
    - On first observed block, you should see a Slack message in `#chain-alerts-test` summarizing connection and block info.
+   - The name and icon are optional. The default icon is the instance external IP address country flag.
 
 ## Project structure
 
