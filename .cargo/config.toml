@@ -36,6 +36,7 @@ rustflags = [
     "-Wclippy::todo",
     "-Wunused_crate_dependencies",
     "-Wmissing_debug_implementations",
+    "-Wclippy::missing_assert_message",
 
     # Manual debugging
     # Prefer tracing::trace!() or tracing::debug!()
@@ -50,4 +51,14 @@ rustflags = [
     # Documentation
     "-Wmissing_docs",
     "-Wclippy::missing_docs_in_private_items",
+
+    # Testing and debugging
+    "-Wclippy::assertions_on_result_states",
+    "-Wclippy::debug_assert_with_mut_call",
+
+    # Style
+    "-Wclippy::from_iter_instead_of_collect",
+    "-Wclippy::inconsistent_struct_constructor",
+    "-Wclippy::manual_assert",
+    "-Wclippy::needless_pass_by_value",
 ]

@@ -144,12 +144,11 @@ impl SlackSecret {
             const USER_READ_WRITE: u32 = 0o600;
 
             let secret_perms = fs::metadata(path).await?.permissions().mode();
-            if secret_perms & 0o777 != USER_READ_ONLY && secret_perms & 0o777 != USER_READ_WRITE {
-                panic!(
-                    "slack-oauth-secret must be readable only by the user running this process \
-                    ({USER_READ_ONLY:?} or {USER_READ_WRITE:?}), but it is {secret_perms:?}"
-                );
-            }
+            assert!(
+                secret_perms & 0o777 == USER_READ_ONLY || secret_perms & 0o777 == USER_READ_WRITE,
+                "slack-oauth-secret must be readable only by the user running this process \
+                ({USER_READ_ONLY:?} or {USER_READ_WRITE:?}), but it is {secret_perms:?}"
+            );
         }
 
         let secret = fs::read_to_string(path).await?;
