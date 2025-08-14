@@ -85,11 +85,15 @@ pub struct SlackClientInfo {
     /// The name the bot uses to post alerts to Slack.
     pub bot_name: String,
 
+    /// The emoji the bot uses to post alerts to Slack.
+    pub bot_icon: String,
+
+    // Context used by the bot instance.
     /// The IP address and country code used to identify the bot instance.
     pub bot_ip_cc: Option<String>,
 
-    /// The emoji the bot uses to post alerts to Slack.
-    pub bot_icon: String,
+    /// The RPC URL of the node used by the bot instance.
+    pub node_rpc_url: String,
 
     /// The secret required to post to Slack.
     secret: SlackSecret,
@@ -165,6 +169,7 @@ impl SlackClientInfo {
     pub async fn new(
         bot_name: impl AsRef<str>,
         bot_icon: impl Into<Option<String>>,
+        node_rpc_url: impl AsRef<str>,
         secret_path: impl AsRef<str>,
     ) -> Result<Arc<Self>, anyhow::Error> {
         let secret = SlackSecret::new(secret_path.as_ref()).await?;
@@ -201,6 +206,7 @@ impl SlackClientInfo {
             channel_id,
             bot_name: bot_name.as_ref().to_string(),
             bot_ip_cc: geoip.0,
+            node_rpc_url: node_rpc_url.as_ref().to_string(),
             bot_icon,
             secret,
         }))
@@ -313,11 +319,17 @@ impl SlackClientInfo {
             .into(),
         );
 
-        if let Some(ip_cc) = self.bot_ip_cc.as_ref() {
-            let mut ip_cc_block = SlackBlockMarkDownText::from(format!("🌐 Instance: {ip_cc}"));
-            ip_cc_block.verbatim = Some(true);
-            message_blocks.push(SlackContextBlock::new(vec![ip_cc_block.into()]).into());
-        }
+        // Add the alerter and RPC instance as context.
+        let mut context = if let Some(ip_cc) = self.bot_ip_cc.as_ref() {
+            format!("🌐 Alerter: {ip_cc}\n")
+        } else {
+            String::new()
+        };
+
+        context.push_str(&format!("📞 RPC: {}", self.node_rpc_url));
+        let mut context_block = SlackBlockMarkDownText::from(context);
+        context_block.verbatim = Some(true);
+        message_blocks.push(SlackContextBlock::new(vec![context_block.into()]).into());
 
         let post_chat_req = SlackApiChatPostMessageRequest::new(
             self.channel_id.clone(),
