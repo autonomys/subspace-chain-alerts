@@ -1,2 +1,20 @@
 edition = "2024"
+unstable_features = true
+newline_style = "Unix"
+
 imports_granularity = "Module"
+group_imports = One
+reorder_impl_items = true
+
+comment_width = 100
+format_code_in_doc_comments = true
+normalize_comments = true
+normalize_doc_attributes = true
+wrap_comments = true
+
+format_macro_matchers = true
+format_strings = true
+hex_literal_case = Lower
+float_literal_trailing_zero = Always
+use_field_init_shorthand = true
+use_try_shorthand = true
