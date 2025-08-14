@@ -114,7 +114,7 @@ impl MemorySlotTimeMonitor {
         }
     }
 
-    pub async fn send_alert(
+    async fn send_alert(
         &self,
         slot_diff_per_time_diff: f64,
         block_info: BlockInfo,
@@ -132,7 +132,7 @@ impl MemorySlotTimeMonitor {
             .await
     }
 
-    pub fn schedule_next_check(&mut self, current_time: Duration, current_slot: u64) {
+    fn schedule_next_check(&mut self, current_time: Duration, current_slot: u64) {
         let next_check_time = current_time + self.config.check_interval;
         debug!(
             "Scheduling next check for block time: {:?}",
