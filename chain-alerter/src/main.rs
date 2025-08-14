@@ -6,8 +6,10 @@ mod slack;
 mod subspace;
 
 use crate::slack::{SLACK_OAUTH_SECRET_PATH, SlackClientInfo};
-use crate::subspace::{BlockInfo, BlockNumber, SubspaceConfig};
-use clap::Parser;
+use crate::subspace::{
+    BlockInfo, BlockNumber, LOCAL_SUBSPACE_NODE_URL, SubspaceConfig, create_subspace_client,
+};
+use clap::{Parser, ValueHint};
 use std::sync::Arc;
 use subspace_process::{AsyncJoinOnDrop, init_logger, set_exit_on_panic, shutdown_signal};
 use subxt::OnlineClient;
@@ -33,6 +35,10 @@ struct Args {
     /// <https://projects.iamcal.com/emoji-data/table.htm>
     #[arg(long)]
     icon: Option<String>,
+
+    /// The RPC URL of the node to connect to.
+    #[arg(long, value_hint = ValueHint::Url, default_value = LOCAL_SUBSPACE_NODE_URL)]
+    node_rpc_url: String,
 }
 
 /// Set up the chain alerter process.
@@ -49,12 +55,16 @@ async fn setup(args: Args) -> anyhow::Result<(Arc<SlackClientInfo>, OnlineClient
         .map_err(|_| anyhow::anyhow!("Selecting default TLS crypto provider failed"))?;
 
     // Connect to Slack and get basic info.
-    let slack_client_info =
-        SlackClientInfo::new(args.name, args.icon, SLACK_OAUTH_SECRET_PATH).await?;
+    let slack_client_info = SlackClientInfo::new(
+        args.name,
+        args.icon,
+        &args.node_rpc_url,
+        SLACK_OAUTH_SECRET_PATH,
+    )
+    .await?;
 
     // Create a client that subscribes to a local Substrate node.
-    // TODO: make URL configurable
-    let chain_client = OnlineClient::<SubspaceConfig>::from_url("ws://127.0.0.1:9944").await?;
+    let chain_client = create_subspace_client(&args.node_rpc_url).await?;
 
     info!("spawning runtime metadata update task...");
     // Spawn a background task to keep the runtime metadata up to date.

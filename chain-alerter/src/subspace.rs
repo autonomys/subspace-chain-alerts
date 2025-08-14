@@ -5,11 +5,11 @@ use chrono::{DateTime, Utc};
 use scale_value::Composite;
 use std::fmt::{self, Display};
 use std::time::Duration;
-use subxt::SubstrateConfig;
 use subxt::blocks::{Block, ExtrinsicDetails, Extrinsics};
 use subxt::client::OnlineClientT;
 use subxt::events::{EventDetails, Phase};
 use subxt::utils::H256;
+use subxt::{OnlineClient, SubstrateConfig};
 use tracing::warn;
 
 /// The Subspace block height type.
@@ -20,9 +20,32 @@ pub type BlockNumber = u32;
 /// Copied from subspace-runtime-primitives.
 pub const AI3: u128 = 10_u128.pow(18);
 
+/// The default RPC URL for a local Subspace node.
+pub const LOCAL_SUBSPACE_NODE_URL: &str = "ws://127.0.0.1:9944";
+
+/// The RPC URL for the public Subspace Foundation RPC instance.
+#[allow(dead_code)]
+pub const FOUNDATION_SUBSPACE_NODE_URL: &str = "wss://rpc.mainnet.subspace.foundation/ws";
+
+/// The RPC URL for the public Autonomys Labs RPC instance.
+#[allow(dead_code)]
+pub const LABS_SUBSPACE_NODE_URL: &str = "wss://rpc-0.mainnet.autonomys.xyz/ws";
+
 /// The config for basic Subspace block and extrinsic types.
 /// TODO: create a custom SubspaceConfig type
 pub type SubspaceConfig = SubstrateConfig;
+
+/// The type of Subspace client we're using.
+pub type SubspaceClient = OnlineClient<SubspaceConfig>;
+
+/// Create a new Subspace client.
+pub async fn create_subspace_client(
+    node_url: impl AsRef<str>,
+) -> Result<SubspaceClient, anyhow::Error> {
+    SubspaceClient::from_url(node_url.as_ref())
+        .await
+        .map_err(anyhow::Error::msg)
+}
 
 /// Block info that can be formatted.
 #[derive(Clone, Debug, PartialEq, Eq, Ord, PartialOrd)]
