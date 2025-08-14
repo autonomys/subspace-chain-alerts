@@ -1,5 +1,8 @@
 //! Specific chain alerts.
 
+#[cfg(test)]
+mod tests;
+
 use crate::format::{fmt_amount, fmt_duration};
 use crate::subspace::{
     AI3, BlockInfo, EventInfo, ExtrinsicInfo, SubspaceConfig, gap_since_last_block, gap_since_time,

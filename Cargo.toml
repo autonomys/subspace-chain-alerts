@@ -11,6 +11,7 @@ members = [
 anyhow = "1.0.89"
 chrono = { version = "0.4.41", default-features = false }
 clap = "4.5.4"
+hex-literal = "0.4.1"
 humantime = "2.2.0"
 hyper-rustls = { version = "0.27.7", default-features = false }
 hyper-util = { version = "0.1.16", default-features = false }
