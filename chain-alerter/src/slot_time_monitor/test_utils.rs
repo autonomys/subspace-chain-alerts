@@ -1,3 +1,4 @@
+/// Test utilities for the slot time monitor.
 use crate::subspace::{BlockInfo, BlockTime, Slot};
 use subxt::utils::H256;
 
