@@ -1,5 +1,8 @@
 //! Subspace chain connection and block parsing code.
 
+#[cfg(test)]
+pub mod tests;
+
 use crate::format::{fmt_fields, fmt_timestamp};
 use chrono::{DateTime, Utc};
 use scale_value::Composite;
