@@ -3,15 +3,21 @@
 mod alerts;
 mod format;
 mod slack;
+mod slot_time_monitor;
 mod subspace;
 
 use crate::alerts::Alert;
 use crate::slack::{SLACK_OAUTH_SECRET_PATH, SlackClientInfo};
+use crate::slot_time_monitor::SlotTimeMonitorConfig;
 use crate::subspace::{
     BlockInfo, BlockNumber, LOCAL_SUBSPACE_NODE_URL, SubspaceClient, create_subspace_client,
     spawn_metadata_update_task,
 };
 use clap::{Parser, ValueHint};
+use slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor};
+use std::panic;
+use std::sync::Arc;
+use std::time::Duration;
 use subspace_process::{AsyncJoinOnDrop, init_logger, set_exit_on_panic, shutdown_signal};
 use tokio::select;
 use tokio::sync::{mpsc, watch};
@@ -123,11 +129,20 @@ async fn run() -> anyhow::Result<()> {
     // TODO: do we need to subscribe to all blocks from all forks here?
     let mut blocks_sub = chain_client.blocks().subscribe_best().await?;
 
+    // Slot time monitor is used to check if the slot time is within the expected range.
+    let mut slot_time_monitor = MemorySlotTimeMonitor::new(SlotTimeMonitorConfig {
+        check_interval: Duration::from_secs(3600),
+        genesis_hash,
+        alert_tx: Arc::new(alert_tx.clone()),
+        alert_threshold: 1.05f64,
+    });
+
     while let Some(block) = blocks_sub.next().await {
         let block = block?;
         // These errors represent a connection failure or similar, and require a restart.
         let extrinsics = block.extrinsics().await?;
         let events = block.events().await?;
+
         let block_info = BlockInfo::new(&block, &extrinsics, &genesis_hash);
 
         // Notify spawned tasks that a new block has arrived.
@@ -156,6 +171,7 @@ async fn run() -> anyhow::Result<()> {
         .await;
 
         alerts::check_block(&alert_tx, &block_info, &prev_block_info).await?;
+        slot_time_monitor.process_block(&block).await;
 
         // Check each extrinsic and event for alerts.
         for extrinsic in extrinsics.iter() {
