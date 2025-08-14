@@ -427,11 +427,12 @@ impl Slot {
 
     /// Decodes the slot number from a pre-runtime digest.
     fn decode_slot_number(pre_digest: Vec<u8>) -> Option<u64> {
-        pre_digest
-            .as_slice()
-            .get(Self::SLOT_OFFSET..=Self::SLOT_LEN)?
-            .try_into()
-            .ok()
-            .map(u64::from_le_bytes)
+        let slot_bytes = pre_digest
+            .into_iter()
+            .skip(Self::SLOT_OFFSET)
+            .take(Self::SLOT_LEN)
+            .collect::<Vec<u8>>();
+
+        Some(u64::from_le_bytes(slot_bytes.try_into().ok()?))
     }
 }
