@@ -26,6 +26,7 @@ pub trait SlotTimeMonitor {
 }
 
 /// Configuration for the slot time monitor.
+#[derive(Clone, Debug)]
 pub struct SlotTimeMonitorConfig {
     /// Interval between checks of slot timing.
     pub check_interval: Duration,

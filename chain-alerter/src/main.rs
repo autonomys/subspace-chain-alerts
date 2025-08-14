@@ -22,7 +22,6 @@ use clap::{Parser, ValueHint};
 use slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor};
 use std::panic;
 use std::sync::Arc;
-use std::time::Duration;
 use subspace_process::{AsyncJoinOnDrop, init_logger, set_exit_on_panic, shutdown_signal};
 use tokio::select;
 use tokio::sync::{mpsc, watch};
