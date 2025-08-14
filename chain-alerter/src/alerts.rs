@@ -55,12 +55,16 @@ pub enum AlertKind {
     /// Block production has stalled.
     BlockProductionStall {
         /// The gap between the previous block and now.
+        ///
+        /// Note: the previous block is `Alert.block_info`.
         gap: Option<Duration>,
     },
 
     /// Block production has resumed.
     BlockProductionResumed {
         /// The gap between the previous and current block.
+        ///
+        /// Note: the current block is `Alert.block_info`.
         gap: Duration,
 
         /// The previous block.
