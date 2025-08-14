@@ -319,14 +319,17 @@ impl SlackClientInfo {
             .into(),
         );
 
-        // Add the alerter and RPC instance as context.
+        // Add the alerter location, RPC instance, and version as context.
         let mut context = if let Some(ip_cc) = self.bot_ip_cc.as_ref() {
             format!("🌐 Alerter: {ip_cc}\n")
         } else {
             String::new()
         };
 
-        context.push_str(&format!("📞 RPC: {}", self.node_rpc_url));
+        context.push_str(&format!("📞 RPC: {}\n", self.node_rpc_url));
+        // TODO: add git commit hash here
+        context.push_str(&format!("🔗 Version: {}\n", env!("CARGO_PKG_VERSION")));
+
         let mut context_block = SlackBlockMarkDownText::from(context);
         context_block.verbatim = Some(true);
         message_blocks.push(SlackContextBlock::new(vec![context_block.into()]).into());
