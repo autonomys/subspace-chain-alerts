@@ -8,10 +8,8 @@ mod subspace;
 use crate::slack::{SLACK_OAUTH_SECRET_PATH, SlackClientInfo};
 use crate::subspace::{BlockInfo, BlockNumber, SubspaceConfig};
 use clap::Parser;
-use std::panic;
-use std::process::exit;
 use std::sync::Arc;
-use subspace_process::{AsyncJoinOnDrop, init_logger, shutdown_signal};
+use subspace_process::{AsyncJoinOnDrop, init_logger, set_exit_on_panic, shutdown_signal};
 use subxt::OnlineClient;
 use tokio::select;
 use tokio::sync::watch;
@@ -179,16 +177,4 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-/// Install a panic handler which exits on panics, rather than unwinding. Unwinding can hang the
-/// tokio runtime waiting for stuck tasks or threads.
-///
-/// TODO: move this function and its duplicates in subspace to subspace-process
-pub(crate) fn set_exit_on_panic() {
-    let default_panic_hook = panic::take_hook();
-    panic::set_hook(Box::new(move |panic_info| {
-        default_panic_hook(panic_info);
-        exit(1);
-    }));
 }

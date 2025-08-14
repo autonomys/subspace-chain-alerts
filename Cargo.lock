@@ -3635,7 +3635,7 @@ dependencies = [
 [[package]]
 name = "subspace-process"
 version = "0.0.1"
-source = "git+https://github.com/autonomys/subspace?rev=d072d03f6d85302fef0af0a4481833df50147dda#d072d03f6d85302fef0af0a4481833df50147dda"
+source = "git+https://github.com/autonomys/subspace?rev=2bf9b49f9a4aadb0b3286c5a62fa1997171f55c9#2bf9b49f9a4aadb0b3286c5a62fa1997171f55c9"
 dependencies = [
  "fdlimit",
  "futures",
