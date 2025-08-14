@@ -11,7 +11,9 @@ mod subspace;
 
 use crate::alerts::Alert;
 use crate::slack::{SLACK_OAUTH_SECRET_PATH, SlackClientInfo};
-use crate::slot_time_monitor::SlotTimeMonitorConfig;
+use crate::slot_time_monitor::{
+    DEFAULT_CHECK_INTERVAL, DEFAULT_SLOT_TIME_ALERT_THRESHOLD, SlotTimeMonitorConfig,
+};
 use crate::subspace::{
     BlockInfo, BlockNumber, LOCAL_SUBSPACE_NODE_URL, SubspaceClient, create_subspace_client,
     spawn_metadata_update_task,
@@ -134,9 +136,9 @@ async fn run() -> anyhow::Result<()> {
 
     // Slot time monitor is used to check if the slot time is within the expected range.
     let mut slot_time_monitor = MemorySlotTimeMonitor::new(SlotTimeMonitorConfig {
-        check_interval: Duration::from_secs(20),
+        check_interval: DEFAULT_CHECK_INTERVAL,
         alert_tx: Arc::new(alert_tx.clone()),
-        alert_threshold: 1.05f64,
+        alert_threshold: DEFAULT_SLOT_TIME_ALERT_THRESHOLD,
     });
 
     while let Some(block) = blocks_sub.next().await {
