@@ -8,8 +8,10 @@ use std::time::Duration;
 
 use crate::alerts::{self, AlertKind};
 use crate::slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor, SlotTimeMonitorConfig};
-use crate::subspace::tests::{node_rpc_url, test_setup};
-use crate::subspace::{BlockInfo, BlockNumber, EventInfo, ExtrinsicInfo, Slot};
+use crate::subspace::tests::{
+    decode_event, decode_extrinsic, fetch_block_info, node_rpc_url, test_setup,
+};
+use crate::subspace::{BlockNumber, Slot};
 use anyhow::Ok;
 use subxt::utils::H256;
 
@@ -39,13 +41,8 @@ async fn test_startup_alert() -> anyhow::Result<()> {
     let (subspace_client, alert_tx, mut alert_rx, _update_task) =
         test_setup(node_rpc_url()).await?;
 
-    // TODO: replace this with a subspace test helper function
-    let block = subspace_client.blocks().at_latest().await?;
-    let extrinsics = block.extrinsics().await?;
-    let genesis_hash = subspace_client.genesis_hash();
-    let block_info = BlockInfo::new(&block, &extrinsics, &genesis_hash);
+    let (block_info, _, _) = fetch_block_info(&subspace_client, None, None).await?;
 
-    // TODO: extract this into a subspace test helper function
     alerts::startup_alert(&alert_tx, &block_info).await?;
     let alert = alert_rx.try_recv().expect("no alert received");
     assert_eq!(alert.alert, AlertKind::Startup);
@@ -60,36 +57,18 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
     let (subspace_client, alert_tx, mut alert_rx, _update_task) =
         test_setup(node_rpc_url()).await?;
 
-    // TODO: extract this into a subspace test helper function
-    let block = subspace_client
-        .blocks()
-        .at(H256::from(SUDO_BLOCK.1))
-        .await?;
-    let extrinsics = block.extrinsics().await?;
-    let events = block.events().await?;
-    let genesis_hash = subspace_client.genesis_hash();
-    let block_info = BlockInfo::new(&block, &extrinsics, &genesis_hash);
+    let (block_info, extrinsics, events) =
+        fetch_block_info(&subspace_client, H256::from(SUDO_BLOCK.1), SUDO_BLOCK.0).await?;
 
-    // TODO: extract this into a subspace test helper function
-    let extrinsic = extrinsics
-        .iter()
-        .nth(SUDO_BLOCK.2.try_into().expect("constant fits in usize"))
-        .expect("extrinsic not found");
-    let extrinsic_info =
-        ExtrinsicInfo::new(&extrinsic, &block_info).expect("extrinsic info invalid");
+    let (extrinsic, extrinsic_info) =
+        decode_extrinsic(&block_info, &extrinsics, SUDO_BLOCK.2).await?;
 
     alerts::check_extrinsic(&alert_tx, &extrinsic, &block_info).await?;
     let alert = alert_rx.try_recv().expect("no alert received");
     assert_eq!(alert.alert, AlertKind::SudoCall { extrinsic_info });
     assert_eq!(alert.block_info, block_info);
 
-    // TODO: extract this into a subspace test helper function
-    let event = events
-        .iter()
-        .nth(SUDO_BLOCK.3.try_into().expect("constant fits in usize"))
-        .expect("event not found")
-        .expect("invalid event");
-    let event_info = EventInfo::new(&event, &block_info);
+    let (event, event_info) = decode_event(&block_info, &events, SUDO_BLOCK.3).await?;
 
     alerts::check_event(&alert_tx, &event, &block_info).await?;
     let alert = alert_rx.try_recv().expect("no alert received");

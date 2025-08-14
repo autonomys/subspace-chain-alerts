@@ -3,11 +3,15 @@
 use crate::ALERT_BUFFER_SIZE;
 use crate::alerts::Alert;
 use crate::subspace::{
-    FOUNDATION_SUBSPACE_NODE_URL, SubspaceClient, create_subspace_client,
+    BlockInfo, BlockNumber, EventIndex, EventInfo, ExtrinsicIndex, ExtrinsicInfo,
+    FOUNDATION_SUBSPACE_NODE_URL, SubspaceClient, SubspaceConfig, create_subspace_client,
     spawn_metadata_update_task,
 };
 use std::env;
 use subspace_process::{AsyncJoinOnDrop, init_logger};
+use subxt::blocks::{ExtrinsicDetails, Extrinsics};
+use subxt::events::{EventDetails, Events};
+use subxt::utils::H256;
 use tokio::sync::mpsc;
 use tracing::info;
 
@@ -25,6 +29,8 @@ pub fn node_rpc_url() -> String {
 /// Returns the runtime metadata update task, which will be aborted on drop.
 ///
 /// This needs to be kept in sync with `main::setup()`.
+///
+/// TODO: make this return a struct instead
 pub async fn test_setup(
     node_rpc_url: impl AsRef<str>,
 ) -> anyhow::Result<(
@@ -48,4 +54,79 @@ pub async fn test_setup(
     let (alert_tx, alert_rx) = mpsc::channel(ALERT_BUFFER_SIZE);
 
     Ok((chain_client, alert_tx, alert_rx, update_task))
+}
+
+/// Get the block info, extrinsics, and events for a block.
+///
+/// If `block_hash` is provided, it will be used to get the block, otherwise it gets the latest
+/// block. If `expected_block_height` is provided, it will be used to check that the block height is
+/// correct, otherwise it will not be checked.
+///
+/// TODO: make this return a struct instead
+pub async fn fetch_block_info(
+    subspace_client: &SubspaceClient,
+    block_hash: impl Into<Option<H256>>,
+    expected_block_height: impl Into<Option<BlockNumber>>,
+) -> anyhow::Result<(
+    BlockInfo,
+    Extrinsics<SubspaceConfig, SubspaceClient>,
+    Events<SubspaceConfig>,
+)> {
+    let block = if let Some(block_hash) = block_hash.into() {
+        subspace_client.blocks().at(block_hash).await?
+    } else {
+        subspace_client.blocks().at_latest().await?
+    };
+
+    let extrinsics = block.extrinsics().await?;
+    let events = block.events().await?;
+    let genesis_hash = subspace_client.genesis_hash();
+    let block_info = BlockInfo::new(&block, &extrinsics, &genesis_hash);
+
+    if let Some(expected_block_height) = expected_block_height.into() {
+        assert_eq!(block_info.block_height, expected_block_height);
+    }
+
+    Ok((block_info, extrinsics, events))
+}
+
+/// Extract and decode an extrinsic from a block.
+pub async fn decode_extrinsic(
+    block_info: &BlockInfo,
+    extrinsics: &Extrinsics<SubspaceConfig, SubspaceClient>,
+    extrinsic_index: ExtrinsicIndex,
+) -> anyhow::Result<(
+    ExtrinsicDetails<SubspaceConfig, SubspaceClient>,
+    ExtrinsicInfo,
+)> {
+    let extrinsic = extrinsics
+        .iter()
+        .nth(
+            extrinsic_index
+                .try_into()
+                .expect("ExtrinsicIndex fits in usize"),
+        )
+        .ok_or_else(|| anyhow::anyhow!("extrinsic not found"))?;
+
+    let extrinsic_info = ExtrinsicInfo::new(&extrinsic, block_info)
+        .ok_or_else(|| anyhow::anyhow!("extrinsic info invalid"))?;
+
+    Ok((extrinsic, extrinsic_info))
+}
+
+/// Extract and decode an event from a block.
+pub async fn decode_event(
+    block_info: &BlockInfo,
+    events: &Events<SubspaceConfig>,
+    event_index: EventIndex,
+) -> anyhow::Result<(EventDetails<SubspaceConfig>, EventInfo)> {
+    // TODO: extract this into a subspace test helper function
+    let event = events
+        .iter()
+        .nth(event_index.try_into().expect("EventIndex fits in usize"))
+        .ok_or_else(|| anyhow::anyhow!("event not found"))??;
+
+    let event_info = EventInfo::new(&event, block_info);
+
+    Ok((event, event_info))
 }

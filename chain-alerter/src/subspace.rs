@@ -19,10 +19,6 @@ use subxt::utils::H256;
 use subxt::{OnlineClient, SubstrateConfig};
 use tracing::{debug, info, trace, warn};
 
-/// The Subspace block height type.
-/// Copied from subspace-core-primitives.
-pub type BlockNumber = u32;
-
 /// One Subspace Credit.
 /// Copied from subspace-runtime-primitives.
 pub const AI3: u128 = 10_u128.pow(18);
@@ -38,12 +34,22 @@ pub const FOUNDATION_SUBSPACE_NODE_URL: &str = "wss://rpc.mainnet.subspace.found
 #[allow(dead_code)]
 pub const LABS_SUBSPACE_NODE_URL: &str = "wss://rpc-0.mainnet.autonomys.xyz/ws";
 
+/// The Subspace block height type.
+/// Copied from subspace-core-primitives.
+pub type BlockNumber = u32;
+
 /// The config for basic Subspace block and extrinsic types.
 /// TODO: create a custom SubspaceConfig type
 pub type SubspaceConfig = SubstrateConfig;
 
 /// The type of Subspace client we're using.
 pub type SubspaceClient = OnlineClient<SubspaceConfig>;
+
+/// The Subspace/subxt extrinsic index type.
+pub type ExtrinsicIndex = u32;
+
+/// The Subspace/subxt event index type.
+pub type EventIndex = u32;
 
 /// Create a new Subspace client.
 pub async fn create_subspace_client(
@@ -207,13 +213,13 @@ pub struct ExtrinsicInfo {
     pub call: String,
 
     /// The extrinsic index.
-    pub index: u32,
+    pub index: ExtrinsicIndex,
 
     /// The extrinsic hash.
     pub hash: H256,
 
     /// The extrinsic fields, with the extrinsic index as a context.
-    pub fields: Composite<u32>,
+    pub fields: Composite<ExtrinsicIndex>,
 }
 
 impl Display for ExtrinsicInfo {
@@ -289,13 +295,13 @@ pub struct EventInfo {
     pub kind: String,
 
     /// The event index in the block.
-    pub index: u32,
+    pub index: EventIndex,
 
     /// The phase the event was emitted in.
     pub phase: Phase,
 
     /// The event fields, with the event index as a context.
-    pub fields: Composite<u32>,
+    pub fields: Composite<EventIndex>,
 }
 
 impl Display for EventInfo {
