@@ -135,6 +135,7 @@ async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
             interval: Duration::from_secs(1),
         }
     );
+    assert_eq!(alert.block_info, second_block);
 
     Ok(())
 }
