@@ -106,8 +106,8 @@ impl Display for BlockInfo {
         )?;
         // Show full block hash but truncated genesis hash.
         writeln!(f, "Hash: {:?}", self.block_hash)?;
-        write!(f, "Genesis: {}", self.genesis_hash)?;
         writeln!(f, "Slot: {:?}", self.block_slot)?;
+        write!(f, "Genesis: {}", self.genesis_hash)?;
         Ok(())
     }
 }
