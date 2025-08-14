@@ -23,12 +23,13 @@ Important event alerts for Subspace blockchains.
 ## Limitations (PoC)
 
 - Hardcoded Slack channel, workspace ID, and thresholds.
-- Minimal decoding/validation for some extrinsics; fields are parsed best-effort.
+- Minimal decoding/validation for extrinsics and events; fields are parsed best-effort.
 - Minimal stateful aggregation (e.g., summing multiple related transfers)
 - No alert deduplication when multiple instances are running.
 - Limited CLI configuration.
 - No persistent storage, no metrics, no dashboards.
 - Basic error handling: logs warnings on transient decode/metadata mismatches and continues.
+- Limited testing, some tests are still manual.
 
 ## Getting started
 
@@ -60,6 +61,7 @@ Important event alerts for Subspace blockchains.
 
 - Crate `chain-alerter`
   - `alerts.rs`: checks for alerts in each block and extrinsic
+  - `slot_time_monitor.rs`: slot production rate monitoring for slot alerts
   - `subspace.rs`: Uses `subxt` and `scale-value` for chain interaction
   - `slack.rs`: Uses `slack-morphism` to send messages to Slack
   - `main.rs`: main process logic and run loop
