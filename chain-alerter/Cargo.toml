@@ -7,7 +7,6 @@ edition = "2024"
 anyhow.workspace = true
 chrono.workspace = true
 clap = { workspace = true, features = ["derive"] }
-hex.workspace = true
 humantime.workspace = true
 hyper-rustls.workspace = true
 hyper-util.workspace = true
@@ -21,3 +20,6 @@ tokio = { workspace = true, features = ["macros", "parking_lot", "rt-multi-threa
 tracing.workspace = true
 slack-morphism = { workspace = true, features = ["hyper"] }
 zeroize.workspace = true
+
+[dev-dependencies]
+hex-literal.workspace = true

@@ -22,11 +22,11 @@ Important event alerts for Subspace blockchains.
 
 ## Limitations (PoC)
 
-- Hardcoded Slack channel, workspace ID, node URL, and thresholds.
+- Hardcoded Slack channel, workspace ID, and thresholds.
 - Minimal decoding/validation for some extrinsics; fields are parsed best-effort.
 - Minimal stateful aggregation (e.g., summing multiple related transfers)
 - No alert deduplication when multiple instances are running.
-- Limited CLI/config file/env var configuration.
+- Limited CLI configuration.
 - No persistent storage, no metrics, no dashboards.
 - Basic error handling: logs warnings on transient decode/metadata mismatches and continues.
 
@@ -44,14 +44,17 @@ Important event alerts for Subspace blockchains.
    - Restrict permissions (Unix):
      - `chmod 400 slack-secret` (or `chmod 600 slack-secret`)
 
-3. Run a local Subspace node
+3. Optional: Run a local Subspace node
 
-   - Follow the Subspace monorepo docs to build/run a local node, or run a dev node suitable for testing. See the Subspace reference implementation for details: [Subspace monorepo](https://github.com/autonomys/subspace).
+   - Follow the Subspace monorepo docs to build/run a local node, or run a dev node suitable for testing.
+     See the Subspace reference implementation for details: [Subspace monorepo](https://github.com/autonomys/subspace).
 
 4. Build and run
-   - `cargo run -- --name "My Test Bot" --icon "warning"`
+   - `cargo run -- --name "My Test Bot" --icon "warning" --node-rpc-url wss://rpc.mainnet.subspace.foundation/ws`
    - On first observed block, you should see a Slack message in `#chain-alerts-test` summarizing connection and block info.
-   - The name and icon are optional. The default icon is the instance external IP address country flag.
+   - All arguments are optional. The default node is localhost, and the default icon is the instance external IP address country flag.
+   - `RUST_LOG` can be used to filter logs, see:
+     <https://docs.rs/tracing-subscriber/0.3.19/tracing_subscriber/filter/struct.EnvFilter.html#directives>
 
 ## Project structure
 
@@ -64,5 +67,5 @@ Important event alerts for Subspace blockchains.
 
 ### References
 
-- Subspace Protocol reference implementation (node/farmer/gateway): [autonomys/subspace](https://github.com/autonomys/subspace)
+- Subspace Protocol reference implementation (node): [autonomys/subspace](https://github.com/autonomys/subspace)
 - Tracking discussion for alerting PoC scope and follow-ups: [Issue #3](https://github.com/autonomys/subspace-chain-alerts/issues/3)

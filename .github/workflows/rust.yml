@@ -1,0 +1,151 @@
+name: Rust
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+  merge_group:
+
+concurrency:
+  group: rust-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Not needed in CI, should make things a bit faster
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
+  # Prioritise debugging over disk space and build speed
+  #RUSTFLAGS: -C strip=symbols
+  RUST_BACKTRACE: full
+
+jobs:
+  cargo-fmt:
+    name: cargo-fmt (ubuntu-24.04)
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+  cargo-clippy:
+    name: cargo-clippy (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [
+            "ubuntu-24.04",
+            "ubuntu-24.04-arm",
+            "windows-2025",
+            "windows-11-arm",
+            "macos-15",
+        ]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+
+      # Some clippy checks require a release build
+      - name: cargo clippy
+        run: |
+          cargo clippy --release --locked --all-features --all-targets -- -D warnings
+
+  cargo-build:
+    name: cargo-build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [
+            "ubuntu-24.04",
+            "ubuntu-24.04-arm",
+            "windows-2025",
+            "windows-11-arm",
+            "macos-15",
+        ]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+
+      - name: cargo build
+        run: |
+          cargo build --release --locked --all-features --all-targets
+
+  cargo-test:
+    name: cargo-test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [
+            "ubuntu-24.04",
+            "ubuntu-24.04-arm",
+            "windows-2025",
+            "windows-11-arm",
+            "macos-15",
+        ]
+    runs-on: ${{ matrix.os }}
+    # Don't use the full 6 hours if a test hangs
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@21517c4e721ab8b872d9b8e90828e584dcabe8e2 # 2.56.3
+        with:
+          tool: cargo-nextest
+
+      - name: cargo nextest run --locked
+        run: |
+          cargo nextest run --locked --all-features
+
+  # This job checks for incorrectly added dependencies, or dependencies that were made unused by code changes.
+  cargo-unused-deps:
+    name: cargo-unused-deps (ubuntu-24.04)
+    # Linux is the fastest OS
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+
+      - name: Install cargo-udeps
+        uses: taiki-e/install-action@21517c4e721ab8b872d9b8e90828e584dcabe8e2 # 2.56.3
+        with:
+          tool: cargo-udeps
+
+      # If this check fails, check the new dependency is actually needed. If it isn't, add an exception to the
+      # crate:
+      # <https://github.com/est31/cargo-udeps?tab=readme-ov-file#ignoring-some-of-the-dependencies>
+      - name: check for unused dependencies
+        run: |
+          ./scripts/find-unused-deps.sh
+
+  rust-all:
+    # Hack for buggy GitHub Actions behavior with skipped checks:
+    # <https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/collaborating-on-repositories-with-code-quality-features/troubleshooting-required-status-checks#handling-skipped-but-required-checks>
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    needs:
+      - cargo-fmt
+      - cargo-clippy
+      - cargo-build
+      - cargo-test
+      - cargo-unused-deps
+    steps:
+      - name: Check job statuses
+        # Another hack is to actually check the status of the dependencies or else it'll fall through
+        run: |
+          echo "Checking statuses..."
+          [[ "${{ needs.cargo-fmt.result }}" == "success" ]] || exit 1
+          [[ "${{ needs.cargo-clippy.result }}" == "success" ]] || exit 1
+          [[ "${{ needs.cargo-build.result }}" == "success" ]] || exit 1
+          [[ "${{ needs.cargo-test.result }}" == "success" ]] || exit 1
+          [[ "${{ needs.cargo-unused-deps.result }}" == "success" ]] || exit 1

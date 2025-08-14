@@ -5,19 +5,25 @@ mod format;
 mod slack;
 mod subspace;
 
+use crate::alerts::Alert;
 use crate::slack::{SLACK_OAUTH_SECRET_PATH, SlackClientInfo};
-use crate::subspace::{BlockInfo, BlockNumber, SubspaceConfig};
-use clap::Parser;
-use std::sync::Arc;
+use crate::subspace::{
+    BlockInfo, BlockNumber, LOCAL_SUBSPACE_NODE_URL, SubspaceClient, create_subspace_client,
+    spawn_metadata_update_task,
+};
+use clap::{Parser, ValueHint};
 use subspace_process::{AsyncJoinOnDrop, init_logger, set_exit_on_panic, shutdown_signal};
-use subxt::OnlineClient;
 use tokio::select;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tracing::{error, info, warn};
 
 /// The number of blocks between info-level block number logs.
 /// TODO: make this configurable
 const BLOCK_UPDATE_LOGGING_INTERVAL: BlockNumber = 100;
+
+/// The number of alerts to buffer before backpressure causes the block subscriber to pause.
+/// TODO: make this configurable
+const ALERT_BUFFER_SIZE: usize = 100;
 
 /// The name and emoji used by this bot instance.
 #[derive(Parser, Debug)]
@@ -33,12 +39,21 @@ struct Args {
     /// <https://projects.iamcal.com/emoji-data/table.htm>
     #[arg(long)]
     icon: Option<String>,
+
+    /// The RPC URL of the node to connect to.
+    #[arg(long, value_hint = ValueHint::Url, default_value = LOCAL_SUBSPACE_NODE_URL)]
+    node_rpc_url: String,
 }
 
 /// Set up the chain alerter process.
+/// The metadata update task is aborted when the returned handle is dropped.
 ///
 /// Any returned errors are fatal and require a restart.
-async fn setup(args: Args) -> anyhow::Result<(Arc<SlackClientInfo>, OnlineClient<SubspaceConfig>)> {
+///
+/// This needs to be kept in sync with `subspace::tests::test_setup()`.
+async fn setup(
+    args: Args,
+) -> anyhow::Result<(SlackClientInfo, SubspaceClient, AsyncJoinOnDrop<()>)> {
     // Avoid a crypto provider conflict: jsonrpsee activates ring, and hyper-rustls activates
     // aws-lc, but there can only be one per process. We use the library with more formal
     // verification.
@@ -49,24 +64,32 @@ async fn setup(args: Args) -> anyhow::Result<(Arc<SlackClientInfo>, OnlineClient
         .map_err(|_| anyhow::anyhow!("Selecting default TLS crypto provider failed"))?;
 
     // Connect to Slack and get basic info.
-    let slack_client_info =
-        SlackClientInfo::new(args.name, args.icon, SLACK_OAUTH_SECRET_PATH).await?;
+    let slack_client_info = SlackClientInfo::new(
+        args.name,
+        args.icon,
+        &args.node_rpc_url,
+        SLACK_OAUTH_SECRET_PATH,
+    )
+    .await?;
 
-    // Create a client that subscribes to a local Substrate node.
-    // TODO: make URL configurable
-    let chain_client = OnlineClient::<SubspaceConfig>::from_url("ws://127.0.0.1:9944").await?;
+    // Create a client that subscribes to the configured Substrate node.
+    let chain_client = create_subspace_client(&args.node_rpc_url).await?;
 
-    info!("spawning runtime metadata update task...");
-    // Spawn a background task to keep the runtime metadata up to date.
-    // TODO: proper error handling, if an update fails we should restart the process
-    // TODO: do we need to abort the process if the update task fails?
-    let update_task = chain_client.updater();
-    let _update_task = AsyncJoinOnDrop::new(
-        tokio::spawn(async move { update_task.perform_runtime_updates().await }),
-        true,
-    );
+    let update_task = spawn_metadata_update_task(&chain_client).await;
 
-    Ok((slack_client_info, chain_client))
+    Ok((slack_client_info, chain_client, update_task))
+}
+
+/// Receives alerts on a channel and posts them to Slack.
+/// This task might pause if the Slack API rate limit is exceeded.
+async fn slack_poster(slack_client: SlackClientInfo, mut alert_rx: mpsc::Receiver<Alert>) {
+    while let Some(alert) = alert_rx.recv().await {
+        // We have a large number of retries in the Slack poster, so it is unlikely to fail.
+        slack_client
+            .post_message(alert)
+            .await
+            .expect("Slack message failures require a restart");
+    }
 }
 
 /// Run the chain alerter process.
@@ -75,7 +98,16 @@ async fn setup(args: Args) -> anyhow::Result<(Arc<SlackClientInfo>, OnlineClient
 async fn run() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    let (slack_client_info, chain_client) = setup(args).await?;
+    let (slack_client_info, chain_client, _metadata_update_task) = setup(args).await?;
+
+    // Spawn a background task to post alerts to Slack.
+    // We don't need to wait for the task to finish, because it will panic on failure.
+    let (alert_tx, alert_rx) = mpsc::channel(ALERT_BUFFER_SIZE);
+    let _alert_task = AsyncJoinOnDrop::new(
+        tokio::spawn(slack_poster(slack_client_info, alert_rx)),
+        true,
+    );
+
     // TODO: add a network name table and look up the network name by genesis hash
     let genesis_hash = chain_client.genesis_hash();
 
@@ -102,13 +134,7 @@ async fn run() -> anyhow::Result<()> {
         latest_block_tx.send_replace(Some(block_info.clone()));
 
         if first_block {
-            // TODO:
-            // - always post this to the test channel, because it's not an alert
-            // - link to the prod channel from this message:
-            //   <https://docs.slack.dev/messaging/formatting-message-text/#linking-channels>
-            slack_client_info
-                .post_message("Launched and connected to the local node", &block_info)
-                .await?;
+            alerts::startup_alert(&alert_tx, &block_info).await?;
             first_block = false;
         } else if block_info
             .block_height
@@ -123,23 +149,23 @@ async fn run() -> anyhow::Result<()> {
 
         // Check for block stalls, and check the block itself for alerts.
         alerts::check_for_block_stall(
-            slack_client_info.clone(),
+            alert_tx.clone(),
             block_info.clone(),
             latest_block_tx.subscribe(),
         )
         .await;
 
-        alerts::check_block(&slack_client_info, &block_info, &prev_block_info).await?;
+        alerts::check_block(&alert_tx, &block_info, &prev_block_info).await?;
 
         // Check each extrinsic and event for alerts.
         for extrinsic in extrinsics.iter() {
-            alerts::check_extrinsic(&slack_client_info, &extrinsic, &block_info).await?;
+            alerts::check_extrinsic(&alert_tx, &extrinsic, &block_info).await?;
         }
 
         for event in events.iter() {
             match event {
                 Ok(event) => {
-                    alerts::check_event(&slack_client_info, &event, &block_info).await?;
+                    alerts::check_event(&alert_tx, &event, &block_info).await?;
                 }
                 Err(e) => {
                     warn!("error parsing event, other events in this block have been skipped: {e}");

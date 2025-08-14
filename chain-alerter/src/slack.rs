@@ -1,6 +1,6 @@
 //! Slack connection and message code.
 
-use crate::subspace::BlockInfo;
+use crate::alerts::Alert;
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
 use slack_morphism::api::{
@@ -20,7 +20,6 @@ use slack_morphism::{
 };
 use std::io;
 use std::ops::Deref;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::fs;
 use tokio::time::timeout;
@@ -85,11 +84,15 @@ pub struct SlackClientInfo {
     /// The name the bot uses to post alerts to Slack.
     pub bot_name: String,
 
+    /// The emoji the bot uses to post alerts to Slack.
+    pub bot_icon: String,
+
+    // Context used by the bot instance.
     /// The IP address and country code used to identify the bot instance.
     pub bot_ip_cc: Option<String>,
 
-    /// The emoji the bot uses to post alerts to Slack.
-    pub bot_icon: String,
+    /// The RPC URL of the node used by the bot instance.
+    pub node_rpc_url: String,
 
     /// The secret required to post to Slack.
     secret: SlackSecret,
@@ -165,8 +168,9 @@ impl SlackClientInfo {
     pub async fn new(
         bot_name: impl AsRef<str>,
         bot_icon: impl Into<Option<String>>,
+        node_rpc_url: impl AsRef<str>,
         secret_path: impl AsRef<str>,
-    ) -> Result<Arc<Self>, anyhow::Error> {
+    ) -> Result<Self, anyhow::Error> {
         let secret = SlackSecret::new(secret_path.as_ref()).await?;
 
         info!("setting up Slack client...");
@@ -196,14 +200,15 @@ impl SlackClientInfo {
             },
         };
 
-        Ok(Arc::new(Self {
+        Ok(Self {
             client,
             channel_id,
             bot_name: bot_name.as_ref().to_string(),
             bot_ip_cc: geoip.0,
+            node_rpc_url: node_rpc_url.as_ref().to_string(),
             bot_icon,
             secret,
-        }))
+        })
     }
 
     /// Find the channel ID for the test channel.
@@ -271,7 +276,7 @@ impl SlackClientInfo {
             .map(|c| format!("flag-{}", c.to_lowercase()));
 
         let ip_cc = if let (Some(country_code), Some(ip)) = (&country_code, &ip) {
-            Some(format!("{} ({})", country_code, ip))
+            Some(format!("{country_code} ({ip})"))
         } else {
             country_code.or(ip)
         };
@@ -279,7 +284,7 @@ impl SlackClientInfo {
         Ok((ip_cc, flag_emoji))
     }
 
-    /// Post a message to Slack.
+    /// Post an alert to Slack.
     ///
     /// Any returned errors are fatal and require a restart.
     ///
@@ -289,35 +294,42 @@ impl SlackClientInfo {
     /// - spawn this to a background task, so that any retries don't block the main task.
     pub async fn post_message(
         &self,
-        message: impl AsRef<str>,
-        block_info: &BlockInfo,
+        alert: Alert,
     ) -> Result<SlackApiChatPostMessageResponse, anyhow::Error> {
         let slack_session = self.open_session();
 
         info!(
             "posting message to '{TEST_CHANNEL_NAME}' channel id: {:?}...\n\
-            {}",
+            {alert:?}",
             self.channel_id,
-            message.as_ref(),
         );
 
         // Format the message as Slack message blocks:
         // <https://api.slack.com/reference/block-kit/blocks>
         let mut message_blocks: Vec<SlackBlock> = vec![];
-        message_blocks.push(SlackMarkdownBlock::new(message.as_ref().to_string()).into());
+        message_blocks.push(SlackMarkdownBlock::new(format!("{}", alert.alert)).into());
         message_blocks.push(SlackDividerBlock::new().into());
         message_blocks.push(
             SlackContextBlock::new(vec![
-                SlackBlockPlainText::new(format!("{block_info}")).into(),
+                SlackBlockPlainText::new(format!("{}", alert.block_info)).into(),
             ])
             .into(),
         );
 
-        if let Some(ip_cc) = self.bot_ip_cc.as_ref() {
-            let mut ip_cc_block = SlackBlockMarkDownText::from(format!("🌐 Instance: {}", ip_cc));
-            ip_cc_block.verbatim = Some(true);
-            message_blocks.push(SlackContextBlock::new(vec![ip_cc_block.into()]).into());
-        }
+        // Add the alerter location, RPC instance, and version as context.
+        let mut context = if let Some(ip_cc) = self.bot_ip_cc.as_ref() {
+            format!("🌐 Alerter: {ip_cc}\n")
+        } else {
+            String::new()
+        };
+
+        context.push_str(&format!("📞 RPC: {}\n", self.node_rpc_url));
+        // TODO: add git commit hash here
+        context.push_str(&format!("🔗 Version: {}\n", env!("CARGO_PKG_VERSION")));
+
+        let mut context_block = SlackBlockMarkDownText::from(context);
+        context_block.verbatim = Some(true);
+        message_blocks.push(SlackContextBlock::new(vec![context_block.into()]).into());
 
         let post_chat_req = SlackApiChatPostMessageRequest::new(
             self.channel_id.clone(),

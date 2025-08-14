@@ -1,0 +1,53 @@
+# Flags that apply to all crates and configurations
+[target.'cfg(all())']
+rustflags = [
+    # Lints
+
+    # Risky code
+    "-Dunsafe_code",
+    "-Dnon_ascii_idents",
+
+    # Potential bugs
+    #
+    # Use warn instead of deny to stay in Crater builds:
+    # https://www.reddit.com/r/rust/comments/f5xpib/psa_denywarnings_is_actively_harmful/
+
+    # Rust compiler compatibility
+    "-Wrust_2018_idioms",
+    "-Wrust_2021_compatibility",
+    "-Wfuture_incompatible",
+
+    # Pointer casts
+    "-Wclippy::cast_ptr_alignment",
+    "-Wclippy::fn_to_numeric_cast_any",
+
+    # Integer conversions
+    "-Wclippy::checked_conversions",
+    "-Wclippy::invalid_upcast_comparisons",
+    "-Wclippy::range_minus_one",
+    "-Wclippy::range_plus_one",
+    "-Wclippy::cast_lossless",
+    "-Wclippy::cast_possible_truncation",
+    "-Wclippy::cast_possible_wrap",
+    "-Wclippy::cast_precision_loss",
+    "-Wclippy::cast_sign_loss",
+
+    # Incomplete code
+    "-Wclippy::todo",
+    "-Wunused_crate_dependencies",
+    "-Wmissing_debug_implementations",
+
+    # Manual debugging
+    # Prefer tracing::trace!() or tracing::debug!()
+    "-Wclippy::print_stdout",
+    "-Wclippy::print_stderr",
+    "-Wclippy::dbg_macro",
+
+    # Panics
+    "-Wclippy::fallible_impl_from",
+    "-Wclippy::unwrap_in_result",
+
+    # Documentation
+    "-Wmissing_docs",
+    "-Wclippy::missing_docs_in_private_items",
+]
