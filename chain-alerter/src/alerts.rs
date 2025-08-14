@@ -30,7 +30,7 @@ const MIN_BALANCE_CHANGE: u128 = 1_000_000_000 * AI3;
 const MIN_BLOCK_GAP: Duration = Duration::from_secs(60);
 
 /// A blockchain alert with context.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Alert {
     /// The type of alert.
     pub alert: AlertKind,
@@ -47,7 +47,7 @@ impl Alert {
 }
 
 /// The type of alert.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum AlertKind {
     /// The alerter has started.
     Startup,
@@ -110,10 +110,10 @@ pub enum AlertKind {
     /// A slot time alert has been detected.
     SlotTimeAlert {
         /// The current ratio of slots to time.
-        current_ratio: String,
+        current_ratio: f64,
 
         /// The applicable threshold for this alert.
-        threshold: String,
+        threshold: f64,
 
         /// The duration of the interval.
         interval: Duration,
