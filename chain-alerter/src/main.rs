@@ -5,6 +5,7 @@ mod format;
 mod slack;
 mod subspace;
 
+use crate::alerts::Alert;
 use crate::slack::{SLACK_OAUTH_SECRET_PATH, SlackClientInfo};
 use crate::subspace::{
     BlockInfo, BlockNumber, LOCAL_SUBSPACE_NODE_URL, SubspaceConfig, create_subspace_client,
@@ -117,7 +118,7 @@ async fn run() -> anyhow::Result<()> {
             // - link to the prod channel from this message:
             //   <https://docs.slack.dev/messaging/formatting-message-text/#linking-channels>
             slack_client_info
-                .post_message("Launched and connected to the local node", &block_info)
+                .post_message(Alert::Startup, &block_info)
                 .await?;
             first_block = false;
         } else if block_info

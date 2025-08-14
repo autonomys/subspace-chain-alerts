@@ -1,5 +1,6 @@
 //! Slack connection and message code.
 
+use crate::alerts::Alert;
 use crate::subspace::BlockInfo;
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
@@ -285,7 +286,7 @@ impl SlackClientInfo {
         Ok((ip_cc, flag_emoji))
     }
 
-    /// Post a message to Slack.
+    /// Post an alert to Slack.
     ///
     /// Any returned errors are fatal and require a restart.
     ///
@@ -295,22 +296,21 @@ impl SlackClientInfo {
     /// - spawn this to a background task, so that any retries don't block the main task.
     pub async fn post_message(
         &self,
-        message: impl AsRef<str>,
+        alert: Alert,
         block_info: &BlockInfo,
     ) -> Result<SlackApiChatPostMessageResponse, anyhow::Error> {
         let slack_session = self.open_session();
 
         info!(
             "posting message to '{TEST_CHANNEL_NAME}' channel id: {:?}...\n\
-            {}",
+            {alert}",
             self.channel_id,
-            message.as_ref(),
         );
 
         // Format the message as Slack message blocks:
         // <https://api.slack.com/reference/block-kit/blocks>
         let mut message_blocks: Vec<SlackBlock> = vec![];
-        message_blocks.push(SlackMarkdownBlock::new(message.as_ref().to_string()).into());
+        message_blocks.push(SlackMarkdownBlock::new(format!("{alert}")).into());
         message_blocks.push(SlackDividerBlock::new().into());
         message_blocks.push(
             SlackContextBlock::new(vec![

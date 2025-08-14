@@ -7,6 +7,7 @@ use crate::subspace::{
 };
 use chrono::Utc;
 use scale_value::Composite;
+use std::fmt::{self, Display};
 use std::sync::Arc;
 use std::time::Duration;
 use subxt::blocks::ExtrinsicDetails;
@@ -27,6 +28,149 @@ const MIN_BALANCE_CHANGE: u128 = 1_000_000_000 * AI3;
 /// <https://github.com/paritytech/polkadot-sdk/blob/0034d178fff88a0fd87cf0ec1d8f122ae0011d78/substrate/frame/timestamp/src/lib.rs#L307>
 const MIN_BLOCK_GAP: Duration = Duration::from_secs(60);
 
+/// The type of alert.
+/// TODO: add context inside this enum, or in a containing struct
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Alert {
+    /// The alerter has started.
+    Startup,
+
+    /// Block production has stalled.
+    BlockProductionStall {
+        /// The gap between the previous block and now.
+        gap: Option<Duration>,
+    },
+
+    /// Block production has resumed.
+    BlockProductionResumed {
+        /// The gap between the previous and current block.
+        gap: Duration,
+
+        /// The previous block.
+        prev_block_info: BlockInfo,
+    },
+
+    /// A `force_*` Balances call has been detected.
+    ForceBalanceTransfer {
+        /// The Balance call's extrinsic information.
+        extrinsic_info: ExtrinsicInfo,
+
+        /// The transfer value.
+        transfer_value: Option<u128>,
+    },
+
+    /// A large Balance transfer has been detected.
+    LargeBalanceTransfer {
+        /// The Balance call's extrinsic information.
+        extrinsic_info: ExtrinsicInfo,
+
+        /// The transfer value.
+        transfer_value: u128,
+    },
+
+    /// A Sudo call has been detected.
+    SudoCall {
+        /// The sudo call's extrinsic information.
+        extrinsic_info: ExtrinsicInfo,
+    },
+
+    /// A Sudo call event has been detected.
+    SudoEvent {
+        /// The sudo event information.
+        event_info: EventInfo,
+    },
+
+    /// An operator slash event has been detected.
+    OperatorSlashed {
+        /// The operator slash event information.
+        event_info: EventInfo,
+    },
+}
+
+impl Display for Alert {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Alert::Startup => {
+                write!(f, "Launched and connected to the node")
+            }
+
+            Alert::BlockProductionStall { gap } => {
+                write!(
+                    f,
+                    "Block production stalled\n\
+                    Gap: {}",
+                    fmt_duration(*gap),
+                )
+            }
+
+            Alert::BlockProductionResumed {
+                gap,
+                prev_block_info,
+            } => {
+                write!(
+                    f,
+                    "Block production resumed\n\
+                    Gap: {}\n\n\
+                    Previous block:\n\
+                    {prev_block_info}",
+                    fmt_duration(*gap),
+                )
+            }
+
+            Alert::ForceBalanceTransfer {
+                extrinsic_info,
+                transfer_value,
+            } => {
+                write!(
+                    f,
+                    "Force Balances call detected\n\
+                    Transfer value: {}\n\
+                    {extrinsic_info}",
+                    fmt_amount(*transfer_value),
+                )
+            }
+
+            Alert::LargeBalanceTransfer {
+                extrinsic_info,
+                transfer_value,
+            } => {
+                write!(
+                    f,
+                    "Large Balances call detected\n\
+                    Transfer value: {} (above {})\n\
+                    {extrinsic_info}",
+                    fmt_amount(*transfer_value),
+                    fmt_amount(MIN_BALANCE_CHANGE),
+                )
+            }
+
+            Alert::SudoCall { extrinsic_info } => {
+                write!(
+                    f,
+                    "Sudo call detected\n\
+                    {extrinsic_info}",
+                )
+            }
+
+            Alert::SudoEvent { event_info } => {
+                write!(
+                    f,
+                    "Sudo event detected\n\
+                    {event_info}",
+                )
+            }
+
+            Alert::OperatorSlashed { event_info } => {
+                write!(
+                    f,
+                    "Operator slash detected\n\
+                    {event_info}",
+                )
+            }
+        }
+    }
+}
+
 /// Check a block for alerts, against the previous block.
 ///
 /// Any returned errors are fatal and require a restart.
@@ -45,13 +189,10 @@ pub async fn check_block(
         if gap >= MIN_BLOCK_GAP {
             slack_client_info
                 .post_message(
-                    format!(
-                        "Block production resumed\n\
-                        Gap: {}\n\n\
-                        Previous block:\n\
-                        {prev_block_info}",
-                        fmt_duration(gap),
-                    ),
+                    Alert::BlockProductionResumed {
+                        gap,
+                        prev_block_info: prev_block_info.clone(),
+                    },
                     block_info,
                 )
                 .await?;
@@ -99,14 +240,7 @@ pub async fn check_for_block_stall(
 
         let gap = gap_since_time(Utc::now(), old_block_info.clone());
         slack_client_info
-            .post_message(
-                format!(
-                    "Block production stalled\n\
-                    Gap: {}",
-                    fmt_duration(gap),
-                ),
-                &old_block_info,
-            )
+            .post_message(Alert::BlockProductionStall { gap }, &old_block_info)
             .await
             .expect("sending Slack alert failed");
     });
@@ -144,13 +278,7 @@ where
     // - decode the inner call
     if extrinsic_info.pallet == "Sudo" {
         slack_client_info
-            .post_message(
-                format!(
-                    "Sudo call detected\n\
-                    {extrinsic_info}",
-                ),
-                block_info,
-            )
+            .post_message(Alert::SudoCall { extrinsic_info }, block_info)
             .await?;
     } else if extrinsic_info.pallet == "Balances" {
         // "force*" calls and large balance changes are alerts.
@@ -177,12 +305,10 @@ where
         if extrinsic_info.call.starts_with("force") {
             slack_client_info
                 .post_message(
-                    format!(
-                        "Force Balances call detected\n\
-                        Transfer value: {}\n\
-                        {extrinsic_info}",
-                        fmt_amount(transfer_value),
-                    ),
+                    Alert::ForceBalanceTransfer {
+                        extrinsic_info,
+                        transfer_value,
+                    },
                     block_info,
                 )
                 .await?;
@@ -191,13 +317,10 @@ where
         {
             slack_client_info
                 .post_message(
-                    format!(
-                        "Large Balances call detected\n\
-                        Transfer value: {} (above {})\n\
-                        {extrinsic_info}",
-                        fmt_amount(transfer_value),
-                        fmt_amount(MIN_BALANCE_CHANGE),
-                    ),
+                    Alert::LargeBalanceTransfer {
+                        extrinsic_info,
+                        transfer_value,
+                    },
                     block_info,
                 )
                 .await?;
@@ -240,24 +363,12 @@ pub async fn check_event(
     // - check the case of these names
     if event_info.pallet == "Domains" && event_info.kind == "OperatorSlashed" {
         slack_client_info
-            .post_message(
-                format!(
-                    "Operator slash detected\n\
-                    {event_info}",
-                ),
-                block_info,
-            )
+            .post_message(Alert::OperatorSlashed { event_info }, block_info)
             .await?;
     } else if event_info.pallet == "Sudo" {
         // We already alert on sudo calls, so this exists mainly to test events.
         slack_client_info
-            .post_message(
-                format!(
-                    "Sudo event detected\n\
-                    {event_info}",
-                ),
-                block_info,
-            )
+            .post_message(Alert::SudoEvent { event_info }, block_info)
             .await?;
     }
 
