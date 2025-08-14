@@ -3,9 +3,15 @@
 //! Set the `NODE_URL` env var to the RPC URL of a Subspace node to override the default public
 //! instance.
 
+use crate::slot_time_monitor::test_utils::get_slot_time_testing_blocks;
+use std::sync::Arc;
+use std::time::Duration;
+
 use crate::alerts::{self, AlertKind};
+use crate::slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor, SlotTimeMonitorConfig};
 use crate::subspace::tests::{node_rpc_url, test_setup};
 use crate::subspace::{BlockInfo, BlockNumber, EventInfo, ExtrinsicInfo};
+use anyhow::Ok;
 use subxt::utils::H256;
 
 /// The raw block hash literal type.
@@ -90,6 +96,99 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
     let alert = alert_rx.try_recv().expect("no alert received");
     assert_eq!(alert.alert, AlertKind::SudoEvent { event_info });
     assert_eq!(alert.block_info, block_info);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn no_expected_test_slot_time_alert() -> anyhow::Result<()> {
+    let (subspace_client, alert_tx, mut alert_rx, _update_task) =
+        test_setup(node_rpc_url()).await?;
+
+    let genesis_hash = subspace_client.genesis_hash();
+
+    let (first_block, second_block) = get_slot_time_testing_blocks(&subspace_client).await?;
+
+    let mut naive_slot_time_monitor = MemorySlotTimeMonitor::new({
+        SlotTimeMonitorConfig {
+            genesis_hash,
+            check_interval: Duration::from_secs(1),
+            alert_threshold: 10.0f64,
+            alert_tx: Arc::new(alert_tx),
+        }
+    });
+
+    naive_slot_time_monitor.process_block(&first_block).await;
+    naive_slot_time_monitor.process_block(&second_block).await;
+
+    alert_rx
+        .try_recv()
+        .expect_err("alert received when none expected");
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
+    let (subspace_client, alert_tx, mut alert_rx, _update_task) =
+        test_setup(node_rpc_url()).await?;
+
+    let genesis_hash = subspace_client.genesis_hash();
+
+    let (first_block, second_block) = get_slot_time_testing_blocks(&subspace_client).await?;
+
+    let mut strict_slot_time_monitor = MemorySlotTimeMonitor::new({
+        SlotTimeMonitorConfig {
+            genesis_hash,
+            check_interval: Duration::from_secs(1),
+            alert_threshold: 0f64,
+            alert_tx: Arc::new(alert_tx),
+        }
+    });
+
+    strict_slot_time_monitor.process_block(&first_block).await;
+    strict_slot_time_monitor.process_block(&second_block).await;
+
+    let alert = alert_rx
+        .try_recv()
+        .expect("alert not received when expected");
+
+    assert_eq!(
+        alert.alert,
+        AlertKind::SlotTimeAlert {
+            current_ratio: "1.0778512396694215".to_string(),
+            threshold: "0".to_string(),
+            interval: Duration::from_secs(1),
+        }
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn expected_test_slot_time_alert_but_not_yet() -> anyhow::Result<()> {
+    let (subspace_client, alert_tx, mut alert_rx, _update_task) =
+        test_setup(node_rpc_url()).await?;
+
+    let genesis_hash = subspace_client.genesis_hash();
+
+    let (first_block, second_block) = get_slot_time_testing_blocks(&subspace_client).await?;
+
+    let mut strict_slot_time_monitor = MemorySlotTimeMonitor::new({
+        SlotTimeMonitorConfig {
+            genesis_hash,
+            check_interval: Duration::from_secs(3600 * 24),
+            alert_threshold: 0f64,
+            alert_tx: Arc::new(alert_tx),
+        }
+    });
+
+    strict_slot_time_monitor.process_block(&first_block).await;
+    strict_slot_time_monitor.process_block(&second_block).await;
+
+    alert_rx
+        .try_recv()
+        .expect_err("alert received when none expected");
 
     Ok(())
 }
