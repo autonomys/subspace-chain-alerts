@@ -1,7 +1,6 @@
 //! Slack connection and message code.
 
 use crate::alerts::Alert;
-use crate::subspace::BlockInfo;
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
 use slack_morphism::api::{
@@ -21,7 +20,6 @@ use slack_morphism::{
 };
 use std::io;
 use std::ops::Deref;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::fs;
 use tokio::time::timeout;
@@ -172,7 +170,7 @@ impl SlackClientInfo {
         bot_icon: impl Into<Option<String>>,
         node_rpc_url: impl AsRef<str>,
         secret_path: impl AsRef<str>,
-    ) -> Result<Arc<Self>, anyhow::Error> {
+    ) -> Result<Self, anyhow::Error> {
         let secret = SlackSecret::new(secret_path.as_ref()).await?;
 
         info!("setting up Slack client...");
@@ -202,7 +200,7 @@ impl SlackClientInfo {
             },
         };
 
-        Ok(Arc::new(Self {
+        Ok(Self {
             client,
             channel_id,
             bot_name: bot_name.as_ref().to_string(),
@@ -210,7 +208,7 @@ impl SlackClientInfo {
             node_rpc_url: node_rpc_url.as_ref().to_string(),
             bot_icon,
             secret,
-        }))
+        })
     }
 
     /// Find the channel ID for the test channel.
@@ -297,24 +295,23 @@ impl SlackClientInfo {
     pub async fn post_message(
         &self,
         alert: Alert,
-        block_info: &BlockInfo,
     ) -> Result<SlackApiChatPostMessageResponse, anyhow::Error> {
         let slack_session = self.open_session();
 
         info!(
             "posting message to '{TEST_CHANNEL_NAME}' channel id: {:?}...\n\
-            {alert}",
+            {alert:?}",
             self.channel_id,
         );
 
         // Format the message as Slack message blocks:
         // <https://api.slack.com/reference/block-kit/blocks>
         let mut message_blocks: Vec<SlackBlock> = vec![];
-        message_blocks.push(SlackMarkdownBlock::new(format!("{alert}")).into());
+        message_blocks.push(SlackMarkdownBlock::new(format!("{}", alert.alert)).into());
         message_blocks.push(SlackDividerBlock::new().into());
         message_blocks.push(
             SlackContextBlock::new(vec![
-                SlackBlockPlainText::new(format!("{block_info}")).into(),
+                SlackBlockPlainText::new(format!("{}", alert.block_info)).into(),
             ])
             .into(),
         );
