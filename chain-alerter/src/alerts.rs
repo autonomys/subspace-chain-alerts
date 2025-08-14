@@ -102,6 +102,18 @@ pub enum AlertKind {
         /// The operator slash event information.
         event_info: EventInfo,
     },
+
+    /// A slot time alert has been detected.
+    SlotTimeAlert {
+        /// The current ratio of slots to time.
+        current_ratio: String,
+
+        /// The applicable threshold for this alert.
+        threshold: String,
+
+        /// The duration of the interval.
+        interval: Duration,
+    },
 }
 
 impl Display for AlertKind {
@@ -182,6 +194,23 @@ impl Display for AlertKind {
                     f,
                     "Operator slash detected\n\
                     {event_info}",
+                )
+            }
+
+            AlertKind::SlotTimeAlert {
+                current_ratio,
+                threshold,
+                interval,
+            } => {
+                write!(
+                    f,
+                    "**Slot per time ratio alert**\n\
+                    Current ratio: {} slots per second\n\
+                    Threshold: {} slots per second\n\
+                    Interval: {} seconds",
+                    current_ratio,
+                    threshold,
+                    fmt_duration(*interval),
                 )
             }
         }
