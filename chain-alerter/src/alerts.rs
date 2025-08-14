@@ -3,7 +3,7 @@
 use crate::format::{fmt_amount, fmt_duration};
 use crate::slack::SlackClientInfo;
 use crate::subspace::{
-    AI3, BlockInfo, ExtrinsicInfo, SubspaceConfig, gap_since_last_block, gap_since_time,
+    AI3, BlockInfo, EventInfo, ExtrinsicInfo, SubspaceConfig, gap_since_last_block, gap_since_time,
 };
 use chrono::Utc;
 use scale_value::Composite;
@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use subxt::blocks::ExtrinsicDetails;
 use subxt::client::OnlineClientT;
+use subxt::events::EventDetails;
 use tokio::sync::watch;
 use tokio::time::sleep;
 use tracing::warn;
@@ -210,6 +211,54 @@ where
                 {extrinsic_info}",
             );
         }
+    }
+
+    Ok(())
+}
+
+/// Check an event for alerts.
+///
+/// Event parsing should never fail, see `check_extrinsic` for more details.
+///
+/// Any returned errors are fatal and require a restart.
+pub async fn check_event(
+    slack_client_info: &SlackClientInfo,
+    event: &EventDetails<SubspaceConfig>,
+    block_info: &BlockInfo,
+) -> anyhow::Result<()> {
+    let event_info = EventInfo::new(event, block_info);
+
+    // TODO:
+    // - extract each alert into a pallet-specific function or trait object
+    // - add tests to make sure we can parse the events for each alert
+    // - format account IDs as ss58 with prefix 6094
+    // - link event and account to subscan
+
+    // All operator slashes are alerts.
+    // TODO:
+    // - test this alert by checking a historic block with an operator slash event
+    // - check the case of these names
+    if event_info.pallet == "Domains" && event_info.kind == "OperatorSlashed" {
+        slack_client_info
+            .post_message(
+                format!(
+                    "Operator slash detected\n\
+                    {event_info}",
+                ),
+                block_info,
+            )
+            .await?;
+    } else if event_info.pallet == "Sudo" {
+        // We already alert on sudo calls, so this exists mainly to test events.
+        slack_client_info
+            .post_message(
+                format!(
+                    "Sudo event detected\n\
+                    {event_info}",
+                ),
+                block_info,
+            )
+            .await?;
     }
 
     Ok(())
