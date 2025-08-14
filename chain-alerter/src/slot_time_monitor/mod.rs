@@ -68,14 +68,14 @@ impl SlotTimeMonitor for MemorySlotTimeMonitor {
             block_info.clone().block_height
         );
 
-        let block_time = block_time.unix_time as u128;
-
         match (self.next_check_time, self.first_slot_time) {
             // slot available, we should check if we are in the interval
-            (Some(next_check_time), Some(first_slot_time)) if next_check_time <= block_time => {
+            (Some(next_check_time), Some(first_slot_time))
+                if next_check_time <= block_time.unix_time =>
+            {
                 debug!("Checking slot time alert in interval...");
 
-                let slot_diff = (block_slot - self.first_slot_in_interval) as u128;
+                let slot_diff = u128::from(block_slot - self.first_slot_in_interval);
                 let time_diff: Option<u128> = next_check_time.checked_sub(first_slot_time);
 
                 if let Some(time_diff) = time_diff {
@@ -93,19 +93,19 @@ impl SlotTimeMonitor for MemorySlotTimeMonitor {
                             time_per_slot
                         );
                     }
-                    self.schedule_next_check(block_time, block_slot);
+                    self.schedule_next_check(block_time.unix_time, block_slot);
                 }
             }
             // do nothing if we are in the interval
             (Some(_), Some(_)) => {}
             // we received a new block, so we init the first check
             (None, _) => {
-                self.schedule_next_check(block_time, block_slot);
+                self.schedule_next_check(block_time.unix_time, block_slot);
             }
             // should not happen
             (Some(_), None) => {
                 warn!("No first slot time found though we have a next check time");
-                self.schedule_next_check(block_time, block_slot);
+                self.schedule_next_check(block_time.unix_time, block_slot);
             }
         }
     }

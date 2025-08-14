@@ -419,9 +419,13 @@ impl Slot {
         result.map(Slot)
     }
 
+    /// The offset of the slot number in the pre-runtime digest.
     const SLOT_OFFSET: usize = 1;
-    const SLOT_LEN: usize = 8;
 
+    /// The length of the slot number in bytes.
+    const SLOT_LEN: usize = 4;
+
+    /// Decodes the slot number from a pre-runtime digest.
     fn decode_slot_number(pre_digest: Vec<u8>) -> Option<u64> {
         pre_digest
             .as_slice()
