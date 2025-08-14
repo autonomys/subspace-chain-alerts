@@ -232,7 +232,7 @@ pub async fn startup_alert(
     //   <https://docs.slack.dev/messaging/formatting-message-text/#linking-channels>
 
     alert_tx
-        .send(Alert::new(AlertKind::Startup, block_info.clone()))
+        .send(Alert::new(AlertKind::Startup, *block_info))
         .await?;
 
     Ok(())
@@ -252,15 +252,15 @@ pub async fn check_block(
     };
 
     // Because it depends on the next block, this check logs after block production resumes.
-    if let Some(gap) = gap_since_last_block(block_info.clone(), prev_block_info.clone()) {
+    if let Some(gap) = gap_since_last_block(*block_info, *prev_block_info) {
         if gap >= MIN_BLOCK_GAP {
             alert_tx
                 .send(Alert::new(
                     AlertKind::BlockProductionResumed {
                         gap,
-                        prev_block_info: prev_block_info.clone(),
+                        prev_block_info: *prev_block_info,
                     },
-                    block_info.clone(),
+                    *block_info,
                 ))
                 .await?;
         }
@@ -292,10 +292,9 @@ pub async fn check_for_block_stall(
     tokio::spawn(async move {
         sleep(MIN_BLOCK_GAP).await;
 
-        // Avoid a potential deadlock by cloning the watched value immediately.
+        // Avoid a potential deadlock by copying the watched value immediately.
         let latest_block_info = latest_block_rx
             .borrow()
-            .clone()
             .expect("never empty, a block is sent before spawning this task");
 
         if latest_block_info.block_time > old_block_info.block_time {
@@ -305,13 +304,13 @@ pub async fn check_for_block_stall(
             return;
         }
 
-        let gap = gap_since_time(Utc::now(), old_block_info.clone());
+        let gap = gap_since_time(Utc::now(), old_block_info);
 
         // Send errors are fatal and require a restart.
         alert_tx
             .send(Alert::new(
                 AlertKind::BlockProductionStall { gap },
-                old_block_info.clone(),
+                old_block_info,
             ))
             .await
             .expect("sending Slack alert failed");
@@ -352,7 +351,7 @@ where
         alert_tx
             .send(Alert::new(
                 AlertKind::SudoCall { extrinsic_info },
-                block_info.clone(),
+                *block_info,
             ))
             .await?;
     } else if extrinsic_info.pallet == "Balances" {
@@ -384,7 +383,7 @@ where
                         extrinsic_info,
                         transfer_value,
                     },
-                    block_info.clone(),
+                    *block_info,
                 ))
                 .await?;
         } else if let Some(transfer_value) = transfer_value
@@ -396,7 +395,7 @@ where
                         extrinsic_info,
                         transfer_value,
                     },
-                    block_info.clone(),
+                    *block_info,
                 ))
                 .await?;
         } else if transfer_value.is_none()
@@ -440,16 +439,13 @@ pub async fn check_event(
         alert_tx
             .send(Alert::new(
                 AlertKind::OperatorSlashed { event_info },
-                block_info.clone(),
+                *block_info,
             ))
             .await?;
     } else if event_info.pallet == "Sudo" {
         // We already alert on sudo calls, so this exists mainly to test events.
         alert_tx
-            .send(Alert::new(
-                AlertKind::SudoEvent { event_info },
-                block_info.clone(),
-            ))
+            .send(Alert::new(AlertKind::SudoEvent { event_info }, *block_info))
             .await?;
     }
 

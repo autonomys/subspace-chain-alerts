@@ -75,7 +75,7 @@ pub async fn spawn_metadata_update_task(chain_client: &SubspaceClient) -> AsyncJ
 }
 
 /// Block info that can be formatted.
-#[derive(Clone, Debug, PartialEq, Eq, Ord, PartialOrd)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Ord, PartialOrd)]
 pub struct BlockInfo {
     /// The block number.
     pub block_height: BlockNumber,
@@ -133,7 +133,7 @@ impl BlockInfo {
 }
 
 /// A block time formatted different ways.
-#[derive(Clone, Debug, PartialEq, Eq, Ord, PartialOrd)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Ord, PartialOrd)]
 pub struct BlockTime {
     /// The block UNIX time (in milliseconds).
     pub unix_time: u128,
@@ -371,7 +371,7 @@ pub fn gap_since_last_block(
 }
 
 /// A Subspace block slot.
-#[derive(Clone, Debug, PartialEq, Eq, Ord, PartialOrd, Copy)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Ord, PartialOrd)]
 pub struct Slot(pub u64);
 
 impl Display for Slot {

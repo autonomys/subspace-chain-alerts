@@ -7,7 +7,7 @@
 pub mod test_utils;
 
 use crate::alerts::{Alert, AlertKind};
-use crate::subspace::{BlockInfo, Slot};
+use crate::subspace::{BlockInfo, BlockTime, Slot};
 use std::time::Duration;
 use tokio::sync::mpsc::error::SendError;
 
@@ -37,54 +37,52 @@ pub struct SlotTimeMonitorConfig {
 }
 
 /// In-memory implementation of a slot time monitor.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct MemorySlotTimeMonitor {
     /// Monitor configuration parameters.
     config: SlotTimeMonitorConfig,
     /// First slot observed in the current checking interval.
     first_slot_in_interval: Slot,
     /// Next wall-clock time when a check should occur.
-    next_check_time: Option<u128>,
+    next_check_time: Option<BlockTime>,
     /// Wall-clock time when the first slot of the interval was observed.
-    first_slot_time: Option<u128>,
+    first_slot_time: Option<BlockTime>,
 }
 
 impl SlotTimeMonitor for MemorySlotTimeMonitor {
     /// Process a new block, updating internal scheduling and sending alerts when needed.
     #[allow(clippy::cast_precision_loss)]
     async fn process_block(&mut self, block_info: &BlockInfo) {
-        let (block_time, block_slot) =
-            match (block_info.clone().block_time, block_info.clone().block_slot) {
-                (Some(block_time), Some(block_slot)) => (block_time, block_slot),
-                (None, None) => {
-                    warn!("Block time and slot not found");
-                    return;
-                }
-                (None, Some(_)) => {
-                    warn!("Block time not found");
-                    return;
-                }
-                (Some(_), None) => {
-                    warn!("Block slot not found");
-                    return;
-                }
-            };
+        let (block_time, block_slot) = match (block_info.block_time, block_info.block_slot) {
+            (Some(block_time), Some(block_slot)) => (block_time, block_slot),
+            (None, None) => {
+                warn!("Block time and slot not found");
+                return;
+            }
+            (None, Some(_)) => {
+                warn!("Block time not found");
+                return;
+            }
+            (Some(_), None) => {
+                warn!("Block slot not found");
+                return;
+            }
+        };
 
         debug!(
             "Extracted slot: {:?} for block {:?}",
-            block_slot,
-            block_info.clone().block_height
+            block_slot, block_info.block_height
         );
 
         match (self.next_check_time, self.first_slot_time) {
             // slot available, we should check if we are in the interval
-            (Some(next_check_time), Some(first_slot_time))
-                if next_check_time <= block_time.unix_time =>
-            {
+            (Some(next_check_time), Some(first_slot_time)) if next_check_time <= block_time => {
                 debug!("Checking slot time alert in interval...");
 
                 let slot_diff = u128::from(block_slot - self.first_slot_in_interval);
-                let time_diff: Option<u128> = next_check_time.checked_sub(first_slot_time);
+                let time_diff = next_check_time
+                    .unix_time
+                    .checked_sub(first_slot_time.unix_time);
 
                 if let Some(time_diff) = time_diff {
                     let time_diff_in_seconds = time_diff / 1000;
@@ -94,26 +92,26 @@ impl SlotTimeMonitor for MemorySlotTimeMonitor {
                             "Time per slot alert triggered, time_per_slot: {}",
                             time_per_slot
                         );
-                        let _ = self.send_alert(time_per_slot, block_info.clone()).await;
+                        let _ = self.send_alert(time_per_slot, *block_info).await;
                     } else {
                         debug!(
                             "Time per slot not triggered, time_per_slot: {}",
                             time_per_slot
                         );
                     }
-                    self.schedule_next_check(block_time.unix_time, block_slot);
+                    self.schedule_next_check(block_time, block_slot);
                 }
             }
             // do nothing if we are in the interval
             (Some(_), Some(_)) => {}
             // we received a new block, so we init the first check
             (None, _) => {
-                self.schedule_next_check(block_time.unix_time, block_slot);
+                self.schedule_next_check(block_time, block_slot);
             }
             // should not happen
             (Some(_), None) => {
                 warn!("No first slot time found though we have a next check time");
-                self.schedule_next_check(block_time.unix_time, block_slot);
+                self.schedule_next_check(block_time, block_slot);
             }
         }
     }
@@ -150,8 +148,10 @@ impl MemorySlotTimeMonitor {
     }
 
     /// Schedule the next check at `current_time + check_interval` and record the slot.
-    fn schedule_next_check(&mut self, current_time: u128, current_slot: Slot) {
-        let next_check_time = current_time + self.config.check_interval.as_millis();
+    fn schedule_next_check(&mut self, current_time: BlockTime, current_slot: Slot) {
+        let next_check_time = BlockTime {
+            unix_time: current_time.unix_time + self.config.check_interval.as_millis(),
+        };
         debug!(
             "Scheduling next check for block time: {:?}",
             next_check_time

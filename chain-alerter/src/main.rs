@@ -148,7 +148,7 @@ async fn run() -> anyhow::Result<()> {
         let block_info = BlockInfo::new(&block, &extrinsics, &genesis_hash);
 
         // Notify spawned tasks that a new block has arrived.
-        latest_block_tx.send_replace(Some(block_info.clone()));
+        latest_block_tx.send_replace(Some(block_info));
 
         if first_block {
             alerts::startup_alert(&alert_tx, &block_info).await?;
@@ -165,12 +165,8 @@ async fn run() -> anyhow::Result<()> {
         }
 
         // Check for block stalls, and check the block itself for alerts.
-        alerts::check_for_block_stall(
-            alert_tx.clone(),
-            block_info.clone(),
-            latest_block_tx.subscribe(),
-        )
-        .await;
+        alerts::check_for_block_stall(alert_tx.clone(), block_info, latest_block_tx.subscribe())
+            .await;
 
         alerts::check_block(&alert_tx, &block_info, &prev_block_info).await?;
         slot_time_monitor.process_block(&block_info).await;
