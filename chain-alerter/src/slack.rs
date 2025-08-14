@@ -271,7 +271,7 @@ impl SlackClientInfo {
             .map(|c| format!("flag-{}", c.to_lowercase()));
 
         let ip_cc = if let (Some(country_code), Some(ip)) = (&country_code, &ip) {
-            Some(format!("{} ({})", country_code, ip))
+            Some(format!("{country_code} ({ip})"))
         } else {
             country_code.or(ip)
         };
@@ -314,7 +314,7 @@ impl SlackClientInfo {
         );
 
         if let Some(ip_cc) = self.bot_ip_cc.as_ref() {
-            let mut ip_cc_block = SlackBlockMarkDownText::from(format!("🌐 Instance: {}", ip_cc));
+            let mut ip_cc_block = SlackBlockMarkDownText::from(format!("🌐 Instance: {ip_cc}"));
             ip_cc_block.verbatim = Some(true);
             message_blocks.push(SlackContextBlock::new(vec![ip_cc_block.into()]).into());
         }
