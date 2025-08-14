@@ -100,6 +100,7 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Check that the slot time alert is not triggered when the time per slot is below the threshold.
 #[tokio::test(flavor = "multi_thread")]
 async fn no_expected_test_slot_time_alert() -> anyhow::Result<()> {
     let (_, alert_tx, mut alert_rx, _update_task) = test_setup(node_rpc_url()).await?;
@@ -125,6 +126,7 @@ async fn no_expected_test_slot_time_alert() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Check that the slot time alert is triggered when the time per slot is above the threshold and has elapsed enough time.
 #[tokio::test(flavor = "multi_thread")]
 async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
     let (_, alert_tx, mut alert_rx, _update_task) = test_setup(node_rpc_url()).await?;
@@ -159,6 +161,7 @@ async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Check that the slot time alert is not triggered when the time per slot is above the threshold but has not elapsed enough time.
 #[tokio::test(flavor = "multi_thread")]
 async fn expected_test_slot_time_alert_but_not_yet() -> anyhow::Result<()> {
     let (_, alert_tx, mut alert_rx, _update_task) = test_setup(node_rpc_url()).await?;
