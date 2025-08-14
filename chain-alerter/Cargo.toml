@@ -7,7 +7,6 @@ edition = "2024"
 anyhow.workspace = true
 chrono.workspace = true
 clap = { workspace = true, features = ["derive"] }
-hex.workspace = true
 humantime.workspace = true
 hyper-rustls.workspace = true
 hyper-util.workspace = true
