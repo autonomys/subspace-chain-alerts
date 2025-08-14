@@ -1,4 +1,7 @@
 //! Chain alerter process-specific code.
+//!
+//! Initializes logging, connects to a Subspace node, and runs monitoring tasks that
+//! post alerts to Slack.
 
 mod alerts;
 mod format;
