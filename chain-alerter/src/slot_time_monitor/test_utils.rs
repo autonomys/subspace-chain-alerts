@@ -2,6 +2,7 @@
 use crate::subspace::{BlockInfo, BlockTime, Slot};
 use subxt::utils::H256;
 
+/// Create a mock block info for testing with a given time and slot.
 pub fn mock_block_info(time: u128, slot: Slot) -> BlockInfo {
     BlockInfo {
         block_height: 100,
