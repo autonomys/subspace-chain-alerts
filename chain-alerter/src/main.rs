@@ -21,7 +21,6 @@ use crate::subspace::{
 use clap::{Parser, ValueHint};
 use slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor};
 use std::panic;
-use std::sync::Arc;
 use subspace_process::{AsyncJoinOnDrop, init_logger, set_exit_on_panic, shutdown_signal};
 use tokio::select;
 use tokio::sync::{mpsc, watch};
@@ -136,7 +135,7 @@ async fn run() -> anyhow::Result<()> {
     // Slot time monitor is used to check if the slot time is within the expected range.
     let mut slot_time_monitor = MemorySlotTimeMonitor::new(SlotTimeMonitorConfig {
         check_interval: DEFAULT_CHECK_INTERVAL,
-        alert_tx: Arc::new(alert_tx.clone()),
+        alert_tx: alert_tx.clone(),
         alert_threshold: DEFAULT_SLOT_TIME_ALERT_THRESHOLD,
     });
 

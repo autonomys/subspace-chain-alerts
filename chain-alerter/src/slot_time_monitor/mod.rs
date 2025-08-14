@@ -7,7 +7,6 @@ pub mod test_utils;
 
 use crate::alerts::{Alert, AlertKind};
 use crate::subspace::{BlockInfo, Slot};
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::error::SendError;
 
@@ -33,7 +32,7 @@ pub struct SlotTimeMonitorConfig {
     /// Threshold for alerting based on time-per-slot ratio.
     pub alert_threshold: f64,
     /// Channel used to emit alerts.
-    pub alert_tx: Arc<tokio::sync::mpsc::Sender<Alert>>,
+    pub alert_tx: tokio::sync::mpsc::Sender<Alert>,
 }
 
 /// In-memory implementation of a slot time monitor.

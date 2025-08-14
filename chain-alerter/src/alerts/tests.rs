@@ -4,7 +4,6 @@
 //! instance.
 
 use crate::slot_time_monitor::test_utils::mock_block_info;
-use std::sync::Arc;
 use std::time::Duration;
 
 use crate::alerts::{self, AlertKind};
@@ -112,7 +111,7 @@ async fn no_expected_test_slot_time_alert() -> anyhow::Result<()> {
         SlotTimeMonitorConfig {
             check_interval: Duration::from_secs(1),
             alert_threshold: 10.0f64,
-            alert_tx: Arc::new(alert_tx),
+            alert_tx: alert_tx.clone(),
         }
     });
 
@@ -138,7 +137,7 @@ async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
         SlotTimeMonitorConfig {
             check_interval: Duration::from_secs(1),
             alert_threshold: 0f64,
-            alert_tx: Arc::new(alert_tx),
+            alert_tx: alert_tx.clone(),
         }
     });
 
@@ -173,7 +172,7 @@ async fn expected_test_slot_time_alert_but_not_yet() -> anyhow::Result<()> {
         SlotTimeMonitorConfig {
             check_interval: Duration::from_secs(3600 * 24),
             alert_threshold: 0f64,
-            alert_tx: Arc::new(alert_tx),
+            alert_tx: alert_tx.clone(),
         }
     });
 
