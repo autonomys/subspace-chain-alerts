@@ -4,17 +4,20 @@
 pub mod tests;
 
 use crate::format::{fmt_fields, fmt_timestamp};
+use anyhow::Result;
 use chrono::{DateTime, Utc};
 use scale_value::Composite;
 use std::fmt::{self, Display};
+use std::ops::Sub;
 use std::time::Duration;
 use subspace_process::AsyncJoinOnDrop;
 use subxt::blocks::{Block, ExtrinsicDetails, Extrinsics};
 use subxt::client::OnlineClientT;
+use subxt::config::substrate::DigestItem;
 use subxt::events::{EventDetails, Phase};
 use subxt::utils::H256;
 use subxt::{OnlineClient, SubstrateConfig};
-use tracing::{info, warn};
+use tracing::{debug, info, trace, warn};
 
 /// The Subspace block height type.
 /// Copied from subspace-core-primitives.
@@ -85,6 +88,9 @@ pub struct BlockInfo {
 
     /// The genesis block hash for this network.
     pub genesis_hash: H256,
+
+    /// The block slot.
+    pub block_slot: Option<Slot>,
 }
 
 impl Display for BlockInfo {
@@ -101,6 +107,7 @@ impl Display for BlockInfo {
         // Show full block hash but truncated genesis hash.
         writeln!(f, "Hash: {:?}", self.block_hash)?;
         write!(f, "Genesis: {}", self.genesis_hash)?;
+        writeln!(f, "Slot: {:?}", self.block_slot)?;
         Ok(())
     }
 }
@@ -118,6 +125,7 @@ impl BlockInfo {
         BlockInfo {
             block_height: block.header().number,
             block_time: BlockTime::new(extrinsics),
+            block_slot: Slot::new(block),
             block_hash: block.hash(),
             genesis_hash: *genesis_hash,
         }
@@ -360,4 +368,66 @@ pub fn gap_since_last_block(
     let block_time = block_info.block_time?;
 
     gap_since_time(block_time.date_time()?, prev_block_info)
+}
+
+/// A Subspace block slot.
+#[derive(Clone, Debug, PartialEq, Eq, Ord, PartialOrd, Copy)]
+pub struct Slot(pub u64);
+
+impl Display for Slot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl Sub<Slot> for Slot {
+    type Output = u64;
+
+    fn sub(self, rhs: Slot) -> Self::Output {
+        self.0.saturating_sub(rhs.0)
+    }
+}
+
+impl Sub<u64> for Slot {
+    type Output = Slot;
+
+    fn sub(self, rhs: u64) -> Self::Output {
+        Slot(self.0.saturating_sub(rhs))
+    }
+}
+
+impl Slot {
+    /// Create a new slot from a block.
+    pub fn new<Client>(block: &Block<SubspaceConfig, Client>) -> Option<Slot>
+    where
+        Client: OnlineClientT<SubspaceConfig>,
+    {
+        let mut result: Option<u64> = None;
+        for log in block.header().digest.logs.clone() {
+            trace!("Checking log {:?}, looking for pre runtime digest", log);
+
+            if let DigestItem::PreRuntime(_, pre_digest) = log {
+                let slot = Self::decode_slot_number(pre_digest);
+                if let Some(slot) = slot {
+                    debug!("Found pre runtime digest {:?}", slot);
+                    result = Some(slot);
+                }
+                break;
+            }
+        }
+
+        result.map(Slot)
+    }
+
+    const SLOT_OFFSET: usize = 1;
+    const SLOT_LEN: usize = 8;
+
+    fn decode_slot_number(pre_digest: Vec<u8>) -> Option<u64> {
+        pre_digest
+            .as_slice()
+            .get(Self::SLOT_OFFSET..=Self::SLOT_LEN)?
+            .try_into()
+            .ok()
+            .map(u64::from_le_bytes)
+    }
 }

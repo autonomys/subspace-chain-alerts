@@ -135,7 +135,6 @@ async fn run() -> anyhow::Result<()> {
     // Slot time monitor is used to check if the slot time is within the expected range.
     let mut slot_time_monitor = MemorySlotTimeMonitor::new(SlotTimeMonitorConfig {
         check_interval: Duration::from_secs(3600),
-        genesis_hash,
         alert_tx: Arc::new(alert_tx.clone()),
         alert_threshold: 1.05f64,
     });
@@ -174,7 +173,7 @@ async fn run() -> anyhow::Result<()> {
         .await;
 
         alerts::check_block(&alert_tx, &block_info, &prev_block_info).await?;
-        slot_time_monitor.process_block(&block).await;
+        slot_time_monitor.process_block(&block_info).await;
 
         // Check each extrinsic and event for alerts.
         for extrinsic in extrinsics.iter() {
