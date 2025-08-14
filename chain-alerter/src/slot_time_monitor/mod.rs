@@ -36,6 +36,7 @@ pub struct SlotTimeMonitorConfig {
 }
 
 /// In-memory implementation of a slot time monitor.
+#[derive(Debug)]
 pub struct MemorySlotTimeMonitor {
     /// Monitor configuration parameters.
     config: SlotTimeMonitorConfig,
