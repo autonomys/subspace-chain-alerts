@@ -209,11 +209,9 @@ impl Display for AlertKind {
                 write!(
                     f,
                     "**Slot per time ratio alert**\n\
-                    Current ratio: {} slots per second\n\
-                    Threshold: {} slots per second\n\
-                    Interval: {} seconds",
-                    current_ratio,
-                    threshold,
+                    Current ratio: {current_ratio:.2} slots per second\n\
+                    Threshold: {threshold:.2} slots per second\n\
+                    Interval: {}",
                     fmt_duration(*interval),
                 )
             }
