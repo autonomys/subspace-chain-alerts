@@ -185,6 +185,25 @@ impl Display for AlertKind {
     }
 }
 
+/// Post a startup alert.
+///
+/// Any returned errors are fatal and require a restart.
+pub async fn startup_alert(
+    alert_tx: &mpsc::Sender<Alert>,
+    block_info: &BlockInfo,
+) -> anyhow::Result<()> {
+    // TODO:
+    // - always post this to the test channel, because it's not a real "alert"
+    // - link to the prod channel from this message:
+    //   <https://docs.slack.dev/messaging/formatting-message-text/#linking-channels>
+
+    alert_tx
+        .send(Alert::new(AlertKind::Startup, block_info.clone()))
+        .await?;
+
+    Ok(())
+}
+
 /// Check a block for alerts, against the previous block.
 ///
 /// Any returned errors are fatal and require a restart.
