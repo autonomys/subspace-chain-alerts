@@ -9,19 +9,10 @@ use crate::slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor, SlotTimeM
 use crate::subspace::tests::{
     decode_event, decode_extrinsic, fetch_block_info, node_rpc_url, test_setup,
 };
-use crate::subspace::{BlockNumber, Slot};
+use crate::subspace::{BlockNumber, EventIndex, ExtrinsicIndex, RawBlockHash, Slot};
 use anyhow::Ok;
 use std::time::Duration;
 use subxt::utils::H256;
-
-/// The raw block hash literal type.
-type RawBlockHash = [u8; 32];
-
-/// The extrinsic index type.
-type ExtrinsicIndex = u32;
-
-/// The event index type.
-type EventIndex = u32;
 
 /// The extrinsic and event for a recent sudo call.
 /// <https://github.com/autonomys/subspace/releases/tag/runtime-mainnet-2025-jul-31>

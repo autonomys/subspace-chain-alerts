@@ -45,6 +45,10 @@ pub type SubspaceConfig = SubstrateConfig;
 /// The type of Subspace client we're using.
 pub type SubspaceClient = OnlineClient<SubspaceConfig>;
 
+/// The raw block hash literal type.
+#[allow(dead_code)]
+pub type RawBlockHash = [u8; 32];
+
 /// The Subspace/subxt extrinsic index type.
 pub type ExtrinsicIndex = u32;
 
