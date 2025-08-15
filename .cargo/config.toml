@@ -37,6 +37,8 @@ rustflags = [
     "-Wunused_crate_dependencies",
     "-Wmissing_debug_implementations",
     "-Wclippy::missing_assert_message",
+    "-Wclippy::allow_attributes_without_reason",
+    "-Wclippy::ignore_without_reason",
 
     # Manual debugging
     # Prefer tracing::trace!() or tracing::debug!()
@@ -47,10 +49,12 @@ rustflags = [
     # Panics
     "-Wclippy::fallible_impl_from",
     "-Wclippy::unwrap_in_result",
+    "-Wclippy::missing_panics_doc",
 
     # Documentation
     "-Wmissing_docs",
     "-Wclippy::missing_docs_in_private_items",
+    "-Wclippy::unnecessary_safety_doc",
 
     # Testing and debugging
     "-Wclippy::assertions_on_result_states",
@@ -61,4 +65,5 @@ rustflags = [
     "-Wclippy::inconsistent_struct_constructor",
     "-Wclippy::manual_assert",
     "-Wclippy::needless_pass_by_value",
+    "-Wclippy::precedence_bits",
 ]

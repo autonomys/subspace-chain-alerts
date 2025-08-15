@@ -21,22 +21,30 @@ use tracing::{debug, info, trace, warn};
 
 /// One Subspace Credit.
 /// Copied from subspace-runtime-primitives.
-pub const AI3: u128 = 10_u128.pow(18);
+pub const AI3: Balance = 10_u128.pow(18);
 
 /// The default RPC URL for a local Subspace node.
 pub const LOCAL_SUBSPACE_NODE_URL: &str = "ws://127.0.0.1:9944";
 
 /// The RPC URL for the public Subspace Foundation RPC instance.
-#[allow(dead_code)]
+#[allow(dead_code, reason = "only used in tests")]
 pub const FOUNDATION_SUBSPACE_NODE_URL: &str = "wss://rpc.mainnet.subspace.foundation/ws";
 
 /// The RPC URL for the public Autonomys Labs RPC instance.
-#[allow(dead_code)]
+#[expect(dead_code, reason = "TODO: run tests against both instances")]
 pub const LABS_SUBSPACE_NODE_URL: &str = "wss://rpc-0.mainnet.autonomys.xyz/ws";
 
 /// The Subspace block height type.
 /// Copied from subspace-core-primitives.
 pub type BlockNumber = u32;
+
+/// The Subspace balance amount type.
+/// Copied from subspace-runtime-primitives.
+pub type Balance = u128;
+
+/// The Subspace raw time type.
+/// Copied from subspace-runtime-primitives.
+pub type RawTime = u64;
 
 /// The config for basic Subspace block and extrinsic types.
 /// TODO: create a custom SubspaceConfig type
@@ -46,7 +54,7 @@ pub type SubspaceConfig = SubstrateConfig;
 pub type SubspaceClient = OnlineClient<SubspaceConfig>;
 
 /// The raw block hash literal type.
-#[allow(dead_code)]
+#[allow(dead_code, reason = "only used in tests")]
 pub type RawBlockHash = [u8; 32];
 
 /// The Subspace/subxt extrinsic index type.
@@ -152,7 +160,7 @@ impl BlockInfo {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Ord, PartialOrd)]
 pub struct BlockTime {
     /// The block UNIX time (in milliseconds).
-    pub unix_time: u128,
+    pub unix_time: RawTime,
 }
 
 impl Display for BlockTime {
@@ -192,7 +200,9 @@ impl BlockTime {
                 .ok()?
                 .into_values()
                 .next()?
-                .as_u128()?;
+                .as_u128()?
+                .try_into()
+                .ok()?;
 
             return Some(BlockTime { unix_time });
         }
@@ -472,7 +482,10 @@ impl Slot {
             })
             .ok()?;
 
-        debug!("Found pre runtime digest with slot number {:?}", slot_bytes);
+        debug!(
+            "Found pre runtime digest with slot number {:?}",
+            hex::encode(slot_bytes)
+        );
         Some(Slot(u64::from_le_bytes(slot_bytes)))
     }
 }
