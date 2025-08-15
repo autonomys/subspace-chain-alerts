@@ -65,7 +65,10 @@ pub fn fmt_duration(duration: impl Into<Option<Duration>>) -> String {
 /// Format a time delta (a signed amount of time) as a human-readable string.
 ///
 /// Returns a placeholder value if the input is missing or out of range.
-#[expect(dead_code)]
+#[expect(
+    dead_code,
+    reason = "TODO: remove this if we don't use it in any alert"
+)]
 pub fn fmt_time_delta(time_delta: impl Into<Option<TimeDelta>>) -> String {
     let Some(time_delta) = time_delta.into() else {
         return "missing".to_string();

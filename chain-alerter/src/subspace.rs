@@ -27,11 +27,11 @@ pub const AI3: u128 = 10_u128.pow(18);
 pub const LOCAL_SUBSPACE_NODE_URL: &str = "ws://127.0.0.1:9944";
 
 /// The RPC URL for the public Subspace Foundation RPC instance.
-#[allow(dead_code)]
+#[allow(dead_code, reason = "only used in tests")]
 pub const FOUNDATION_SUBSPACE_NODE_URL: &str = "wss://rpc.mainnet.subspace.foundation/ws";
 
 /// The RPC URL for the public Autonomys Labs RPC instance.
-#[allow(dead_code)]
+#[expect(dead_code, reason = "TODO: run tests against both instances")]
 pub const LABS_SUBSPACE_NODE_URL: &str = "wss://rpc-0.mainnet.autonomys.xyz/ws";
 
 /// The Subspace block height type.
@@ -46,7 +46,7 @@ pub type SubspaceConfig = SubstrateConfig;
 pub type SubspaceClient = OnlineClient<SubspaceConfig>;
 
 /// The raw block hash literal type.
-#[allow(dead_code)]
+#[allow(dead_code, reason = "only used in tests")]
 pub type RawBlockHash = [u8; 32];
 
 /// The Subspace/subxt extrinsic index type.
