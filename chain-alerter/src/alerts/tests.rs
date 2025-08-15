@@ -132,6 +132,9 @@ async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
             current_ratio: 0.01,
             threshold: 0.0,
             interval: Duration::from_secs(1),
+            first_slot_time: first_block
+                .block_time
+                .expect("block must have time to trigger alert"),
         }
     );
     assert_eq!(alert.block_info, second_block);

@@ -149,6 +149,10 @@ impl MemorySlotTimeMonitor {
                     current_ratio: slot_diff_per_time_diff,
                     threshold: self.config.alert_threshold,
                     interval: self.config.check_interval,
+                    first_slot_time: self
+                        .state
+                        .expect("alerts are only triggered when state is present")
+                        .first_slot_time,
                 },
                 block_info,
             })
