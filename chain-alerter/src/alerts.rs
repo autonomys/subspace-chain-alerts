@@ -128,13 +128,13 @@ impl Display for AlertKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             AlertKind::Startup => {
-                write!(f, "Launched and connected to the node")
+                write!(f, "**Launched and connected to the node**")
             }
 
             AlertKind::BlockProductionStall { gap } => {
                 write!(
                     f,
-                    "Block production stalled\n\
+                    "**Block production stalled**\n\
                     Gap: {}",
                     fmt_duration(*gap),
                 )
@@ -146,7 +146,7 @@ impl Display for AlertKind {
             } => {
                 write!(
                     f,
-                    "Block production resumed\n\
+                    "**Block production resumed**\n\
                     Gap: {}\n\n\
                     Previous block:\n\
                     {prev_block_info}",
@@ -160,7 +160,7 @@ impl Display for AlertKind {
             } => {
                 write!(
                     f,
-                    "Force Balances call detected\n\
+                    "**Force Balances call detected**\n\
                     Transfer value: {}\n\
                     {extrinsic_info}",
                     fmt_amount(*transfer_value),
@@ -173,7 +173,7 @@ impl Display for AlertKind {
             } => {
                 write!(
                     f,
-                    "Large Balances call detected\n\
+                    "**Large Balances call detected**\n\
                     Transfer value: {} (above {})\n\
                     {extrinsic_info}",
                     fmt_amount(*transfer_value),
@@ -184,7 +184,7 @@ impl Display for AlertKind {
             AlertKind::SudoCall { extrinsic_info } => {
                 write!(
                     f,
-                    "Sudo call detected\n\
+                    "**Sudo call detected**\n\
                     {extrinsic_info}",
                 )
             }
@@ -192,7 +192,7 @@ impl Display for AlertKind {
             AlertKind::SudoEvent { event_info } => {
                 write!(
                     f,
-                    "Sudo event detected\n\
+                    "**Sudo event detected**\n\
                     {event_info}",
                 )
             }
@@ -200,7 +200,7 @@ impl Display for AlertKind {
             AlertKind::OperatorSlashed { event_info } => {
                 write!(
                     f,
-                    "Operator slash detected\n\
+                    "**Operator slash detected**\n\
                     {event_info}",
                 )
             }
