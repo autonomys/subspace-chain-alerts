@@ -3,16 +3,15 @@
 //! Set the `NODE_URL` env var to the RPC URL of a Subspace node to override the default public
 //! instance.
 
-use crate::slot_time_monitor::test_utils::mock_block_info;
-use std::time::Duration;
-
 use crate::alerts::{self, AlertKind};
+use crate::slot_time_monitor::test_utils::mock_block_info;
 use crate::slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor, SlotTimeMonitorConfig};
 use crate::subspace::tests::{
     decode_event, decode_extrinsic, fetch_block_info, node_rpc_url, test_setup,
 };
 use crate::subspace::{BlockNumber, Slot};
 use anyhow::Ok;
+use std::time::Duration;
 use subxt::utils::H256;
 
 /// The raw block hash literal type.
@@ -104,7 +103,8 @@ async fn no_expected_test_slot_time_alert() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Check that the slot time alert is triggered when the time per slot is above the threshold and has elapsed enough time.
+/// Check that the slot time alert is triggered when the time per slot is above the threshold and
+/// has elapsed enough time.
 #[tokio::test(flavor = "multi_thread")]
 async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
     let (_, alert_tx, mut alert_rx, _update_task) = test_setup(node_rpc_url()).await?;
@@ -140,7 +140,8 @@ async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Check that the slot time alert is not triggered when the time per slot is above the threshold but has not elapsed enough time.
+/// Check that the slot time alert is not triggered when the time per slot is above the threshold
+/// but has not elapsed enough time.
 #[tokio::test(flavor = "multi_thread")]
 async fn expected_test_slot_time_alert_but_not_yet() -> anyhow::Result<()> {
     let (_, alert_tx, mut alert_rx, _update_task) = test_setup(node_rpc_url()).await?;

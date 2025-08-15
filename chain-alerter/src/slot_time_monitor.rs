@@ -10,7 +10,6 @@ use crate::alerts::{Alert, AlertKind};
 use crate::subspace::{BlockInfo, BlockTime, Slot};
 use std::time::Duration;
 use tokio::sync::mpsc::error::SendError;
-
 use tracing::{debug, info, warn};
 
 /// The default threshold for the slot time alert.

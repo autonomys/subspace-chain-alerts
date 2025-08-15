@@ -228,8 +228,7 @@ pub async fn startup_alert(
 ) -> anyhow::Result<()> {
     // TODO:
     // - always post this to the test channel, because it's not a real "alert"
-    // - link to the prod channel from this message:
-    //   <https://docs.slack.dev/messaging/formatting-message-text/#linking-channels>
+    // - link to the prod channel from this message: <https://docs.slack.dev/messaging/formatting-message-text/#linking-channels>
 
     alert_tx
         .send(Alert::new(AlertKind::Startup, *block_info))
@@ -360,10 +359,10 @@ where
         // subxt knows these field names, so we can search for the transfer value by
         // name.
         // TODO:
-        // - track the total of recent transfers, so the threshold can't be bypassed by
-        //   splitting the transfer into multiple calls
-        // - split this field search into a function which takes a field name,
-        //   and another function which does the numeric conversion and range check
+        // - track the total of recent transfers, so the threshold can't be bypassed by splitting
+        //   the transfer into multiple calls
+        // - split this field search into a function which takes a field name, and another function
+        //   which does the numeric conversion and range check
         let transfer_value = if let Composite::Named(named_fields) = &extrinsic_info.fields
             && let Some((_, transfer_value)) = named_fields
                 .iter()

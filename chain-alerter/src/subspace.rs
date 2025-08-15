@@ -350,8 +350,8 @@ impl EventInfo {
     }
 }
 
-/// Calculates the timestamp gap between a block and a later time, if the block is present and has a timestamp.
-/// Returns `None` if the block info is missing, or the block is missing a timestamp.
+/// Calculates the timestamp gap between a block and a later time, if the block is present and has a
+/// timestamp. Returns `None` if the block info is missing, or the block is missing a timestamp.
 pub fn gap_since_time(
     latest_time: DateTime<Utc>,
     prev_block_info: impl Into<Option<BlockInfo>>,
@@ -403,6 +403,11 @@ impl Sub<u64> for Slot {
 }
 
 impl Slot {
+    /// The length of the slot number in bytes.
+    const SLOT_LEN: usize = 4;
+    /// The offset of the slot number in the pre-runtime digest.
+    const SLOT_OFFSET: usize = 1;
+
     /// Create a new slot from a block.
     pub fn new<Client>(block: &Block<SubspaceConfig, Client>) -> Option<Slot>
     where
@@ -424,12 +429,6 @@ impl Slot {
 
         result.map(Slot)
     }
-
-    /// The offset of the slot number in the pre-runtime digest.
-    const SLOT_OFFSET: usize = 1;
-
-    /// The length of the slot number in bytes.
-    const SLOT_LEN: usize = 4;
 
     /// Decodes the slot number from a pre-runtime digest.
     fn decode_slot_number(pre_digest: Vec<u8>) -> Option<u64> {

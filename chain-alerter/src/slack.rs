@@ -104,6 +104,7 @@ struct SlackSecret(SlackApiToken);
 
 impl Deref for SlackSecret {
     type Target = SlackApiToken;
+
     fn deref(&self) -> &Self::Target {
         &self.0
     }
