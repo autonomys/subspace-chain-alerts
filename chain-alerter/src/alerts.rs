@@ -17,10 +17,10 @@ use subxt::client::OnlineClientT;
 use subxt::events::EventDetails;
 use tokio::sync::{mpsc, watch};
 use tokio::time::sleep;
-use tracing::warn;
+use tracing::{debug, warn};
 
 /// The minimum balance change to alert on.
-const MIN_BALANCE_CHANGE: Balance = 1_000_000_000 * AI3;
+const MIN_BALANCE_CHANGE: Balance = 1_000_000 * AI3;
 
 /// The minimum gap between block timestamps to alert on.
 /// The target block gap is 6 seconds, so we alert if it takes substantially longer.
@@ -417,6 +417,7 @@ where
     // - add tests to make sure we can parse the extrinsics for each alert
     // - format account IDs as ss58 with prefix 6094
     // - link extrinsic and account to subscan
+    // - add extrinsic success/failure to alerts
 
     // All sudo calls are alerts.
     // TODO:
@@ -451,8 +452,11 @@ where
             None
         };
 
+        debug!("transfer_value: {:?}", transfer_value);
+
         // TODO:
         // - test force alerts by checking a historic block with that call
+        // - do we want to track burn calls? <https://autonomys.subscan.io/extrinsic/137324-31>
         if extrinsic_info.call.starts_with("force") {
             alert_tx
                 .send(Alert::new(

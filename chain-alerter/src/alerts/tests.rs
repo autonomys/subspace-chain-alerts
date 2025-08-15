@@ -9,7 +9,7 @@ use crate::slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor, SlotTimeM
 use crate::subspace::tests::{
     decode_event, decode_extrinsic, fetch_block_info, node_rpc_url, test_setup,
 };
-use crate::subspace::{BlockNumber, EventIndex, ExtrinsicIndex, RawBlockHash, Slot};
+use crate::subspace::{Balance, BlockNumber, EventIndex, ExtrinsicIndex, RawBlockHash, Slot};
 use anyhow::Ok;
 use std::assert_matches::assert_matches;
 use std::time::Duration;
@@ -26,6 +26,34 @@ const SUDO_BLOCK: (BlockNumber, RawBlockHash, ExtrinsicIndex, EventIndex, Slot) 
     11,
     Slot(22_859_254),
 );
+
+/// Some extrinsics for large balance transfers.
+/// <https://autonomys.subscan.io/transfer?page=1&time_dimension=date&value_dimension=token&value_start=1000000>
+///
+/// TODO: turn this into a struct
+const LARGE_TRANSFER_BLOCKS: [(BlockNumber, RawBlockHash, ExtrinsicIndex, Balance, Slot); 2] = [
+    // <https://autonomys.subscan.io/extrinsic/3651663-3>
+    (
+        3_651_663,
+        hex_literal::hex!("57d707e832379fa2e1a74f82b337178361f70770b252eff165027af5bdbff416"),
+        3,
+        1_139_874_580_721_948_575_925_918,
+        Slot(21_994_481),
+    ),
+    // <https://autonomys.subscan.io/extrinsic/3662965-19>
+    (
+        3_662_965,
+        hex_literal::hex!("1eb7e3ac5af1142f9e1298cd75475f77e3527d602ca5033ce7ace96e681c95d7"),
+        19,
+        2_114_333_002_000_000_000_000_000,
+        Slot(22_062_247),
+    ),
+];
+
+// TODO: force transfer blocks:
+// Failed force_transfer: <https://autonomys.subscan.io/extrinsic/2173351-7>
+// Failed force_set_balance: <https://autonomys.subscan.io/extrinsic/1154587-11>
+// TODO: add success/failure to balance checks
 
 /// Check that the startup alert works on the latest block.
 #[tokio::test(flavor = "multi_thread")]
@@ -86,6 +114,37 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
 
     // Check block slot parsing works on a known slot value.
     assert_eq!(alert.block_info.block_slot, Some(SUDO_BLOCK.4));
+
+    Ok(())
+}
+
+/// Check that the large balance transfer alert works on known transfer blocks.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
+    let (subspace_client, alert_tx, mut alert_rx, _update_task) =
+        test_setup(node_rpc_url()).await?;
+
+    for (block_number, block_hash, extrinsic_index, transfer_value, slot) in LARGE_TRANSFER_BLOCKS {
+        let (block_info, extrinsics, _events) =
+            fetch_block_info(&subspace_client, H256::from(block_hash), block_number).await?;
+
+        let (extrinsic, extrinsic_info) =
+            decode_extrinsic(&block_info, &extrinsics, extrinsic_index).await?;
+
+        alerts::check_extrinsic(&alert_tx, &extrinsic, &block_info).await?;
+        let alert = alert_rx.try_recv().expect("no alert received");
+        assert_eq!(
+            alert.alert,
+            AlertKind::LargeBalanceTransfer {
+                extrinsic_info,
+                transfer_value,
+            }
+        );
+        assert_eq!(alert.block_info, block_info);
+
+        // Check block slot parsing works on a known slot value.
+        assert_eq!(alert.block_info.block_slot, Some(slot));
+    }
 
     Ok(())
 }

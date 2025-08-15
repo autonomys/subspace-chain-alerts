@@ -482,7 +482,10 @@ impl Slot {
             })
             .ok()?;
 
-        debug!("Found pre runtime digest with slot number {:?}", slot_bytes);
+        debug!(
+            "Found pre runtime digest with slot number {:?}",
+            hex::encode(slot_bytes)
+        );
         Some(Slot(u64::from_le_bytes(slot_bytes)))
     }
 }
