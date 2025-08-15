@@ -61,6 +61,13 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
     alerts::check_extrinsic(&alert_tx, &extrinsic, &block_info).await?;
     let alert = alert_rx.try_recv().expect("no alert received");
     assert_eq!(alert.alert, AlertKind::SudoCall { extrinsic_info });
+    assert_eq!(
+        alert
+            .alert
+            .extrinsic_info()
+            .map(|ei| (ei.pallet.as_str(), ei.call.as_str())),
+        Some(("Sudo", "sudo"))
+    );
     assert_eq!(alert.block_info, block_info);
 
     let (event, event_info) = decode_event(&block_info, &events, SUDO_BLOCK.3).await?;
@@ -68,6 +75,13 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
     alerts::check_event(&alert_tx, &event, &block_info).await?;
     let alert = alert_rx.try_recv().expect("no alert received");
     assert_eq!(alert.alert, AlertKind::SudoEvent { event_info });
+    assert_eq!(
+        alert
+            .alert
+            .event_info()
+            .map(|ei| (ei.pallet.as_str(), ei.kind.as_str())),
+        Some(("Sudo", "Sudid"))
+    );
     assert_eq!(alert.block_info, block_info);
 
     // Check block slot parsing works on a known slot value.
