@@ -3,9 +3,10 @@
 #[cfg(test)]
 mod tests;
 
-use crate::format::{fmt_amount, fmt_duration};
+use crate::format::{fmt_amount, fmt_duration, fmt_timestamp};
 use crate::subspace::{
-    AI3, BlockInfo, EventInfo, ExtrinsicInfo, SubspaceConfig, gap_since_last_block, gap_since_time,
+    AI3, BlockInfo, BlockTime, EventInfo, ExtrinsicInfo, SubspaceConfig, gap_since_last_block,
+    gap_since_time,
 };
 use chrono::Utc;
 use scale_value::Composite;
@@ -107,8 +108,8 @@ pub enum AlertKind {
         event_info: EventInfo,
     },
 
-    /// A slot time alert has been detected.
-    SlotTimeAlert {
+    /// Slot timing is outside the expected range.
+    SlotTime {
         /// The current ratio of slots to time.
         current_ratio: f64,
 
@@ -117,6 +118,9 @@ pub enum AlertKind {
 
         /// The duration of the interval.
         interval: Duration,
+
+        /// The time of the first slot in the interval.
+        first_slot_time: BlockTime,
     },
 }
 
@@ -201,20 +205,93 @@ impl Display for AlertKind {
                 )
             }
 
-            AlertKind::SlotTimeAlert {
+            AlertKind::SlotTime {
                 current_ratio,
                 threshold,
                 interval,
+                first_slot_time,
             } => {
                 write!(
                     f,
                     "**Slot per time ratio alert**\n\
                     Current ratio: {current_ratio:.2} slots per second\n\
                     Threshold: {threshold:.2} slots per second\n\
-                    Interval: {}",
+                    Interval: {}\n\
+                    First slot time: {}",
                     fmt_duration(*interval),
+                    fmt_timestamp(first_slot_time.date_time()),
                 )
             }
+        }
+    }
+}
+
+impl AlertKind {
+    /// Extract the previous block from the alert, if present.
+    #[expect(dead_code, reason = "TODO: use in tests")]
+    pub fn prev_block_info(&self) -> Option<&BlockInfo> {
+        match self {
+            AlertKind::BlockProductionResumed {
+                prev_block_info, ..
+            } => Some(prev_block_info),
+            // Deliberately repeat each enum variant here, so we can't forget to update this
+            // method when adding new variants.
+            AlertKind::Startup
+            | AlertKind::BlockProductionStall { .. }
+            | AlertKind::ForceBalanceTransfer { .. }
+            | AlertKind::LargeBalanceTransfer { .. }
+            | AlertKind::SudoCall { .. }
+            | AlertKind::SudoEvent { .. }
+            | AlertKind::OperatorSlashed { .. }
+            | AlertKind::SlotTime { .. } => None,
+        }
+    }
+
+    /// Extract the extrinsic from the alert, if present.
+    #[allow(dead_code, reason = "only used in tests")]
+    pub fn extrinsic_info(&self) -> Option<&ExtrinsicInfo> {
+        match self {
+            AlertKind::ForceBalanceTransfer { extrinsic_info, .. } => Some(extrinsic_info),
+            AlertKind::LargeBalanceTransfer { extrinsic_info, .. } => Some(extrinsic_info),
+            AlertKind::SudoCall { extrinsic_info } => Some(extrinsic_info),
+            AlertKind::Startup
+            | AlertKind::BlockProductionStall { .. }
+            | AlertKind::BlockProductionResumed { .. }
+            | AlertKind::SudoEvent { .. }
+            | AlertKind::OperatorSlashed { .. }
+            | AlertKind::SlotTime { .. } => None,
+        }
+    }
+
+    /// Extract the transfer value from the alert, if present.
+    #[expect(dead_code, reason = "TODO: use in tests")]
+    pub fn transfer_value(&self) -> Option<u128> {
+        match self {
+            AlertKind::ForceBalanceTransfer { transfer_value, .. } => *transfer_value,
+            AlertKind::LargeBalanceTransfer { transfer_value, .. } => Some(*transfer_value),
+            AlertKind::Startup
+            | AlertKind::BlockProductionStall { .. }
+            | AlertKind::BlockProductionResumed { .. }
+            | AlertKind::SudoCall { .. }
+            | AlertKind::SudoEvent { .. }
+            | AlertKind::OperatorSlashed { .. }
+            | AlertKind::SlotTime { .. } => None,
+        }
+    }
+
+    /// Extract the event from the alert, if present.
+    #[allow(dead_code, reason = "only used in tests")]
+    pub fn event_info(&self) -> Option<&EventInfo> {
+        match self {
+            AlertKind::SudoEvent { event_info } => Some(event_info),
+            AlertKind::OperatorSlashed { event_info } => Some(event_info),
+            AlertKind::Startup
+            | AlertKind::BlockProductionStall { .. }
+            | AlertKind::BlockProductionResumed { .. }
+            | AlertKind::ForceBalanceTransfer { .. }
+            | AlertKind::LargeBalanceTransfer { .. }
+            | AlertKind::SudoCall { .. }
+            | AlertKind::SlotTime { .. } => None,
         }
     }
 }

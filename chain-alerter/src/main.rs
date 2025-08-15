@@ -3,6 +3,8 @@
 //! Initializes logging, connects to a Subspace node, and runs monitoring tasks that
 //! post alerts to Slack.
 
+#![feature(assert_matches)]
+
 mod alerts;
 mod format;
 mod slack;

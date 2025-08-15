@@ -40,17 +40,23 @@ pub struct SlotTimeMonitorConfig {
 pub struct MemorySlotTimeMonitor {
     /// Monitor configuration parameters.
     config: SlotTimeMonitorConfig,
+    /// State tracked by the slot time monitor, and updated at the same time.
+    state: Option<SlotTimeMonitorState>,
+}
+
+/// State tracked by the slot time monitor, and updated at the same time.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct SlotTimeMonitorState {
     /// First slot observed in the current checking interval.
     first_slot_in_interval: Slot,
-    /// Next wall-clock time when a check should occur.
-    next_check_time: Option<BlockTime>,
-    /// Wall-clock time when the first slot of the interval was observed.
-    first_slot_time: Option<BlockTime>,
+    /// Consensus wall-clock time when the first slot of the interval was observed.
+    first_slot_time: BlockTime,
+    /// Next consensus wall-clock time when a check should occur.
+    next_check_time: BlockTime,
 }
 
 impl SlotTimeMonitor for MemorySlotTimeMonitor {
     /// Process a new block, updating internal scheduling and sending alerts when needed.
-    #[allow(clippy::cast_precision_loss)]
     async fn process_block(&mut self, block_info: &BlockInfo) {
         let (block_time, block_slot) = match (block_info.block_time, block_info.block_slot) {
             (Some(block_time), Some(block_slot)) => (block_time, block_slot),
@@ -73,18 +79,23 @@ impl SlotTimeMonitor for MemorySlotTimeMonitor {
             block_slot, block_info.block_height
         );
 
-        match (self.next_check_time, self.first_slot_time) {
+        match self.state {
             // slot available, we should check if we are in the interval
-            (Some(next_check_time), Some(first_slot_time)) if next_check_time <= block_time => {
+            Some(state) if state.next_check_time <= block_time => {
                 debug!("Checking slot time alert in interval...");
 
-                let slot_diff = u128::from(block_slot - self.first_slot_in_interval);
-                let time_diff = next_check_time
+                let slot_diff = u128::from(block_slot - state.first_slot_in_interval);
+                let time_diff = state
+                    .next_check_time
                     .unix_time
-                    .checked_sub(first_slot_time.unix_time);
+                    .checked_sub(state.first_slot_time.unix_time);
 
                 if let Some(time_diff) = time_diff {
                     let time_diff_in_seconds = time_diff / 1000;
+                    #[allow(
+                        clippy::cast_precision_loss,
+                        reason = "time and slot differences are much smaller than 52 bits in practice"
+                    )]
                     let time_per_slot = time_diff_in_seconds as f64 / slot_diff as f64;
                     if time_per_slot > self.config.alert_threshold {
                         info!(
@@ -99,17 +110,17 @@ impl SlotTimeMonitor for MemorySlotTimeMonitor {
                         );
                     }
                     self.schedule_next_check(block_time, block_slot);
+                } else {
+                    warn!(
+                        "Unexpected slot time, earlier than first block in interval: {:?} - {:?}",
+                        block_info, state
+                    );
                 }
             }
             // do nothing if we are in the interval
-            (Some(_), Some(_)) => {}
+            Some(_) => {}
             // we received a new block, so we init the first check
-            (None, _) => {
-                self.schedule_next_check(block_time, block_slot);
-            }
-            // should not happen
-            (Some(_), None) => {
-                warn!("No first slot time found though we have a next check time");
+            None => {
                 self.schedule_next_check(block_time, block_slot);
             }
         }
@@ -121,9 +132,7 @@ impl MemorySlotTimeMonitor {
     pub fn new(config: SlotTimeMonitorConfig) -> Self {
         Self {
             config,
-            first_slot_in_interval: Slot(0),
-            first_slot_time: None,
-            next_check_time: None,
+            state: None,
         }
     }
 
@@ -136,10 +145,14 @@ impl MemorySlotTimeMonitor {
         self.config
             .alert_tx
             .send(Alert {
-                alert: AlertKind::SlotTimeAlert {
+                alert: AlertKind::SlotTime {
                     current_ratio: slot_diff_per_time_diff,
                     threshold: self.config.alert_threshold,
                     interval: self.config.check_interval,
+                    first_slot_time: self
+                        .state
+                        .expect("alerts are only triggered when state is present")
+                        .first_slot_time,
                 },
                 block_info,
             })
@@ -155,8 +168,10 @@ impl MemorySlotTimeMonitor {
             "Scheduling next check for block time: {:?}",
             next_check_time
         );
-        self.next_check_time = Some(next_check_time);
-        self.first_slot_in_interval = current_slot;
-        self.first_slot_time = Some(current_time);
+        self.state = Some(SlotTimeMonitorState {
+            first_slot_in_interval: current_slot,
+            first_slot_time: current_time,
+            next_check_time,
+        });
     }
 }

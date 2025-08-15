@@ -45,6 +45,10 @@ pub type SubspaceConfig = SubstrateConfig;
 /// The type of Subspace client we're using.
 pub type SubspaceClient = OnlineClient<SubspaceConfig>;
 
+/// The raw block hash literal type.
+#[allow(dead_code)]
+pub type RawBlockHash = [u8; 32];
+
 /// The Subspace/subxt extrinsic index type.
 pub type ExtrinsicIndex = u32;
 
@@ -112,7 +116,13 @@ impl Display for BlockInfo {
         )?;
         // Show full block hash but truncated genesis hash.
         writeln!(f, "Hash: {:?}", self.block_hash)?;
-        writeln!(f, "Slot: {:?}", self.block_slot)?;
+        writeln!(
+            f,
+            "Slot: {}",
+            self.block_slot
+                .map(|bs| bs.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        )?;
         write!(f, "Genesis: {}", self.genesis_hash)?;
         Ok(())
     }
@@ -403,9 +413,14 @@ impl Sub<u64> for Slot {
 }
 
 impl Slot {
+    /// The `PreDigest` variant we know how to parse.
+    const PRE_DIGEST_VERSION: u8 = 0;
     /// The length of the slot number in bytes.
-    const SLOT_LEN: usize = 4;
+    /// <https://docs.rs/sp-consensus-slots/0.44.0/src/sp_consensus_slots/lib.rs.html#43>
+    const SLOT_LEN: usize = (u64::BITS as usize) / 8;
     /// The offset of the slot number in the pre-runtime digest.
+    /// SCALE enum variants are always one byte long:
+    /// <https://github.com/autonomys/subspace/blob/7ce6f74032910338314c2c9b6e4a7833530467dc/crates/sp-consensus-subspace/src/digests.rs#L23>
     const SLOT_OFFSET: usize = 1;
 
     /// Create a new slot from a block.
@@ -413,31 +428,51 @@ impl Slot {
     where
         Client: OnlineClientT<SubspaceConfig>,
     {
-        let mut result: Option<u64> = None;
         for log in block.header().digest.logs.clone() {
             trace!("Checking log {:?}, looking for pre runtime digest", log);
 
             if let DigestItem::PreRuntime(_, pre_digest) = log {
-                let slot = Self::decode_slot_number(pre_digest);
-                if let Some(slot) = slot {
-                    debug!("Found pre runtime digest {:?}", slot);
-                    result = Some(slot);
-                }
-                break;
+                return Self::decode_slot_number(pre_digest);
             }
         }
 
-        result.map(Slot)
+        None
     }
 
     /// Decodes the slot number from a pre-runtime digest.
-    fn decode_slot_number(pre_digest: Vec<u8>) -> Option<u64> {
+    /// See <https://github.com/autonomys/subspace/blob/7ce6f74032910338314c2c9b6e4a7833530467dc/crates/sp-consensus-subspace/src/digests.rs#L20>
+    fn decode_slot_number(pre_digest: Vec<u8>) -> Option<Slot> {
+        if pre_digest.is_empty() {
+            warn!("pre-runtime digest is empty",);
+            return None;
+        }
+
+        if pre_digest[0] != Self::PRE_DIGEST_VERSION {
+            warn!(
+                "unknown pre-runtime digest version: {:?} expected: {:?}",
+                pre_digest[0],
+                Self::PRE_DIGEST_VERSION,
+            );
+            return None;
+        }
+
         let slot_bytes = pre_digest
             .into_iter()
             .skip(Self::SLOT_OFFSET)
             .take(Self::SLOT_LEN)
             .collect::<Vec<u8>>();
 
-        Some(u64::from_le_bytes(slot_bytes.try_into().ok()?))
+        let slot_bytes: [u8; Self::SLOT_LEN] = slot_bytes
+            .try_into()
+            .inspect_err(|digest_bytes| {
+                warn!(
+                    "not enough bytes for slot number in pre-runtime digest: {}",
+                    hex::encode(digest_bytes)
+                );
+            })
+            .ok()?;
+
+        debug!("Found pre runtime digest with slot number {:?}", slot_bytes);
+        Some(Slot(u64::from_le_bytes(slot_bytes)))
     }
 }
