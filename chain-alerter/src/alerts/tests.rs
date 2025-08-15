@@ -11,6 +11,7 @@ use crate::subspace::tests::{
 };
 use crate::subspace::{BlockNumber, EventIndex, ExtrinsicIndex, RawBlockHash, Slot};
 use anyhow::Ok;
+use std::assert_matches::assert_matches;
 use std::time::Duration;
 use subxt::utils::H256;
 
@@ -18,11 +19,12 @@ use subxt::utils::H256;
 /// <https://github.com/autonomys/subspace/releases/tag/runtime-mainnet-2025-jul-31>
 ///
 /// TODO: turn this into a struct
-const SUDO_BLOCK: (BlockNumber, RawBlockHash, ExtrinsicIndex, EventIndex) = (
+const SUDO_BLOCK: (BlockNumber, RawBlockHash, ExtrinsicIndex, EventIndex, Slot) = (
     3_795_487,
     hex_literal::hex!("18c2f211b752cbc2f06943788ed011ab1fe64fb2e28ffcd1aeb4490c2e8b1baa"),
     5,
     11,
+    Slot(22_859_254),
 );
 
 /// Check that the startup alert works on the latest block.
@@ -37,6 +39,9 @@ async fn test_startup_alert() -> anyhow::Result<()> {
     let alert = alert_rx.try_recv().expect("no alert received");
     assert_eq!(alert.alert, AlertKind::Startup);
     assert_eq!(alert.block_info, block_info);
+
+    // Check block slot parsing works on real blocks.
+    assert_matches!(alert.block_info.block_slot, Some(Slot(_)));
 
     Ok(())
 }
@@ -64,6 +69,9 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
     let alert = alert_rx.try_recv().expect("no alert received");
     assert_eq!(alert.alert, AlertKind::SudoEvent { event_info });
     assert_eq!(alert.block_info, block_info);
+
+    // Check block slot parsing works on a known slot value.
+    assert_eq!(alert.block_info.block_slot, Some(SUDO_BLOCK.4));
 
     Ok(())
 }
