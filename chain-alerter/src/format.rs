@@ -1,6 +1,6 @@
 //! General formatting code.
 
-use crate::subspace::AI3;
+use crate::subspace::{AI3, Balance};
 use chrono::{DateTime, TimeDelta, Utc};
 use scale_value::Composite;
 use std::time::Duration;
@@ -26,10 +26,10 @@ pub fn truncate(s: &mut String, max_chars: usize) {
     }
 }
 
-/// Format an amount in AI3, accepting `u128` or `Option<u128>`.
+/// Format an amount in AI3, accepting `Balance` or `Option<Balance>`.
 ///
 /// Returns a placeholder value if the input is missing.
-pub fn fmt_amount(val: impl Into<Option<u128>>) -> String {
+pub fn fmt_amount(val: impl Into<Option<Balance>>) -> String {
     if let Some(val) = val.into() {
         format!("{} AI3", val / AI3)
     } else {

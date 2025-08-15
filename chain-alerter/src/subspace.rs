@@ -21,7 +21,7 @@ use tracing::{debug, info, trace, warn};
 
 /// One Subspace Credit.
 /// Copied from subspace-runtime-primitives.
-pub const AI3: u128 = 10_u128.pow(18);
+pub const AI3: Balance = 10_u128.pow(18);
 
 /// The default RPC URL for a local Subspace node.
 pub const LOCAL_SUBSPACE_NODE_URL: &str = "ws://127.0.0.1:9944";
@@ -37,6 +37,14 @@ pub const LABS_SUBSPACE_NODE_URL: &str = "wss://rpc-0.mainnet.autonomys.xyz/ws";
 /// The Subspace block height type.
 /// Copied from subspace-core-primitives.
 pub type BlockNumber = u32;
+
+/// The Subspace balance amount type.
+/// Copied from subspace-runtime-primitives.
+pub type Balance = u128;
+
+/// The Subspace raw time type.
+/// Copied from subspace-runtime-primitives.
+pub type RawTime = u64;
 
 /// The config for basic Subspace block and extrinsic types.
 /// TODO: create a custom SubspaceConfig type
@@ -152,7 +160,7 @@ impl BlockInfo {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Ord, PartialOrd)]
 pub struct BlockTime {
     /// The block UNIX time (in milliseconds).
-    pub unix_time: u128,
+    pub unix_time: RawTime,
 }
 
 impl Display for BlockTime {
@@ -192,7 +200,9 @@ impl BlockTime {
                 .ok()?
                 .into_values()
                 .next()?
-                .as_u128()?;
+                .as_u128()?
+                .try_into()
+                .ok()?;
 
             return Some(BlockTime { unix_time });
         }

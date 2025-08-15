@@ -5,8 +5,8 @@ mod tests;
 
 use crate::format::{fmt_amount, fmt_duration, fmt_timestamp};
 use crate::subspace::{
-    AI3, BlockInfo, BlockTime, EventInfo, ExtrinsicInfo, SubspaceConfig, gap_since_last_block,
-    gap_since_time,
+    AI3, Balance, BlockInfo, BlockTime, EventInfo, ExtrinsicInfo, SubspaceConfig,
+    gap_since_last_block, gap_since_time,
 };
 use chrono::Utc;
 use scale_value::Composite;
@@ -20,7 +20,7 @@ use tokio::time::sleep;
 use tracing::warn;
 
 /// The minimum balance change to alert on.
-const MIN_BALANCE_CHANGE: u128 = 1_000_000_000 * AI3;
+const MIN_BALANCE_CHANGE: Balance = 1_000_000_000 * AI3;
 
 /// The minimum gap between block timestamps to alert on.
 /// The target block gap is 6 seconds, so we alert if it takes substantially longer.
@@ -78,7 +78,7 @@ pub enum AlertKind {
         extrinsic_info: ExtrinsicInfo,
 
         /// The transfer value.
-        transfer_value: Option<u128>,
+        transfer_value: Option<Balance>,
     },
 
     /// A large Balance transfer has been detected.
@@ -87,7 +87,7 @@ pub enum AlertKind {
         extrinsic_info: ExtrinsicInfo,
 
         /// The transfer value.
-        transfer_value: u128,
+        transfer_value: Balance,
     },
 
     /// A Sudo call has been detected.
@@ -265,7 +265,7 @@ impl AlertKind {
 
     /// Extract the transfer value from the alert, if present.
     #[expect(dead_code, reason = "TODO: use in tests")]
-    pub fn transfer_value(&self) -> Option<u128> {
+    pub fn transfer_value(&self) -> Option<Balance> {
         match self {
             AlertKind::ForceBalanceTransfer { transfer_value, .. } => *transfer_value,
             AlertKind::LargeBalanceTransfer { transfer_value, .. } => Some(*transfer_value),
@@ -440,7 +440,8 @@ where
         //   the transfer into multiple calls
         // - split this field search into a function which takes a field name, and another function
         //   which does the numeric conversion and range check
-        let transfer_value = if let Composite::Named(named_fields) = &extrinsic_info.fields
+        let transfer_value: Option<Balance> = if let Composite::Named(named_fields) =
+            &extrinsic_info.fields
             && let Some((_, transfer_value)) = named_fields
                 .iter()
                 .find(|(name, _)| ["value", "amount", "new_free", "delta"].contains(&name.as_str()))
