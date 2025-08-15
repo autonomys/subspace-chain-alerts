@@ -136,7 +136,7 @@ impl MemorySlotTimeMonitor {
         self.config
             .alert_tx
             .send(Alert {
-                alert: AlertKind::SlotTimeAlert {
+                alert: AlertKind::SlotTime {
                     current_ratio: slot_diff_per_time_diff,
                     threshold: self.config.alert_threshold,
                     interval: self.config.check_interval,

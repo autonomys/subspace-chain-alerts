@@ -107,8 +107,8 @@ pub enum AlertKind {
         event_info: EventInfo,
     },
 
-    /// A slot time alert has been detected.
-    SlotTimeAlert {
+    /// Slot timing is outside the expected range.
+    SlotTime {
         /// The current ratio of slots to time.
         current_ratio: f64,
 
@@ -201,7 +201,7 @@ impl Display for AlertKind {
                 )
             }
 
-            AlertKind::SlotTimeAlert {
+            AlertKind::SlotTime {
                 current_ratio,
                 threshold,
                 interval,

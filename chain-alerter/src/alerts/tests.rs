@@ -128,7 +128,7 @@ async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
 
     assert_eq!(
         alert.alert,
-        AlertKind::SlotTimeAlert {
+        AlertKind::SlotTime {
             current_ratio: 0.01,
             threshold: 0.0,
             interval: Duration::from_secs(1),
