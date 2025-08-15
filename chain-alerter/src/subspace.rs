@@ -19,10 +19,6 @@ use subxt::utils::H256;
 use subxt::{OnlineClient, SubstrateConfig};
 use tracing::{debug, info, trace, warn};
 
-/// The Subspace block height type.
-/// Copied from subspace-core-primitives.
-pub type BlockNumber = u32;
-
 /// One Subspace Credit.
 /// Copied from subspace-runtime-primitives.
 pub const AI3: u128 = 10_u128.pow(18);
@@ -38,12 +34,22 @@ pub const FOUNDATION_SUBSPACE_NODE_URL: &str = "wss://rpc.mainnet.subspace.found
 #[allow(dead_code)]
 pub const LABS_SUBSPACE_NODE_URL: &str = "wss://rpc-0.mainnet.autonomys.xyz/ws";
 
+/// The Subspace block height type.
+/// Copied from subspace-core-primitives.
+pub type BlockNumber = u32;
+
 /// The config for basic Subspace block and extrinsic types.
 /// TODO: create a custom SubspaceConfig type
 pub type SubspaceConfig = SubstrateConfig;
 
 /// The type of Subspace client we're using.
 pub type SubspaceClient = OnlineClient<SubspaceConfig>;
+
+/// The Subspace/subxt extrinsic index type.
+pub type ExtrinsicIndex = u32;
+
+/// The Subspace/subxt event index type.
+pub type EventIndex = u32;
 
 /// Create a new Subspace client.
 pub async fn create_subspace_client(
@@ -75,7 +81,7 @@ pub async fn spawn_metadata_update_task(chain_client: &SubspaceClient) -> AsyncJ
 }
 
 /// Block info that can be formatted.
-#[derive(Clone, Debug, PartialEq, Eq, Ord, PartialOrd)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Ord, PartialOrd)]
 pub struct BlockInfo {
     /// The block number.
     pub block_height: BlockNumber,
@@ -133,7 +139,7 @@ impl BlockInfo {
 }
 
 /// A block time formatted different ways.
-#[derive(Clone, Debug, PartialEq, Eq, Ord, PartialOrd)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Ord, PartialOrd)]
 pub struct BlockTime {
     /// The block UNIX time (in milliseconds).
     pub unix_time: u128,
@@ -207,13 +213,13 @@ pub struct ExtrinsicInfo {
     pub call: String,
 
     /// The extrinsic index.
-    pub index: u32,
+    pub index: ExtrinsicIndex,
 
     /// The extrinsic hash.
     pub hash: H256,
 
     /// The extrinsic fields, with the extrinsic index as a context.
-    pub fields: Composite<u32>,
+    pub fields: Composite<ExtrinsicIndex>,
 }
 
 impl Display for ExtrinsicInfo {
@@ -289,13 +295,13 @@ pub struct EventInfo {
     pub kind: String,
 
     /// The event index in the block.
-    pub index: u32,
+    pub index: EventIndex,
 
     /// The phase the event was emitted in.
     pub phase: Phase,
 
     /// The event fields, with the event index as a context.
-    pub fields: Composite<u32>,
+    pub fields: Composite<EventIndex>,
 }
 
 impl Display for EventInfo {
@@ -344,8 +350,8 @@ impl EventInfo {
     }
 }
 
-/// Calculates the timestamp gap between a block and a later time, if the block is present and has a timestamp.
-/// Returns `None` if the block info is missing, or the block is missing a timestamp.
+/// Calculates the timestamp gap between a block and a later time, if the block is present and has a
+/// timestamp. Returns `None` if the block info is missing, or the block is missing a timestamp.
 pub fn gap_since_time(
     latest_time: DateTime<Utc>,
     prev_block_info: impl Into<Option<BlockInfo>>,
@@ -371,7 +377,7 @@ pub fn gap_since_last_block(
 }
 
 /// A Subspace block slot.
-#[derive(Clone, Debug, PartialEq, Eq, Ord, PartialOrd, Copy)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Ord, PartialOrd)]
 pub struct Slot(pub u64);
 
 impl Display for Slot {
@@ -397,6 +403,11 @@ impl Sub<u64> for Slot {
 }
 
 impl Slot {
+    /// The length of the slot number in bytes.
+    const SLOT_LEN: usize = 4;
+    /// The offset of the slot number in the pre-runtime digest.
+    const SLOT_OFFSET: usize = 1;
+
     /// Create a new slot from a block.
     pub fn new<Client>(block: &Block<SubspaceConfig, Client>) -> Option<Slot>
     where
@@ -418,12 +429,6 @@ impl Slot {
 
         result.map(Slot)
     }
-
-    /// The offset of the slot number in the pre-runtime digest.
-    const SLOT_OFFSET: usize = 1;
-
-    /// The length of the slot number in bytes.
-    const SLOT_LEN: usize = 4;
 
     /// Decodes the slot number from a pre-runtime digest.
     fn decode_slot_number(pre_digest: Vec<u8>) -> Option<u64> {

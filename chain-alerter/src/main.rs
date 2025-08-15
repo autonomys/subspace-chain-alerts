@@ -128,8 +128,8 @@ async fn run() -> anyhow::Result<()> {
     // A channel that shares the latest block info with concurrently running tasks.
     let latest_block_tx = watch::Sender::new(None);
 
-    // Subscribe to best blocks (before they are finalized, because finalization can take hours or days).
-    // TODO: do we need to subscribe to all blocks from all forks here?
+    // Subscribe to best blocks (before they are finalized, because finalization can take hours or
+    // days). TODO: do we need to subscribe to all blocks from all forks here?
     let mut blocks_sub = chain_client.blocks().subscribe_best().await?;
 
     // Slot time monitor is used to check if the slot time is within the expected range.
@@ -148,7 +148,7 @@ async fn run() -> anyhow::Result<()> {
         let block_info = BlockInfo::new(&block, &extrinsics, &genesis_hash);
 
         // Notify spawned tasks that a new block has arrived.
-        latest_block_tx.send_replace(Some(block_info.clone()));
+        latest_block_tx.send_replace(Some(block_info));
 
         if first_block {
             alerts::startup_alert(&alert_tx, &block_info).await?;
@@ -165,12 +165,8 @@ async fn run() -> anyhow::Result<()> {
         }
 
         // Check for block stalls, and check the block itself for alerts.
-        alerts::check_for_block_stall(
-            alert_tx.clone(),
-            block_info.clone(),
-            latest_block_tx.subscribe(),
-        )
-        .await;
+        alerts::check_for_block_stall(alert_tx.clone(), block_info, latest_block_tx.subscribe())
+            .await;
 
         alerts::check_block(&alert_tx, &block_info, &prev_block_info).await?;
         slot_time_monitor.process_block(&block_info).await;

@@ -30,7 +30,7 @@ const MIN_BALANCE_CHANGE: u128 = 1_000_000_000 * AI3;
 const MIN_BLOCK_GAP: Duration = Duration::from_secs(60);
 
 /// A blockchain alert with context.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Alert {
     /// The type of alert.
     pub alert: AlertKind,
@@ -47,7 +47,7 @@ impl Alert {
 }
 
 /// The type of alert.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum AlertKind {
     /// The alerter has started.
     Startup,
@@ -55,12 +55,16 @@ pub enum AlertKind {
     /// Block production has stalled.
     BlockProductionStall {
         /// The gap between the previous block and now.
+        ///
+        /// Note: the previous block is `Alert.block_info`.
         gap: Option<Duration>,
     },
 
     /// Block production has resumed.
     BlockProductionResumed {
         /// The gap between the previous and current block.
+        ///
+        /// Note: the current block is `Alert.block_info`.
         gap: Duration,
 
         /// The previous block.
@@ -106,10 +110,10 @@ pub enum AlertKind {
     /// A slot time alert has been detected.
     SlotTimeAlert {
         /// The current ratio of slots to time.
-        current_ratio: String,
+        current_ratio: f64,
 
         /// The applicable threshold for this alert.
-        threshold: String,
+        threshold: f64,
 
         /// The duration of the interval.
         interval: Duration,
@@ -205,11 +209,9 @@ impl Display for AlertKind {
                 write!(
                     f,
                     "**Slot per time ratio alert**\n\
-                    Current ratio: {} slots per second\n\
-                    Threshold: {} slots per second\n\
-                    Interval: {} seconds",
-                    current_ratio,
-                    threshold,
+                    Current ratio: {current_ratio:.2} slots per second\n\
+                    Threshold: {threshold:.2} slots per second\n\
+                    Interval: {}",
                     fmt_duration(*interval),
                 )
             }
@@ -226,11 +228,10 @@ pub async fn startup_alert(
 ) -> anyhow::Result<()> {
     // TODO:
     // - always post this to the test channel, because it's not a real "alert"
-    // - link to the prod channel from this message:
-    //   <https://docs.slack.dev/messaging/formatting-message-text/#linking-channels>
+    // - link to the prod channel from this message: <https://docs.slack.dev/messaging/formatting-message-text/#linking-channels>
 
     alert_tx
-        .send(Alert::new(AlertKind::Startup, block_info.clone()))
+        .send(Alert::new(AlertKind::Startup, *block_info))
         .await?;
 
     Ok(())
@@ -250,15 +251,15 @@ pub async fn check_block(
     };
 
     // Because it depends on the next block, this check logs after block production resumes.
-    if let Some(gap) = gap_since_last_block(block_info.clone(), prev_block_info.clone()) {
+    if let Some(gap) = gap_since_last_block(*block_info, *prev_block_info) {
         if gap >= MIN_BLOCK_GAP {
             alert_tx
                 .send(Alert::new(
                     AlertKind::BlockProductionResumed {
                         gap,
-                        prev_block_info: prev_block_info.clone(),
+                        prev_block_info: *prev_block_info,
                     },
-                    block_info.clone(),
+                    *block_info,
                 ))
                 .await?;
         }
@@ -290,10 +291,9 @@ pub async fn check_for_block_stall(
     tokio::spawn(async move {
         sleep(MIN_BLOCK_GAP).await;
 
-        // Avoid a potential deadlock by cloning the watched value immediately.
+        // Avoid a potential deadlock by copying the watched value immediately.
         let latest_block_info = latest_block_rx
             .borrow()
-            .clone()
             .expect("never empty, a block is sent before spawning this task");
 
         if latest_block_info.block_time > old_block_info.block_time {
@@ -303,13 +303,13 @@ pub async fn check_for_block_stall(
             return;
         }
 
-        let gap = gap_since_time(Utc::now(), old_block_info.clone());
+        let gap = gap_since_time(Utc::now(), old_block_info);
 
         // Send errors are fatal and require a restart.
         alert_tx
             .send(Alert::new(
                 AlertKind::BlockProductionStall { gap },
-                old_block_info.clone(),
+                old_block_info,
             ))
             .await
             .expect("sending Slack alert failed");
@@ -350,7 +350,7 @@ where
         alert_tx
             .send(Alert::new(
                 AlertKind::SudoCall { extrinsic_info },
-                block_info.clone(),
+                *block_info,
             ))
             .await?;
     } else if extrinsic_info.pallet == "Balances" {
@@ -359,10 +359,10 @@ where
         // subxt knows these field names, so we can search for the transfer value by
         // name.
         // TODO:
-        // - track the total of recent transfers, so the threshold can't be bypassed by
-        //   splitting the transfer into multiple calls
-        // - split this field search into a function which takes a field name,
-        //   and another function which does the numeric conversion and range check
+        // - track the total of recent transfers, so the threshold can't be bypassed by splitting
+        //   the transfer into multiple calls
+        // - split this field search into a function which takes a field name, and another function
+        //   which does the numeric conversion and range check
         let transfer_value = if let Composite::Named(named_fields) = &extrinsic_info.fields
             && let Some((_, transfer_value)) = named_fields
                 .iter()
@@ -382,7 +382,7 @@ where
                         extrinsic_info,
                         transfer_value,
                     },
-                    block_info.clone(),
+                    *block_info,
                 ))
                 .await?;
         } else if let Some(transfer_value) = transfer_value
@@ -394,7 +394,7 @@ where
                         extrinsic_info,
                         transfer_value,
                     },
-                    block_info.clone(),
+                    *block_info,
                 ))
                 .await?;
         } else if transfer_value.is_none()
@@ -438,16 +438,13 @@ pub async fn check_event(
         alert_tx
             .send(Alert::new(
                 AlertKind::OperatorSlashed { event_info },
-                block_info.clone(),
+                *block_info,
             ))
             .await?;
     } else if event_info.pallet == "Sudo" {
         // We already alert on sudo calls, so this exists mainly to test events.
         alert_tx
-            .send(Alert::new(
-                AlertKind::SudoEvent { event_info },
-                block_info.clone(),
-            ))
+            .send(Alert::new(AlertKind::SudoEvent { event_info }, *block_info))
             .await?;
     }
 
