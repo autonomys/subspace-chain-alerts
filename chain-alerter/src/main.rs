@@ -135,11 +135,11 @@ async fn run() -> anyhow::Result<()> {
     let mut blocks_sub = chain_client.blocks().subscribe_best().await?;
 
     // Slot time monitor is used to check if the slot time is within the expected range.
-    let mut slot_time_monitor = MemorySlotTimeMonitor::new(SlotTimeMonitorConfig {
-        check_interval: DEFAULT_CHECK_INTERVAL,
-        alert_tx: alert_tx.clone(),
-        alert_threshold: DEFAULT_SLOT_TIME_ALERT_THRESHOLD,
-    });
+    let mut slot_time_monitor = MemorySlotTimeMonitor::new(SlotTimeMonitorConfig::new(
+        DEFAULT_CHECK_INTERVAL,
+        DEFAULT_SLOT_TIME_ALERT_THRESHOLD,
+        alert_tx.clone(),
+    ));
 
     while let Some(block) = blocks_sub.next().await {
         let block = block?;

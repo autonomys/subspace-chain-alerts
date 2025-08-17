@@ -7,7 +7,7 @@
 pub mod test_utils;
 
 use crate::alerts::{Alert, AlertKind};
-use crate::subspace::{BlockInfo, BlockTime, Slot};
+use crate::subspace::{BlockInfo, BlockTime, RawTime, Slot};
 use std::time::Duration;
 use tokio::sync::mpsc::error::SendError;
 use tracing::{debug, info, warn};
@@ -55,6 +55,26 @@ pub struct SlotTimeMonitorState {
     next_check_time: BlockTime,
 }
 
+impl SlotTimeMonitorConfig {
+    /// Create a new slot time monitor configuration with the provided parameters.
+    pub fn new(
+        check_interval: Duration,
+        alert_threshold: f64,
+        alert_tx: tokio::sync::mpsc::Sender<Alert>,
+    ) -> Self {
+        assert!(
+            u64::try_from(check_interval.as_millis()).is_ok(),
+            "unexpectedly large check interval"
+        );
+
+        Self {
+            check_interval,
+            alert_threshold,
+            alert_tx,
+        }
+    }
+}
+
 impl SlotTimeMonitor for MemorySlotTimeMonitor {
     /// Process a new block, updating internal scheduling and sending alerts when needed.
     async fn process_block(&mut self, block_info: &BlockInfo) {
@@ -84,7 +104,7 @@ impl SlotTimeMonitor for MemorySlotTimeMonitor {
             Some(state) if state.next_check_time <= block_time => {
                 debug!("Checking slot time alert in interval...");
 
-                let slot_diff = u128::from(block_slot - state.first_slot_in_interval);
+                let slot_diff = block_slot - state.first_slot_in_interval;
                 let time_diff = state
                     .next_check_time
                     .unix_time
@@ -162,7 +182,9 @@ impl MemorySlotTimeMonitor {
     /// Schedule the next check at `current_time + check_interval` and record the slot.
     fn schedule_next_check(&mut self, current_time: BlockTime, current_slot: Slot) {
         let next_check_time = BlockTime {
-            unix_time: current_time.unix_time + self.config.check_interval.as_millis(),
+            unix_time: current_time.unix_time
+                + RawTime::try_from(self.config.check_interval.as_millis())
+                    .expect("already checked when constructing config"),
         };
         debug!(
             "Scheduling next check for block time: {:?}",
