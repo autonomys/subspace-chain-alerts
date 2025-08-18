@@ -228,7 +228,7 @@ impl Display for AlertKind {
 
 impl AlertKind {
     /// Extract the previous block from the alert, if present.
-    #[expect(dead_code, reason = "TODO: use in tests")]
+    #[allow(dead_code, reason = "TODO: use in tests")]
     pub fn prev_block_info(&self) -> Option<&BlockInfo> {
         match self {
             AlertKind::BlockProductionResumed {
@@ -248,7 +248,7 @@ impl AlertKind {
     }
 
     /// Extract the extrinsic from the alert, if present.
-    #[allow(dead_code, reason = "only used in tests")]
+    #[cfg_attr(not(test), allow(dead_code, reason = "only used in tests"))]
     pub fn extrinsic_info(&self) -> Option<&ExtrinsicInfo> {
         match self {
             AlertKind::ForceBalanceTransfer { extrinsic_info, .. } => Some(extrinsic_info),
@@ -264,7 +264,7 @@ impl AlertKind {
     }
 
     /// Extract the transfer value from the alert, if present.
-    #[expect(dead_code, reason = "TODO: use in tests")]
+    #[allow(dead_code, reason = "TODO: use in tests")]
     pub fn transfer_value(&self) -> Option<Balance> {
         match self {
             AlertKind::ForceBalanceTransfer { transfer_value, .. } => *transfer_value,
@@ -280,7 +280,7 @@ impl AlertKind {
     }
 
     /// Extract the event from the alert, if present.
-    #[allow(dead_code, reason = "only used in tests")]
+    #[cfg_attr(not(test), allow(dead_code, reason = "only used in tests"))]
     pub fn event_info(&self) -> Option<&EventInfo> {
         match self {
             AlertKind::SudoEvent { event_info } => Some(event_info),
