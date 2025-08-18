@@ -369,7 +369,7 @@ pub async fn check_for_block_stall(
         sleep(MIN_BLOCK_GAP).await;
 
         // Avoid a potential deadlock by copying the watched value immediately.
-        let latest_block_info = latest_block_rx
+        let latest_block_info: BlockInfo = latest_block_rx
             .borrow()
             .expect("never empty, a block is sent before spawning this task");
 
