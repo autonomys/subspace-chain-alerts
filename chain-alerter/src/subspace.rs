@@ -104,6 +104,9 @@ pub struct BlockInfo {
     /// The block hash.
     pub block_hash: H256,
 
+    /// The parent block hash.
+    pub parent_hash: H256,
+
     /// The genesis block hash for this network.
     pub genesis_hash: H256,
 
@@ -151,6 +154,7 @@ impl BlockInfo {
             block_time: BlockTime::new(extrinsics),
             block_slot: Slot::new(block),
             block_hash: block.hash(),
+            parent_hash: block.header().parent_hash,
             genesis_hash: *genesis_hash,
         }
     }
