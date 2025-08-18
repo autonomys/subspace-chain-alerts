@@ -53,7 +53,7 @@ pub struct FarmingMonitorState {
     /// The last block voted by a farmer.
     last_block_voted_by_farmer: HashMap<String, BlockNumber>,
     /// The number of farmers that have votes in the last `max_block_interval` blocks.
-    number_of_farmers_with_votes: VecDeque<u32>,
+    active_farmers_in_last_blocks: VecDeque<u32>,
 }
 
 /// A farming monitor that tracks the number of farmers with votes in the last `max_block_interval`
@@ -94,7 +94,7 @@ impl MemoryFarmingMonitor {
             config: config.clone(),
             state: FarmingMonitorState {
                 last_block_voted_by_farmer: HashMap::new(),
-                number_of_farmers_with_votes: VecDeque::with_capacity(
+                active_farmers_in_last_blocks: VecDeque::with_capacity(
                     config.max_block_interval as usize,
                 ),
             },
@@ -153,15 +153,15 @@ impl MemoryFarmingMonitor {
         let number_of_farmers_with_votes =
             u32::try_from(self.state.last_block_voted_by_farmer.len())
                 .expect("farmers should fit in a u32 integer");
-        let blocks_in_deque = u32::try_from(self.state.number_of_farmers_with_votes.len())
+        let blocks_in_deque = u32::try_from(self.state.active_farmers_in_last_blocks.len())
             .expect("blocks should fit in a u32 integer");
 
         if blocks_in_deque >= self.config.max_block_interval {
-            self.state.number_of_farmers_with_votes.pop_back();
+            self.state.active_farmers_in_last_blocks.pop_back();
         }
 
         self.state
-            .number_of_farmers_with_votes
+            .active_farmers_in_last_blocks
             .push_front(number_of_farmers_with_votes);
     }
 
@@ -171,11 +171,11 @@ impl MemoryFarmingMonitor {
         // Calculate the average number of farmers with votes in the last `max_block_interval`
         // blocks.
         let average_number_of_farmers_with_votes =
-            self.state.number_of_farmers_with_votes.iter().sum::<u32>()
-                / u32::try_from(self.state.number_of_farmers_with_votes.len())
+            self.state.active_farmers_in_last_blocks.iter().sum::<u32>()
+                / u32::try_from(self.state.active_farmers_in_last_blocks.len())
                     .expect("farmers should fit in a u32 integer");
 
-        let &number_of_farmers_with_votes = match self.state.number_of_farmers_with_votes.front() {
+        let &number_of_farmers_with_votes = match self.state.active_farmers_in_last_blocks.front() {
             Some(number_of_farmers_with_votes) => number_of_farmers_with_votes,
             None => {
                 warn!("No number of farmers with votes found");
@@ -196,7 +196,7 @@ impl MemoryFarmingMonitor {
                         number_of_farmers_with_votes,
                         average_number_of_farmers_with_votes,
                         number_of_blocks: u32::try_from(
-                            self.state.number_of_farmers_with_votes.len(),
+                            self.state.active_farmers_in_last_blocks.len(),
                         )
                         .expect("farmers should fit in a u32 integer"),
                     },
@@ -212,7 +212,7 @@ impl MemoryFarmingMonitor {
                         number_of_farmers_with_votes,
                         average_number_of_farmers_with_votes,
                         number_of_blocks: u32::try_from(
-                            self.state.number_of_farmers_with_votes.len(),
+                            self.state.active_farmers_in_last_blocks.len(),
                         )
                         .expect("farmers should fit in a u32 integer"),
                     },
