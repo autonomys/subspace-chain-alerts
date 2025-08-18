@@ -20,7 +20,7 @@ pub const DEFAULT_HIGH_END_FARMING_ALERT_THRESHOLD: f64 = 1.25;
 pub const DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD: u32 = 10;
 
 /// The default minimum block interval for the farming monitor.
-pub const DEFAULT_FARMING_MINIMUM_BLOCK_INTERVAL: u32 = 30;
+pub const DEFAULT_FARMING_MINIMUM_BLOCK_INTERVAL: u32 = 100;
 
 /// The default number of blocks to check for farming.
 pub const DEFAULT_FARMING_MAX_BLOCK_INTERVAL: u32 = 100;
