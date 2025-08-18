@@ -1,5 +1,6 @@
 //! Subspace chain connection and block parsing code.
 
+#[allow(warnings, clippy::all, rustdoc::all)]
 pub mod artifacts;
 #[cfg(test)]
 pub mod tests;
