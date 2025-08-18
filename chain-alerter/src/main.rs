@@ -24,8 +24,8 @@ use clap::{Parser, ValueHint};
 use slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor};
 use std::panic;
 use subspace_process::{AsyncJoinOnDrop, init_logger, set_exit_on_panic, shutdown_signal};
-use tokio::select;
 use tokio::sync::{mpsc, watch};
+use tokio::{select, task};
 use tracing::{error, info, warn};
 
 /// The number of blocks between info-level block number logs.
@@ -149,8 +149,10 @@ async fn run() -> anyhow::Result<()> {
 
         let block_info = BlockInfo::new(&block, &extrinsics, &genesis_hash);
 
-        // Notify spawned tasks that a new block has arrived.
+        // Notify spawned tasks that a new block has arrived, and give them time to process that
+        // block.
         latest_block_tx.send_replace(Some(block_info));
+        task::yield_now().await;
 
         if first_block {
             alerts::startup_alert(&alert_tx, &block_info).await?;
@@ -188,6 +190,9 @@ async fn run() -> anyhow::Result<()> {
                 }
             }
         }
+
+        // Give spawned tasks another opportunity to run.
+        task::yield_now().await;
 
         prev_block_info = Some(block_info);
     }
