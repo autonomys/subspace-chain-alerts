@@ -10,7 +10,7 @@ use tracing::{trace, warn};
 pub const DEFAULT_FARMING_ALERT_THRESHOLD: f64 = 0.75;
 
 /// The default threshold for the farming monitor.
-pub const DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD: u32 = 100;
+pub const DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD: u32 = 10;
 
 /// The default minimum block interval for the farming monitor.
 pub const DEFAULT_FARMING_MINIMUM_BLOCK_INTERVAL: u32 = 30;
