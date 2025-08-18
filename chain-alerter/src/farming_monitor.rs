@@ -7,13 +7,19 @@ use subxt::events::Events;
 use tracing::{trace, warn};
 
 /// The default threshold for the farming monitor.
-pub const DEFAULT_FARMING_ALERT_THRESHOLD: f64 = 0.75;
+pub const DEFAULT_LOW_END_FARMING_ALERT_THRESHOLD: f64 = 0.75;
+
+/// The default threshold for the farming monitor.
+pub const DEFAULT_HIGH_END_FARMING_ALERT_THRESHOLD: f64 = 1.25;
 
 /// The default threshold for the farming monitor.
 pub const DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD: u32 = 10;
 
 /// The default minimum block interval for the farming monitor.
 pub const DEFAULT_FARMING_MINIMUM_BLOCK_INTERVAL: u32 = 30;
+
+/// The default number of blocks to check for farming.
+pub const DEFAULT_FARMING_MAX_BLOCK_INTERVAL: u32 = 100;
 
 /// Interface for farming monitors that consume blocks and perform checks.
 pub trait FarmingMonitor {
