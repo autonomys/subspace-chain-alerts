@@ -191,6 +191,10 @@ impl MemoryFarmingMonitor {
     /// Check the number of farmers with votes in the last `max_block_interval` blocks
     /// and emit alerts if the number of farmers with votes is outside the alert thresholds.
     async fn check_farmer_count(&mut self, block_info: BlockInfo) {
+        if self.state.active_farmers_in_last_blocks.len() == 0 {
+            return;
+        }
+
         // Calculate the average number of farmers with votes in the last `max_block_interval`
         // blocks.
         let average_number_of_farmers_with_votes =
