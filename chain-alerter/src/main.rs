@@ -6,12 +6,18 @@
 #![feature(assert_matches)]
 
 mod alerts;
+mod farming_monitor;
 mod format;
 mod slack;
 mod slot_time_monitor;
 mod subspace;
 
 use crate::alerts::Alert;
+use crate::farming_monitor::{
+    DEFAULT_FARMING_ALERT_THRESHOLD, DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD,
+    DEFAULT_FARMING_MINIMUM_BLOCK_INTERVAL, FarmingMonitor, FarmingMonitorConfig,
+    MemoryFarmingMonitor,
+};
 use crate::slack::{SLACK_OAUTH_SECRET_PATH, SlackClientInfo};
 use crate::slot_time_monitor::{
     DEFAULT_CHECK_INTERVAL, DEFAULT_SLOT_TIME_ALERT_THRESHOLD, SlotTimeMonitorConfig,
@@ -141,6 +147,15 @@ async fn run() -> anyhow::Result<()> {
         alert_tx.clone(),
     ));
 
+    let mut farming_monitor = MemoryFarmingMonitor::new(FarmingMonitorConfig {
+        alert_tx: alert_tx.clone(),
+        max_block_interval: 100,
+        low_end_percentage_threshold: DEFAULT_FARMING_ALERT_THRESHOLD,
+        high_end_percentage_threshold: DEFAULT_FARMING_ALERT_THRESHOLD,
+        inactive_block_threshold: DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD,
+        minimum_block_interval: DEFAULT_FARMING_MINIMUM_BLOCK_INTERVAL,
+    });
+
     while let Some(block) = blocks_sub.next().await {
         let block = block?;
         // These errors represent a connection failure or similar, and require a restart.
@@ -172,6 +187,9 @@ async fn run() -> anyhow::Result<()> {
 
         alerts::check_block(&alert_tx, &block_info, &prev_block_info).await?;
         slot_time_monitor.process_block(&block_info).await;
+        farming_monitor
+            .process_block(&block_info, events.clone())
+            .await;
 
         // Check each extrinsic and event for alerts.
         for extrinsic in extrinsics.iter() {
