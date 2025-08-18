@@ -330,7 +330,6 @@ pub async fn check_block(
     // Because it depends on the next block, this check logs after block production resumes.
     if let Some(gap) = gap_since_last_block(*block_info, *prev_block_info) {
         // If there was a real gap in the chain of blocks, skip this alert.
-        // TODO: spawn a task to check skipped blocks
         if gap >= MIN_BLOCK_GAP && block_info.block_height == prev_block_info.block_height + 1 {
             alert_tx
                 .send(Alert::new(
