@@ -3,6 +3,7 @@
 #[allow(warnings, clippy::all, rustdoc::all)]
 #[rustfmt::skip]
 pub mod artifacts;
+pub mod decode;
 #[cfg(test)]
 pub mod tests;
 

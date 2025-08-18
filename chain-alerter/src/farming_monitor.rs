@@ -2,12 +2,13 @@
 //! blocks and emits alerts if the number of farmers with votes is outside the alert thresholds.
 
 use crate::alerts::{Alert, AlertKind};
-use crate::subspace::artifacts::api::subspace::events::FarmerVote;
+use crate::subspace::decode::decode_h256_from_composite;
 use crate::subspace::{BlockInfo, BlockNumber};
+use scale_value::Composite;
 use std::collections::{HashMap, VecDeque};
 use subxt::SubstrateConfig;
 use subxt::events::Events;
-use tracing::{trace, warn};
+use tracing::{debug, trace, warn};
 
 /// The default threshold for the farming monitor.
 pub const DEFAULT_LOW_END_FARMING_ALERT_THRESHOLD: f64 = 0.75;
@@ -116,12 +117,34 @@ impl MemoryFarmingMonitor {
                 }
             };
 
-            if let Ok(Some(FarmerVote { public_key, .. })) = event.as_event::<FarmerVote>() {
-                trace!("FarmerVote event: {public_key:?}");
-                let public_key = hex::encode(public_key.0);
+            let pallet_name = event.pallet_name();
+            let variant_name = event.variant_name();
+
+            let named_fields = match event.field_values() {
+                Ok(Composite::Named(named_fields)) => named_fields,
+                Err(e) => {
+                    warn!("failed to get event details: {e}");
+                    continue;
+                }
+                _ => continue,
+            };
+
+            debug!("Event {pallet_name:?}.{variant_name:?} named_fields: {named_fields:?}");
+
+            let public_key_hash = match named_fields.iter().find(|(name, _)| name == "public_key") {
+                Some((_, public_key_value)) => decode_h256_from_composite(public_key_value),
+                None => continue,
+            };
+
+            if let Some(public_key_hash) = public_key_hash {
+                let public_key_hash_str = hex::encode(public_key_hash.as_bytes());
+                debug!(
+                    "Inserting farmer {} into last voted by farmer",
+                    public_key_hash_str
+                );
                 self.state
                     .last_block_voted_by_farmer
-                    .insert(public_key, block_height);
+                    .insert(public_key_hash_str, block_height);
             }
         }
     }
