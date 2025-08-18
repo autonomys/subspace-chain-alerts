@@ -148,7 +148,7 @@ async fn run() -> anyhow::Result<()> {
         alert_tx.clone(),
     ));
 
-    let mut farming_monitor = MemoryFarmingMonitor::new(FarmingMonitorConfig {
+    let mut farming_monitor = MemoryFarmingMonitor::new(&FarmingMonitorConfig {
         alert_tx: alert_tx.clone(),
         max_block_interval: DEFAULT_FARMING_MAX_BLOCK_INTERVAL,
         low_end_percentage_threshold: DEFAULT_LOW_END_FARMING_ALERT_THRESHOLD,
@@ -189,7 +189,7 @@ async fn run() -> anyhow::Result<()> {
         alerts::check_block(&alert_tx, &block_info, &prev_block_info).await?;
         slot_time_monitor.process_block(&block_info).await;
         farming_monitor
-            .process_block(&block_info, events.clone())
+            .process_block(block_info, events.clone())
             .await;
 
         // Check each extrinsic and event for alerts.

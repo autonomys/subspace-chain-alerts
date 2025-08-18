@@ -1,3 +1,6 @@
+//! Farming monitor that tracks the number of farmers with votes in the last `max_block_interval`
+//! blocks and emits alerts if the number of farmers with votes is outside the alert thresholds.
+
 use crate::alerts::{Alert, AlertKind};
 use crate::subspace::artifacts::api::subspace::events::FarmerVote;
 use crate::subspace::{BlockInfo, BlockNumber};
@@ -24,7 +27,7 @@ pub const DEFAULT_FARMING_MAX_BLOCK_INTERVAL: u32 = 100;
 /// Interface for farming monitors that consume blocks and perform checks.
 pub trait FarmingMonitor {
     /// Ingest a block and update internal state; may emit alerts.
-    async fn process_block(&mut self, block: &BlockInfo, block_events: Events<SubstrateConfig>);
+    async fn process_block(&mut self, block: BlockInfo, block_events: Events<SubstrateConfig>);
 }
 
 #[derive(Debug, Clone)]
@@ -53,6 +56,8 @@ pub struct FarmingMonitorState {
     number_of_farmers_with_votes: VecDeque<u32>,
 }
 
+/// A farming monitor that tracks the number of farmers with votes in the last `max_block_interval`
+/// blocks and emits alerts if the number of farmers with votes is outside the alert thresholds.
 pub struct MemoryFarmingMonitor {
     /// Monitor configuration parameters.
     config: FarmingMonitorConfig,
@@ -61,12 +66,12 @@ pub struct MemoryFarmingMonitor {
 }
 
 impl FarmingMonitor for MemoryFarmingMonitor {
-    async fn process_block(&mut self, block: &BlockInfo, block_events: Events<SubstrateConfig>) {
+    async fn process_block(&mut self, block: BlockInfo, block_events: Events<SubstrateConfig>) {
         // Update the last voted block for each farmer that voted in this block.
-        self.update_last_voted_block(block_events, block.block_height.clone());
+        self.update_last_voted_block(&block_events, block.block_height);
 
         // Remove farmers that have not voted in the last `inactive_block_threshold` blocks.
-        self.remove_inactive_farmers(block.block_height.clone());
+        self.remove_inactive_farmers(block.block_height);
 
         // Update the number of farmers with votes in the last `max_block_interval` blocks.
         self.update_number_of_farmers_with_votes();
@@ -77,13 +82,14 @@ impl FarmingMonitor for MemoryFarmingMonitor {
             .saturating_sub(self.config.minimum_block_interval)
             > 0;
         if has_passed_minimum_block_interval {
-            self.check_farmer_count(block.clone());
+            self.check_farmer_count(block).await;
         }
     }
 }
 
 impl MemoryFarmingMonitor {
-    pub fn new(config: FarmingMonitorConfig) -> Self {
+    /// Create a new farming monitor.
+    pub fn new(config: &FarmingMonitorConfig) -> Self {
         Self {
             config: config.clone(),
             state: FarmingMonitorState {
@@ -95,9 +101,10 @@ impl MemoryFarmingMonitor {
         }
     }
 
+    /// Update the last voted block for each farmer that voted in the block.
     fn update_last_voted_block(
         &mut self,
-        block_events: Events<SubstrateConfig>,
+        block_events: &Events<SubstrateConfig>,
         block_height: BlockNumber,
     ) {
         for event in block_events.iter() {
@@ -109,19 +116,17 @@ impl MemoryFarmingMonitor {
                 }
             };
 
-            match event.as_event::<FarmerVote>() {
-                Ok(Some(FarmerVote { public_key, .. })) => {
-                    trace!("FarmerVote event: {public_key:?}");
-                    let public_key = hex::encode(public_key.0);
-                    self.state
-                        .last_block_voted_by_farmer
-                        .insert(public_key, block_height);
-                }
-                _ => {}
+            if let Ok(Some(FarmerVote { public_key, .. })) = event.as_event::<FarmerVote>() {
+                trace!("FarmerVote event: {public_key:?}");
+                let public_key = hex::encode(public_key.0);
+                self.state
+                    .last_block_voted_by_farmer
+                    .insert(public_key, block_height);
             }
         }
     }
 
+    /// Remove farmers that have not voted in the last `inactive_block_threshold` blocks.
     fn remove_inactive_farmers(&mut self, block_height: BlockNumber) {
         let config = self.config.clone();
         let last_block_voted_by_farmer = self.state.last_block_voted_by_farmer.clone();
@@ -143,19 +148,25 @@ impl MemoryFarmingMonitor {
         });
     }
 
+    /// Update the number of farmers with votes in the last `max_block_interval` blocks.
     fn update_number_of_farmers_with_votes(&mut self) {
-        let number_of_farmers_with_votes = self.state.last_block_voted_by_farmer.len() as u32;
+        let number_of_farmers_with_votes =
+            u32::try_from(self.state.last_block_voted_by_farmer.len())
+                .expect("farmers should fit in a u32 integer");
         self.state
             .number_of_farmers_with_votes
             .push_front(number_of_farmers_with_votes);
     }
 
-    fn check_farmer_count(&mut self, block_info: BlockInfo) {
+    /// Check the number of farmers with votes in the last `max_block_interval` blocks
+    /// and emit alerts if the number of farmers with votes is outside the alert thresholds.
+    async fn check_farmer_count(&mut self, block_info: BlockInfo) {
         // Calculate the average number of farmers with votes in the last `max_block_interval`
         // blocks.
         let average_number_of_farmers_with_votes =
             self.state.number_of_farmers_with_votes.iter().sum::<u32>()
-                / self.state.number_of_farmers_with_votes.len() as u32;
+                / u32::try_from(self.state.number_of_farmers_with_votes.len())
+                    .expect("farmers should fit in a u32 integer");
 
         let &number_of_farmers_with_votes = match self.state.number_of_farmers_with_votes.front() {
             Some(number_of_farmers_with_votes) => number_of_farmers_with_votes,
@@ -165,28 +176,42 @@ impl MemoryFarmingMonitor {
             }
         };
 
-        let percentage_to_average =
-            number_of_farmers_with_votes as f64 / average_number_of_farmers_with_votes as f64;
+        let percentage_to_average = f64::from(number_of_farmers_with_votes)
+            / f64::from(average_number_of_farmers_with_votes);
 
         // Check if the current number of farmers with votes is greater than the alert threshold.
         if percentage_to_average < self.config.low_end_percentage_threshold {
-            let _ = self.config.alert_tx.send(Alert::new(
-                AlertKind::FarmersDecreasedSuddenly {
-                    number_of_farmers_with_votes,
-                    average_number_of_farmers_with_votes,
-                    number_of_blocks: self.state.number_of_farmers_with_votes.len() as u32,
-                },
-                block_info,
-            ));
+            let _ = self
+                .config
+                .alert_tx
+                .send(Alert::new(
+                    AlertKind::FarmersDecreasedSuddenly {
+                        number_of_farmers_with_votes,
+                        average_number_of_farmers_with_votes,
+                        number_of_blocks: u32::try_from(
+                            self.state.number_of_farmers_with_votes.len(),
+                        )
+                        .expect("farmers should fit in a u32 integer"),
+                    },
+                    block_info,
+                ))
+                .await;
         } else if percentage_to_average > self.config.high_end_percentage_threshold {
-            let _ = self.config.alert_tx.send(Alert::new(
-                AlertKind::FarmersIncreasedSuddenly {
-                    number_of_farmers_with_votes,
-                    average_number_of_farmers_with_votes,
-                    number_of_blocks: self.state.number_of_farmers_with_votes.len() as u32,
-                },
-                block_info,
-            ));
+            let _ = self
+                .config
+                .alert_tx
+                .send(Alert::new(
+                    AlertKind::FarmersIncreasedSuddenly {
+                        number_of_farmers_with_votes,
+                        average_number_of_farmers_with_votes,
+                        number_of_blocks: u32::try_from(
+                            self.state.number_of_farmers_with_votes.len(),
+                        )
+                        .expect("farmers should fit in a u32 integer"),
+                    },
+                    block_info,
+                ))
+                .await;
         }
     }
 }
