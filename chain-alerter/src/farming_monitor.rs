@@ -153,6 +153,13 @@ impl MemoryFarmingMonitor {
         let number_of_farmers_with_votes =
             u32::try_from(self.state.last_block_voted_by_farmer.len())
                 .expect("farmers should fit in a u32 integer");
+        let blocks_in_deque = u32::try_from(self.state.number_of_farmers_with_votes.len())
+            .expect("blocks should fit in a u32 integer");
+
+        if blocks_in_deque >= self.config.max_block_interval {
+            self.state.number_of_farmers_with_votes.pop_back();
+        }
+
         self.state
             .number_of_farmers_with_votes
             .push_front(number_of_farmers_with_votes);
