@@ -230,7 +230,7 @@ mod tests {
 
     const FARMERS: [&str; 3] = ["0x1", "0x2", "0x3"];
 
-    fn simulate_block_votes(
+    async fn simulate_block_votes(
         farming_monitor: &mut MemoryFarmingMonitor,
         block_height: BlockNumber,
         farmers: &[&str],
@@ -253,18 +253,20 @@ mod tests {
         let has_passed_minimum_block_interval =
             block_height.saturating_sub(farming_monitor.config.minimum_block_interval) > 0;
         if has_passed_minimum_block_interval {
-            let _ = farming_monitor.check_farmer_count(BlockInfo {
-                block_height,
-                block_time: None,
-                block_hash: H256::default(),
-                genesis_hash: H256::zero(),
-                block_slot: None,
-            });
+            farming_monitor
+                .check_farmer_count(BlockInfo {
+                    block_height,
+                    block_time: None,
+                    block_hash: H256::default(),
+                    genesis_hash: H256::zero(),
+                    block_slot: None,
+                })
+                .await;
         }
     }
 
-    #[test]
-    fn test_farmers_going_inactive() {
+    #[tokio::test]
+    async fn test_farmers_going_inactive() {
         let alert_tx = tokio::sync::mpsc::channel(100).0;
         let config = FarmingMonitorConfig {
             alert_tx,
@@ -277,11 +279,11 @@ mod tests {
         let mut farming_monitor = MemoryFarmingMonitor::new(&config);
 
         // First block, all farmers vote.
-        simulate_block_votes(&mut farming_monitor, 0, &FARMERS);
+        simulate_block_votes(&mut farming_monitor, 0, &FARMERS).await;
 
         // Next 10 blocks, only the first farmer votes.
         for i in 1..=(DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD + 1) {
-            simulate_block_votes(&mut farming_monitor, i, &[FARMERS[0]]);
+            simulate_block_votes(&mut farming_monitor, i, &[FARMERS[0]]).await;
         }
 
         // Check the number of farmers with votes in the last `max_block_interval` blocks.
@@ -461,6 +463,6 @@ mod tests {
             .await;
 
         // No alert expected
-        assert!(alert_rx.try_recv().is_err());
+        alert_rx.try_recv().unwrap_err();
     }
 }
