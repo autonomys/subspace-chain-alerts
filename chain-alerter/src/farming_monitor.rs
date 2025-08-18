@@ -222,3 +222,245 @@ impl MemoryFarmingMonitor {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use subxt::utils::H256;
+
+    const FARMERS: [&str; 3] = ["0x1", "0x2", "0x3"];
+
+    fn simulate_block_votes(
+        farming_monitor: &mut MemoryFarmingMonitor,
+        block_height: BlockNumber,
+        farmers: &[&str],
+    ) {
+        // Add farmers to the farming monitor.
+        for farmer in farmers {
+            farming_monitor
+                .state
+                .last_block_voted_by_farmer
+                .insert(farmer.to_string(), block_height);
+        }
+
+        // Remove farmers that have not voted in the last `inactive_block_threshold` blocks.
+        farming_monitor.remove_inactive_farmers(block_height);
+
+        // Update the number of farmers with votes in the last `max_block_interval` blocks.
+        farming_monitor.update_number_of_farmers_with_votes();
+
+        // Run checks on the number of farmers.
+        let has_passed_minimum_block_interval =
+            block_height.saturating_sub(farming_monitor.config.minimum_block_interval) > 0;
+        if has_passed_minimum_block_interval {
+            let _ = farming_monitor.check_farmer_count(BlockInfo {
+                block_height,
+                block_time: None,
+                block_hash: H256::default(),
+                genesis_hash: H256::zero(),
+                block_slot: None,
+            });
+        }
+    }
+
+    #[test]
+    fn test_farmers_going_inactive() {
+        let alert_tx = tokio::sync::mpsc::channel(100).0;
+        let config = FarmingMonitorConfig {
+            alert_tx,
+            max_block_interval: DEFAULT_FARMING_MAX_BLOCK_INTERVAL,
+            low_end_percentage_threshold: DEFAULT_LOW_END_FARMING_ALERT_THRESHOLD,
+            high_end_percentage_threshold: DEFAULT_HIGH_END_FARMING_ALERT_THRESHOLD,
+            inactive_block_threshold: DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD,
+            minimum_block_interval: DEFAULT_FARMING_MINIMUM_BLOCK_INTERVAL,
+        };
+        let mut farming_monitor = MemoryFarmingMonitor::new(&config);
+
+        // First block, all farmers vote.
+        simulate_block_votes(&mut farming_monitor, 0, &FARMERS);
+
+        // Next 10 blocks, only the first farmer votes.
+        for i in 1..=(DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD + 1) {
+            simulate_block_votes(&mut farming_monitor, i, &[FARMERS[0]]);
+        }
+
+        // Check the number of farmers with votes in the last `max_block_interval` blocks.
+        assert_eq!(
+            farming_monitor.state.active_farmers_in_last_blocks.front(),
+            Some(&1)
+        );
+
+        assert!(
+            farming_monitor
+                .state
+                .last_block_voted_by_farmer
+                .contains_key(FARMERS[0])
+        );
+        assert!(
+            !farming_monitor
+                .state
+                .last_block_voted_by_farmer
+                .contains_key(FARMERS[1])
+        );
+        assert!(
+            !farming_monitor
+                .state
+                .last_block_voted_by_farmer
+                .contains_key(FARMERS[2])
+        );
+    }
+
+    #[tokio::test]
+    /// Test that an alert is emitted when the number of farmers with votes decreases suddenly.
+    async fn test_alert_emitted_on_drop_in_active_farmers() {
+        let (alert_tx, mut alert_rx) = tokio::sync::mpsc::channel(10);
+        let config = FarmingMonitorConfig {
+            alert_tx,
+            max_block_interval: 10,
+            low_end_percentage_threshold: 0.8,
+            high_end_percentage_threshold: 1.25,
+            inactive_block_threshold: 10,
+            minimum_block_interval: 0,
+        };
+        let mut farming_monitor = MemoryFarmingMonitor::new(&config);
+
+        // Seed previous blocks with stable active farmer counts
+        farming_monitor.state.active_farmers_in_last_blocks = VecDeque::from(vec![10, 10, 10]);
+
+        // Current block has fewer active farmers
+        farming_monitor.state.last_block_voted_by_farmer.clear();
+        for i in 0..5u32 {
+            // 5 active farmers now
+            farming_monitor
+                .state
+                .last_block_voted_by_farmer
+                .insert(format!("f{i}"), 1);
+        }
+
+        farming_monitor.update_number_of_farmers_with_votes();
+        farming_monitor
+            .check_farmer_count(BlockInfo {
+                block_height: 1,
+                block_time: None,
+                block_hash: H256::default(),
+                genesis_hash: H256::zero(),
+                block_slot: None,
+            })
+            .await;
+
+        let Alert { alert, .. } = alert_rx.recv().await.expect("expected decrease alert");
+
+        match alert {
+            AlertKind::FarmersDecreasedSuddenly {
+                number_of_farmers_with_votes,
+                average_number_of_farmers_with_votes,
+                number_of_blocks,
+            } => {
+                assert_eq!(number_of_farmers_with_votes, 5);
+                assert_eq!(average_number_of_farmers_with_votes, (10 + 10 + 10 + 5) / 4);
+                assert_eq!(number_of_blocks, 4);
+            }
+            _ => panic!("unexpected alert kind: {alert:?}"),
+        }
+    }
+
+    #[tokio::test]
+    /// Test that an alert is emitted when the number of farmers with votes increases suddenly.
+    async fn test_alert_emitted_on_increase_in_active_farmers() {
+        let (alert_tx, mut alert_rx) = tokio::sync::mpsc::channel(10);
+        let config = FarmingMonitorConfig {
+            alert_tx,
+            max_block_interval: 10,
+            low_end_percentage_threshold: 0.8,
+            high_end_percentage_threshold: 1.25,
+            inactive_block_threshold: 10,
+            minimum_block_interval: 0,
+        };
+        let mut farming_monitor = MemoryFarmingMonitor::new(&config);
+
+        // Seed previous blocks with stable active farmer counts
+        farming_monitor.state.active_farmers_in_last_blocks = VecDeque::from(vec![10, 10, 10]);
+
+        // Current block has more active farmers
+        farming_monitor.state.last_block_voted_by_farmer.clear();
+        for i in 0..15u32 {
+            // 15 active farmers now
+            farming_monitor
+                .state
+                .last_block_voted_by_farmer
+                .insert(format!("f{i}"), 1);
+        }
+
+        farming_monitor.update_number_of_farmers_with_votes();
+        farming_monitor
+            .check_farmer_count(BlockInfo {
+                block_height: 1,
+                block_time: None,
+                block_hash: H256::default(),
+                genesis_hash: H256::zero(),
+                block_slot: None,
+            })
+            .await;
+
+        let Alert { alert, .. } = alert_rx.recv().await.expect("expected increase alert");
+
+        match alert {
+            AlertKind::FarmersIncreasedSuddenly {
+                number_of_farmers_with_votes,
+                average_number_of_farmers_with_votes,
+                number_of_blocks,
+            } => {
+                assert_eq!(number_of_farmers_with_votes, 15);
+                assert_eq!(
+                    average_number_of_farmers_with_votes,
+                    (10 + 10 + 10 + 15) / 4
+                );
+                assert_eq!(number_of_blocks, 4);
+            }
+            _ => panic!("unexpected alert kind: {alert:?}"),
+        }
+    }
+
+    #[tokio::test]
+    /// Test that no alert is emitted when the number of farmers with votes is within the
+    /// thresholds.
+    async fn test_no_alert_within_thresholds() {
+        let (alert_tx, mut alert_rx) = tokio::sync::mpsc::channel(10);
+        let config = FarmingMonitorConfig {
+            alert_tx,
+            max_block_interval: 10,
+            low_end_percentage_threshold: 0.8,
+            high_end_percentage_threshold: 1.25,
+            inactive_block_threshold: 10,
+            minimum_block_interval: 0,
+        };
+        let mut farming_monitor = MemoryFarmingMonitor::new(&config);
+
+        // Seed previous blocks with stable active farmer counts
+        farming_monitor.state.active_farmers_in_last_blocks = VecDeque::from(vec![10, 10, 10]);
+
+        // Current block within thresholds (close to average)
+        farming_monitor.state.last_block_voted_by_farmer.clear();
+        for i in 0..11u32 {
+            // 11 active farmers now
+            farming_monitor
+                .state
+                .last_block_voted_by_farmer
+                .insert(format!("f{i}"), 1);
+        }
+
+        farming_monitor.update_number_of_farmers_with_votes();
+        farming_monitor
+            .check_farmer_count(BlockInfo {
+                block_height: 1,
+                block_time: None,
+                block_hash: H256::default(),
+                genesis_hash: H256::zero(),
+                block_slot: None,
+            })
+            .await;
+
+        // No alert expected
+        assert!(alert_rx.try_recv().is_err());
+    }
+}
