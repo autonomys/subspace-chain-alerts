@@ -30,6 +30,24 @@ const MIN_BALANCE_CHANGE: Balance = 1_000_000 * AI3;
 /// <https://github.com/paritytech/polkadot-sdk/blob/0034d178fff88a0fd87cf0ec1d8f122ae0011d78/substrate/frame/timestamp/src/lib.rs#L307>
 const MIN_BLOCK_GAP: Duration = Duration::from_secs(60);
 
+/// Whether we are replaying missed blocks, or checking current blocks.
+/// This impacts block stall checks, which can only be spawned on new blocks.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum BlockCheckMode {
+    /// We are checking current blocks.
+    Current,
+
+    /// We are replaying missed blocks.
+    Replay,
+}
+
+impl BlockCheckMode {
+    /// Whether we are checking current blocks.
+    pub fn is_current(&self) -> bool {
+        *self == BlockCheckMode::Current
+    }
+}
+
 /// A blockchain alert with context.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Alert {
@@ -38,12 +56,19 @@ pub struct Alert {
 
     /// The block the alert occurred in.
     pub block_info: BlockInfo,
+
+    /// The mode the alert was triggered in.
+    pub mode: BlockCheckMode,
 }
 
 impl Alert {
     /// Create a new alert.
-    pub fn new(alert: AlertKind, block_info: BlockInfo) -> Self {
-        Self { alert, block_info }
+    pub fn new(alert: AlertKind, block_info: BlockInfo, mode: BlockCheckMode) -> Self {
+        Self {
+            alert,
+            block_info,
+            mode,
+        }
     }
 }
 
@@ -228,7 +253,7 @@ impl Display for AlertKind {
 
 impl AlertKind {
     /// Extract the previous block from the alert, if present.
-    #[expect(dead_code, reason = "TODO: use in tests")]
+    #[allow(dead_code, reason = "TODO: use in tests")]
     pub fn prev_block_info(&self) -> Option<&BlockInfo> {
         match self {
             AlertKind::BlockProductionResumed {
@@ -248,7 +273,7 @@ impl AlertKind {
     }
 
     /// Extract the extrinsic from the alert, if present.
-    #[allow(dead_code, reason = "only used in tests")]
+    #[cfg_attr(not(test), allow(dead_code, reason = "only used in tests"))]
     pub fn extrinsic_info(&self) -> Option<&ExtrinsicInfo> {
         match self {
             AlertKind::ForceBalanceTransfer { extrinsic_info, .. } => Some(extrinsic_info),
@@ -264,7 +289,7 @@ impl AlertKind {
     }
 
     /// Extract the transfer value from the alert, if present.
-    #[expect(dead_code, reason = "TODO: use in tests")]
+    #[allow(dead_code, reason = "TODO: use in tests")]
     pub fn transfer_value(&self) -> Option<Balance> {
         match self {
             AlertKind::ForceBalanceTransfer { transfer_value, .. } => *transfer_value,
@@ -280,7 +305,7 @@ impl AlertKind {
     }
 
     /// Extract the event from the alert, if present.
-    #[allow(dead_code, reason = "only used in tests")]
+    #[cfg_attr(not(test), allow(dead_code, reason = "only used in tests"))]
     pub fn event_info(&self) -> Option<&EventInfo> {
         match self {
             AlertKind::SudoEvent { event_info } => Some(event_info),
@@ -300,15 +325,21 @@ impl AlertKind {
 ///
 /// Any returned errors are fatal and require a restart.
 pub async fn startup_alert(
+    mode: BlockCheckMode,
     alert_tx: &mpsc::Sender<Alert>,
     block_info: &BlockInfo,
 ) -> anyhow::Result<()> {
+    assert!(
+        mode.is_current(),
+        "should only be called on the first current block"
+    );
+
     // TODO:
     // - always post this to the test channel, because it's not a real "alert"
     // - link to the prod channel from this message: <https://docs.slack.dev/messaging/formatting-message-text/#linking-channels>
 
     alert_tx
-        .send(Alert::new(AlertKind::Startup, *block_info))
+        .send(Alert::new(AlertKind::Startup, *block_info, mode))
         .await?;
 
     Ok(())
@@ -318,6 +349,8 @@ pub async fn startup_alert(
 ///
 /// Any returned errors are fatal and require a restart.
 pub async fn check_block(
+    // TODO: when we add a check that doesn't work on replayed blocks, skip it using mode
+    mode: BlockCheckMode,
     alert_tx: &mpsc::Sender<Alert>,
     block_info: &BlockInfo,
     prev_block_info: &Option<BlockInfo>,
@@ -337,12 +370,14 @@ pub async fn check_block(
                         prev_block_info: *prev_block_info,
                     },
                     *block_info,
+                    mode,
                 ))
                 .await?;
         }
     } else {
         // No block time to check against.
         warn!(
+            ?mode,
             "Block time unavailable in block:\n\
             {block_info}\n\
             Previous block:\n\
@@ -356,12 +391,18 @@ pub async fn check_block(
 /// Spawn a task that waits for `MIN_BLOCK_GAP`, then alerts if there was no block received on
 /// `latest_block_rx` in that gap.
 ///
+/// Doesn't work on replayed blocks, because the chain has already resumed after a replayed block
+/// gap.
+///
 /// Fatal errors will panic in the spawned task.
 pub async fn check_for_block_stall(
+    mode: BlockCheckMode,
     alert_tx: mpsc::Sender<Alert>,
     block_info: BlockInfo,
     latest_block_rx: watch::Receiver<Option<BlockInfo>>,
 ) {
+    assert!(mode.is_current(), "doesn't work on replayed blocks");
+
     let old_block_info = block_info;
 
     // Since we exit on panic, there's no need to check the result of the spawned task.
@@ -369,7 +410,7 @@ pub async fn check_for_block_stall(
         sleep(MIN_BLOCK_GAP).await;
 
         // Avoid a potential deadlock by copying the watched value immediately.
-        let latest_block_info = latest_block_rx
+        let latest_block_info: BlockInfo = latest_block_rx
             .borrow()
             .expect("never empty, a block is sent before spawning this task");
 
@@ -387,6 +428,7 @@ pub async fn check_for_block_stall(
             .send(Alert::new(
                 AlertKind::BlockProductionStall { gap },
                 old_block_info,
+                mode,
             ))
             .await
             .expect("sending Slack alert failed");
@@ -401,6 +443,8 @@ pub async fn check_for_block_stall(
 ///
 /// Any returned errors are fatal and require a restart.
 pub async fn check_extrinsic<Client>(
+    // TODO: when we add a check that doesn't work on replayed blocks, skip it using mode
+    mode: BlockCheckMode,
     alert_tx: &mpsc::Sender<Alert>,
     extrinsic: &ExtrinsicDetails<SubspaceConfig, Client>,
     block_info: &BlockInfo,
@@ -429,6 +473,7 @@ where
             .send(Alert::new(
                 AlertKind::SudoCall { extrinsic_info },
                 *block_info,
+                mode,
             ))
             .await?;
     } else if extrinsic_info.pallet == "Balances" {
@@ -452,7 +497,7 @@ where
             None
         };
 
-        debug!("transfer_value: {:?}", transfer_value);
+        debug!(?mode, "transfer_value: {:?}", transfer_value);
 
         // TODO:
         // - test force alerts by checking a historic block with that call
@@ -465,6 +510,7 @@ where
                         transfer_value,
                     },
                     *block_info,
+                    mode,
                 ))
                 .await?;
         } else if let Some(transfer_value) = transfer_value
@@ -477,6 +523,7 @@ where
                         transfer_value,
                     },
                     *block_info,
+                    mode,
                 ))
                 .await?;
         } else if transfer_value.is_none()
@@ -485,6 +532,7 @@ where
             // Every other Balances extrinsic should have an amount.
             // TODO: check transfer_all by accessing account storage to get the value
             warn!(
+                ?mode,
                 "Balance: extrinsic amount unavailable in block:\n\
                 {extrinsic_info}",
             );
@@ -500,6 +548,8 @@ where
 ///
 /// Any returned errors are fatal and require a restart.
 pub async fn check_event(
+    // TODO: when we add a check that doesn't work on replayed blocks, skip it using mode
+    mode: BlockCheckMode,
     alert_tx: &mpsc::Sender<Alert>,
     event: &EventDetails<SubspaceConfig>,
     block_info: &BlockInfo,
@@ -521,12 +571,17 @@ pub async fn check_event(
             .send(Alert::new(
                 AlertKind::OperatorSlashed { event_info },
                 *block_info,
+                mode,
             ))
             .await?;
     } else if event_info.pallet == "Sudo" {
         // We already alert on sudo calls, so this exists mainly to test events.
         alert_tx
-            .send(Alert::new(AlertKind::SudoEvent { event_info }, *block_info))
+            .send(Alert::new(
+                AlertKind::SudoEvent { event_info },
+                *block_info,
+                mode,
+            ))
             .await?;
     }
 

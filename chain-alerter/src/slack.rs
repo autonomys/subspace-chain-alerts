@@ -304,14 +304,20 @@ impl SlackClientInfo {
             self.channel_id,
         );
 
+        let Alert {
+            alert,
+            block_info,
+            mode,
+        } = alert;
+
         // Format the message as Slack message blocks:
         // <https://api.slack.com/reference/block-kit/blocks>
         let mut message_blocks: Vec<SlackBlock> = vec![];
-        message_blocks.push(SlackMarkdownBlock::new(format!("{}", alert.alert)).into());
+        message_blocks.push(SlackMarkdownBlock::new(format!("{alert}")).into());
         message_blocks.push(SlackDividerBlock::new().into());
         message_blocks.push(
             SlackContextBlock::new(vec![
-                SlackBlockPlainText::new(format!("{}", alert.block_info)).into(),
+                SlackBlockPlainText::new(format!("{mode:?}\n{block_info}")).into(),
             ])
             .into(),
         );
