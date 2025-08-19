@@ -30,6 +30,28 @@ const MIN_BALANCE_CHANGE: Balance = 1_000_000 * AI3;
 /// <https://github.com/paritytech/polkadot-sdk/blob/0034d178fff88a0fd87cf0ec1d8f122ae0011d78/substrate/frame/timestamp/src/lib.rs#L307>
 const MIN_BLOCK_GAP: Duration = Duration::from_secs(60);
 
+/// Whether we are replaying missed blocks, or checking current blocks.
+/// This impacts block stall checks, which can only be spawned on new blocks.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum BlockCheckMode {
+    /// We are checking current blocks.
+    Current,
+
+    /// We are replaying missed blocks.
+    Replay,
+}
+
+impl BlockCheckMode {
+    /// Whether we are checking current blocks.
+    #[expect(
+        dead_code,
+        reason = "TODO: use when we implement alerts that don't work on replayed blocks"
+    )]
+    pub fn is_current(&self) -> bool {
+        *self == BlockCheckMode::Current
+    }
+}
+
 /// A blockchain alert with context.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Alert {
@@ -318,6 +340,8 @@ pub async fn startup_alert(
 ///
 /// Any returned errors are fatal and require a restart.
 pub async fn check_block(
+    // TODO: when we add a check that doesn't work on replayed blocks, skip it using mode
+    mode: BlockCheckMode,
     alert_tx: &mpsc::Sender<Alert>,
     block_info: &BlockInfo,
     prev_block_info: &Option<BlockInfo>,
@@ -329,8 +353,7 @@ pub async fn check_block(
 
     // Because it depends on the next block, this check logs after block production resumes.
     if let Some(gap) = gap_since_last_block(*block_info, *prev_block_info) {
-        // If there was a real gap in the chain of blocks, skip this alert.
-        if gap >= MIN_BLOCK_GAP && block_info.block_height == prev_block_info.block_height + 1 {
+        if gap >= MIN_BLOCK_GAP {
             alert_tx
                 .send(Alert::new(
                     AlertKind::BlockProductionResumed {
@@ -344,6 +367,7 @@ pub async fn check_block(
     } else {
         // No block time to check against.
         warn!(
+            ?mode,
             "Block time unavailable in block:\n\
             {block_info}\n\
             Previous block:\n\
@@ -356,6 +380,9 @@ pub async fn check_block(
 
 /// Spawn a task that waits for `MIN_BLOCK_GAP`, then alerts if there was no block received on
 /// `latest_block_rx` in that gap.
+///
+/// Doesn't work on replayed blocks, because the chain has already resumed after a replayed block
+/// gap.
 ///
 /// Fatal errors will panic in the spawned task.
 pub async fn check_for_block_stall(
@@ -402,6 +429,8 @@ pub async fn check_for_block_stall(
 ///
 /// Any returned errors are fatal and require a restart.
 pub async fn check_extrinsic<Client>(
+    // TODO: when we add a check that doesn't work on replayed blocks, skip it using mode
+    mode: BlockCheckMode,
     alert_tx: &mpsc::Sender<Alert>,
     extrinsic: &ExtrinsicDetails<SubspaceConfig, Client>,
     block_info: &BlockInfo,
@@ -453,7 +482,7 @@ where
             None
         };
 
-        debug!("transfer_value: {:?}", transfer_value);
+        debug!(?mode, "transfer_value: {:?}", transfer_value);
 
         // TODO:
         // - test force alerts by checking a historic block with that call
@@ -486,6 +515,7 @@ where
             // Every other Balances extrinsic should have an amount.
             // TODO: check transfer_all by accessing account storage to get the value
             warn!(
+                ?mode,
                 "Balance: extrinsic amount unavailable in block:\n\
                 {extrinsic_info}",
             );
@@ -501,6 +531,8 @@ where
 ///
 /// Any returned errors are fatal and require a restart.
 pub async fn check_event(
+    // TODO: when we add a check that doesn't work on replayed blocks, skip it using mode
+    _mode: BlockCheckMode,
     alert_tx: &mpsc::Sender<Alert>,
     event: &EventDetails<SubspaceConfig>,
     block_info: &BlockInfo,

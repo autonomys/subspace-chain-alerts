@@ -11,7 +11,7 @@ mod slack;
 mod slot_time_monitor;
 mod subspace;
 
-use crate::alerts::Alert;
+use crate::alerts::{Alert, BlockCheckMode};
 use crate::slack::{SLACK_OAUTH_SECRET_PATH, SlackClientInfo};
 use crate::slot_time_monitor::{
     DEFAULT_CHECK_INTERVAL, DEFAULT_SLOT_TIME_ALERT_THRESHOLD, SlotTimeMonitorConfig,
@@ -163,6 +163,12 @@ async fn run() -> anyhow::Result<()> {
             );
         }
 
+        // Notify spawned tasks that a new block has arrived, and give them time to process that
+        // block. This is needed even if there is a block gap, because replaying missed blocks can
+        // take a while.
+        latest_block_tx.send_replace(Some(block_info));
+        task::yield_now().await;
+
         // Check for a gap in the subscribed blocks.
         if let Some(prev_block_info) = prev_block_info
             && block_info.block_height != prev_block_info.block_height + 1
@@ -172,19 +178,27 @@ async fn run() -> anyhow::Result<()> {
                 &chain_client,
                 &block_info,
                 &prev_block_info,
-                &latest_block_tx,
                 &mut slot_time_monitor,
                 &alert_tx,
             )
             .await?;
         } else {
             // Only run alerts on a block if there is no gap.
+
+            // We only check for block stalls on current blocks.
+            alerts::check_for_block_stall(
+                alert_tx.clone(),
+                block_info,
+                latest_block_tx.subscribe(),
+            )
+            .await;
+
             run_on_block(
+                BlockCheckMode::Current,
                 &block,
                 &block_info,
                 &extrinsics,
                 &prev_block_info,
-                &latest_block_tx,
                 &mut slot_time_monitor,
                 &alert_tx,
             )
@@ -207,7 +221,6 @@ pub async fn replay_previous_blocks(
     chain_client: &SubspaceClient,
     block_info: &BlockInfo,
     prev_block_info: &BlockInfo,
-    latest_block_tx: &watch::Sender<Option<BlockInfo>>,
     slot_time_monitor: &mut MemorySlotTimeMonitor,
     alert_tx: &mpsc::Sender<Alert>,
 ) -> anyhow::Result<()> {
@@ -255,6 +268,7 @@ pub async fn replay_previous_blocks(
     let mut missed_block_height = gap_end.block_height;
 
     // When we reach the gap start height, insert that block hash, then stop.
+    // TODO: limit how far back we go, very old alerts aren't worth checking for
     while gap_start.1 < missed_block_height {
         // We don't store the missed blocks because they could take up a lot of memory.
         let missed_block = chain_client
@@ -306,11 +320,11 @@ pub async fn replay_previous_blocks(
             }
 
             run_on_block(
+                BlockCheckMode::Replay,
                 &block,
                 &block_info,
                 &extrinsics,
                 &prev_block_info,
-                latest_block_tx,
                 slot_time_monitor,
                 alert_tx,
             )
@@ -325,40 +339,36 @@ pub async fn replay_previous_blocks(
 }
 
 /// Run checks on a single block, against its previous block.
-pub async fn run_on_block(
+async fn run_on_block(
+    mode: BlockCheckMode,
     block: &Block<SubspaceConfig, SubspaceClient>,
     block_info: &BlockInfo,
     extrinsics: &Extrinsics<SubspaceConfig, SubspaceClient>,
     prev_block_info: &Option<BlockInfo>,
-    latest_block_tx: &watch::Sender<Option<BlockInfo>>,
     slot_time_monitor: &mut MemorySlotTimeMonitor,
     alert_tx: &mpsc::Sender<Alert>,
 ) -> anyhow::Result<()> {
     let events = block.events().await?;
 
-    // Notify spawned tasks that a new block has arrived, and give them time to process that
-    // block.
-    latest_block_tx.send_replace(Some(*block_info));
-    task::yield_now().await;
-
-    // Check for block stalls, and check the block itself for alerts.
-    alerts::check_for_block_stall(alert_tx.clone(), *block_info, latest_block_tx.subscribe()).await;
-
-    alerts::check_block(alert_tx, block_info, prev_block_info).await?;
-    slot_time_monitor.process_block(block_info).await;
+    // Check the block itself for alerts, including stall resumes.
+    alerts::check_block(mode, alert_tx, block_info, prev_block_info).await?;
+    slot_time_monitor.process_block(mode, block_info).await;
 
     // Check each extrinsic and event for alerts.
     for extrinsic in extrinsics.iter() {
-        alerts::check_extrinsic(alert_tx, &extrinsic, block_info).await?;
+        alerts::check_extrinsic(mode, alert_tx, &extrinsic, block_info).await?;
     }
 
     for event in events.iter() {
         match event {
             Ok(event) => {
-                alerts::check_event(alert_tx, &event, block_info).await?;
+                alerts::check_event(mode, alert_tx, &event, block_info).await?;
             }
             Err(e) => {
-                warn!("error parsing event, other events in this block have been skipped: {e}");
+                warn!(
+                    ?mode,
+                    "error parsing event, other events in this block have been skipped: {e}"
+                );
             }
         }
     }

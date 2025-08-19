@@ -3,7 +3,7 @@
 //! Set the `NODE_URL` env var to the RPC URL of a Subspace node to override the default public
 //! instance.
 
-use crate::alerts::{self, AlertKind};
+use crate::alerts::{self, AlertKind, BlockCheckMode};
 use crate::slot_time_monitor::test_utils::mock_block_info;
 use crate::slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor, SlotTimeMonitorConfig};
 use crate::subspace::tests::{
@@ -86,7 +86,7 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
     let (extrinsic, extrinsic_info) =
         decode_extrinsic(&block_info, &extrinsics, SUDO_BLOCK.2).await?;
 
-    alerts::check_extrinsic(&alert_tx, &extrinsic, &block_info).await?;
+    alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info).await?;
     let alert = alert_rx.try_recv().expect("no alert received");
     assert_eq!(alert.alert, AlertKind::SudoCall { extrinsic_info });
     assert_eq!(
@@ -100,7 +100,7 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
 
     let (event, event_info) = decode_event(&block_info, &events, SUDO_BLOCK.3).await?;
 
-    alerts::check_event(&alert_tx, &event, &block_info).await?;
+    alerts::check_event(BlockCheckMode::Replay, &alert_tx, &event, &block_info).await?;
     let alert = alert_rx.try_recv().expect("no alert received");
     assert_eq!(alert.alert, AlertKind::SudoEvent { event_info });
     assert_eq!(
@@ -131,7 +131,7 @@ async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
         let (extrinsic, extrinsic_info) =
             decode_extrinsic(&block_info, &extrinsics, extrinsic_index).await?;
 
-        alerts::check_extrinsic(&alert_tx, &extrinsic, &block_info).await?;
+        alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info).await?;
         let alert = alert_rx.try_recv().expect("no alert received");
         assert_eq!(
             alert.alert,
@@ -165,8 +165,12 @@ async fn no_expected_test_slot_time_alert() -> anyhow::Result<()> {
         }
     });
 
-    naive_slot_time_monitor.process_block(&first_block).await;
-    naive_slot_time_monitor.process_block(&second_block).await;
+    naive_slot_time_monitor
+        .process_block(BlockCheckMode::Replay, &first_block)
+        .await;
+    naive_slot_time_monitor
+        .process_block(BlockCheckMode::Replay, &second_block)
+        .await;
 
     alert_rx
         .try_recv()
@@ -192,8 +196,12 @@ async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
         }
     });
 
-    strict_slot_time_monitor.process_block(&first_block).await;
-    strict_slot_time_monitor.process_block(&second_block).await;
+    strict_slot_time_monitor
+        .process_block(BlockCheckMode::Replay, &first_block)
+        .await;
+    strict_slot_time_monitor
+        .process_block(BlockCheckMode::Replay, &second_block)
+        .await;
 
     let alert = alert_rx
         .try_recv()
@@ -232,8 +240,12 @@ async fn expected_test_slot_time_alert_but_not_yet() -> anyhow::Result<()> {
         }
     });
 
-    strict_slot_time_monitor.process_block(&first_block).await;
-    strict_slot_time_monitor.process_block(&second_block).await;
+    strict_slot_time_monitor
+        .process_block(BlockCheckMode::Replay, &first_block)
+        .await;
+    strict_slot_time_monitor
+        .process_block(BlockCheckMode::Replay, &second_block)
+        .await;
 
     alert_rx
         .try_recv()

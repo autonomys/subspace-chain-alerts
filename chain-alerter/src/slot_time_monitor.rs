@@ -6,7 +6,7 @@
 #[cfg(test)]
 pub mod test_utils;
 
-use crate::alerts::{Alert, AlertKind};
+use crate::alerts::{Alert, AlertKind, BlockCheckMode};
 use crate::subspace::{BlockInfo, BlockTime, RawTime, Slot};
 use std::time::Duration;
 use tokio::sync::mpsc::error::SendError;
@@ -21,7 +21,7 @@ pub const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_secs(3600);
 /// Interface for slot time monitors that consume blocks and perform checks.
 pub trait SlotTimeMonitor {
     /// Ingest a block and update internal state; may emit alerts.
-    async fn process_block(&mut self, block: &BlockInfo);
+    async fn process_block(&mut self, mode: BlockCheckMode, block: &BlockInfo);
 }
 
 /// Configuration for the slot time monitor.
@@ -29,7 +29,8 @@ pub trait SlotTimeMonitor {
 pub struct SlotTimeMonitorConfig {
     /// Interval between checks of slot timing.
     pub check_interval: Duration,
-    /// Threshold for alerting based on time-per-slot ratio.
+    /// Minimum threshold for alerting based on time-per-slot ratio.
+    /// TODO: also alert on a maximum threshold
     pub alert_threshold: f64,
     /// Channel used to emit alerts.
     pub alert_tx: tokio::sync::mpsc::Sender<Alert>,
@@ -77,32 +78,32 @@ impl SlotTimeMonitorConfig {
 
 impl SlotTimeMonitor for MemorySlotTimeMonitor {
     /// Process a new block, updating internal scheduling and sending alerts when needed.
-    async fn process_block(&mut self, block_info: &BlockInfo) {
+    async fn process_block(&mut self, mode: BlockCheckMode, block_info: &BlockInfo) {
         let (block_time, block_slot) = match (block_info.block_time, block_info.block_slot) {
             (Some(block_time), Some(block_slot)) => (block_time, block_slot),
             (None, None) => {
-                warn!("Block time and slot not found");
+                warn!(?mode, "Block time and slot not found");
                 return;
             }
             (None, Some(_)) => {
-                warn!("Block time not found");
+                warn!(?mode, "Block time not found");
                 return;
             }
             (Some(_), None) => {
-                warn!("Block slot not found");
+                warn!(?mode, "Block slot not found");
                 return;
             }
         };
 
         debug!(
-            "Extracted slot: {:?} for block {:?}",
-            block_slot, block_info.block_height
+            ?mode,
+            "Extracted slot: {:?} for block {:?}", block_slot, block_info.block_height,
         );
 
         match self.state {
             // slot available, we should check if we are in the interval
             Some(state) if state.next_check_time <= block_time => {
-                debug!("Checking slot time alert in interval...");
+                debug!(?mode, "Checking slot time alert in interval...");
 
                 let slot_diff = block_slot - state.first_slot_in_interval;
                 let time_diff = state
@@ -119,21 +120,21 @@ impl SlotTimeMonitor for MemorySlotTimeMonitor {
                     let time_per_slot = time_diff_in_seconds as f64 / slot_diff as f64;
                     if time_per_slot > self.config.alert_threshold {
                         info!(
-                            "Time per slot alert triggered, time_per_slot: {}",
-                            time_per_slot
+                            ?mode,
+                            "Time per slot alert triggered, time_per_slot: {time_per_slot}",
                         );
                         let _ = self.send_alert(time_per_slot, *block_info).await;
                     } else {
                         debug!(
-                            "Time per slot not triggered, time_per_slot: {}",
-                            time_per_slot
+                            ?mode,
+                            "Time per slot not triggered, time_per_slot: {time_per_slot}",
                         );
                     }
                     self.schedule_next_check(block_time, block_slot);
                 } else {
                     warn!(
-                        "Unexpected slot time, earlier than first block in interval: {:?} - {:?}",
-                        block_info, state
+                        ?mode,
+                        "Unexpected slot time, earlier than first block in interval: {block_info:?} - {state:?}",
                     );
                 }
             }
