@@ -7,6 +7,7 @@ use crate::subspace::{BlockInfo, BlockNumber, SubspaceConfig};
 use scale_value::Composite;
 use std::collections::{HashMap, VecDeque};
 use subxt::events::Events;
+use subxt::utils::H256;
 use tracing::{debug, trace, warn};
 
 /// The default threshold for the farming monitor.
@@ -51,7 +52,7 @@ pub struct FarmingMonitorConfig {
 /// State tracked by the farming monitor, and updated at the same time.
 pub struct FarmingMonitorState {
     /// The last block voted by a farmer.
-    last_block_voted_by_farmer: HashMap<String, BlockNumber>,
+    last_block_voted_by_farmer: HashMap<H256, BlockNumber>,
     /// The number of farmers that have votes in the last `max_block_interval` blocks.
     active_farmers_in_last_blocks: VecDeque<u32>,
 }
@@ -138,12 +139,12 @@ impl MemoryFarmingMonitor {
             if let Some(public_key_hash) = public_key_hash {
                 let public_key_hash_str = hex::encode(public_key_hash.as_bytes());
                 debug!(
-                    "Inserting farmer {} into last voted by farmer",
+                    "Inserting farmer 0x{} into last voted by farmer",
                     public_key_hash_str
                 );
                 self.state
                     .last_block_voted_by_farmer
-                    .insert(public_key_hash_str, block_height);
+                    .insert(public_key_hash, block_height);
             }
         }
     }
@@ -252,19 +253,25 @@ mod tests {
     use super::*;
     use subxt::utils::H256;
 
-    const FARMERS: [&str; 3] = ["0x1", "0x2", "0x3"];
+    fn farmers() -> [H256; 3] {
+        [
+            H256::from_low_u64_be(1),
+            H256::from_low_u64_be(2),
+            H256::from_low_u64_be(3),
+        ]
+    }
 
     async fn simulate_block_votes(
         farming_monitor: &mut MemoryFarmingMonitor,
         block_height: BlockNumber,
-        farmers: &[&str],
+        farmers: &[H256],
     ) {
         // Add farmers to the farming monitor.
         for farmer in farmers {
             farming_monitor
                 .state
                 .last_block_voted_by_farmer
-                .insert(farmer.to_string(), block_height);
+                .insert(*farmer, block_height);
         }
 
         // Remove farmers that have not voted in the last `inactive_block_threshold` blocks.
@@ -302,12 +309,14 @@ mod tests {
         };
         let mut farming_monitor = MemoryFarmingMonitor::new(&config);
 
+        let farmers = self::farmers();
+
         // First block, all farmers vote.
-        simulate_block_votes(&mut farming_monitor, 0, &FARMERS).await;
+        simulate_block_votes(&mut farming_monitor, 0, &farmers).await;
 
         // Next 10 blocks, only the first farmer votes.
         for i in 1..=(DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD + 1) {
-            simulate_block_votes(&mut farming_monitor, i, &[FARMERS[0]]).await;
+            simulate_block_votes(&mut farming_monitor, i, &[farmers[0]]).await;
         }
 
         // Check the number of farmers with votes in the last `max_block_interval` blocks.
@@ -320,19 +329,19 @@ mod tests {
             farming_monitor
                 .state
                 .last_block_voted_by_farmer
-                .contains_key(FARMERS[0])
+                .contains_key(&farmers[0])
         );
         assert!(
             !farming_monitor
                 .state
                 .last_block_voted_by_farmer
-                .contains_key(FARMERS[1])
+                .contains_key(&farmers[1])
         );
         assert!(
             !farming_monitor
                 .state
                 .last_block_voted_by_farmer
-                .contains_key(FARMERS[2])
+                .contains_key(&farmers[2])
         );
     }
 
@@ -360,7 +369,7 @@ mod tests {
             farming_monitor
                 .state
                 .last_block_voted_by_farmer
-                .insert(format!("f{i}"), 1);
+                .insert(H256::from_low_u64_be(u64::from(i)), 1);
         }
 
         let block_info = BlockInfo {
@@ -412,7 +421,7 @@ mod tests {
             farming_monitor
                 .state
                 .last_block_voted_by_farmer
-                .insert(format!("f{i}"), 1);
+                .insert(H256::from_low_u64_be(u64::from(i)), 1);
         }
 
         let mock_block_info = BlockInfo {
@@ -466,7 +475,7 @@ mod tests {
             farming_monitor
                 .state
                 .last_block_voted_by_farmer
-                .insert(format!("f{i}"), 1);
+                .insert(H256::from_low_u64_be(u64::from(i)), 1);
         }
 
         farming_monitor.update_number_of_farmers_with_votes();
