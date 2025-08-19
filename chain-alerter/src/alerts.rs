@@ -129,7 +129,7 @@ pub enum AlertKind {
         number_of_farmers_with_votes: u32,
 
         /// The average number of farmers with votes.
-        average_number_of_farmers_with_votes: u32,
+        average_number_of_farmers_with_votes: f64,
 
         /// The number of blocks in the interval.
         number_of_blocks: u32,
@@ -141,7 +141,7 @@ pub enum AlertKind {
         number_of_farmers_with_votes: u32,
 
         /// The average number of farmers with votes.
-        average_number_of_farmers_with_votes: u32,
+        average_number_of_farmers_with_votes: f64,
 
         /// The number of blocks in the interval.
         number_of_blocks: u32,

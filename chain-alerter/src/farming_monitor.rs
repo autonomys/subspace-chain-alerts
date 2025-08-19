@@ -198,9 +198,11 @@ impl MemoryFarmingMonitor {
         // Calculate the average number of farmers with votes in the last `max_block_interval`
         // blocks.
         let average_number_of_farmers_with_votes =
-            self.state.active_farmers_in_last_blocks.iter().sum::<u32>()
-                / u32::try_from(self.state.active_farmers_in_last_blocks.len())
-                    .expect("farmers should fit in a u32 integer");
+            f64::from(self.state.active_farmers_in_last_blocks.iter().sum::<u32>())
+                / f64::from(
+                    u32::try_from(self.state.active_farmers_in_last_blocks.len())
+                        .expect("farmers should fit in a u32 integer"),
+                );
 
         let &number_of_farmers_with_votes = self
             .state
@@ -389,7 +391,7 @@ mod tests {
             Alert::new(
                 AlertKind::FarmersDecreasedSuddenly {
                     number_of_farmers_with_votes: 5,
-                    average_number_of_farmers_with_votes: (10 + 10 + 10 + 5) / 4,
+                    average_number_of_farmers_with_votes: f64::from(10 + 10 + 10 + 5) / 4.0f64,
                     number_of_blocks: 4,
                 },
                 block_info
@@ -442,7 +444,7 @@ mod tests {
             Alert::new(
                 AlertKind::FarmersIncreasedSuddenly {
                     number_of_farmers_with_votes: 15,
-                    average_number_of_farmers_with_votes: (10 + 10 + 10 + 15) / 4,
+                    average_number_of_farmers_with_votes: f64::from(10 + 10 + 10 + 15) / 4.0f64,
                     number_of_blocks: 4,
                 },
                 mock_block_info
