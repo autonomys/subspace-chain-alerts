@@ -210,8 +210,8 @@ impl MemoryFarmingMonitor {
             .front()
             .expect("already checked not empty");
 
-        let percentage_to_average = f64::from(number_of_farmers_with_votes)
-            / f64::from(average_number_of_farmers_with_votes);
+        let percentage_to_average =
+            f64::from(number_of_farmers_with_votes) / average_number_of_farmers_with_votes;
 
         // Check if the current number of farmers with votes is greater than the alert threshold.
         if percentage_to_average < self.config.low_end_change_threshold {
