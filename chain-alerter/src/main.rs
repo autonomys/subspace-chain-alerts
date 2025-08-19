@@ -12,7 +12,7 @@ mod slack;
 mod slot_time_monitor;
 mod subspace;
 
-use crate::alerts::Alert;
+use crate::alerts::{Alert, BlockCheckMode};
 use crate::farming_monitor::{
     DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD, DEFAULT_FARMING_MAX_BLOCK_INTERVAL,
     DEFAULT_FARMING_MINIMUM_BLOCK_INTERVAL, DEFAULT_HIGH_END_FARMING_ALERT_THRESHOLD,
@@ -24,15 +24,17 @@ use crate::slot_time_monitor::{
     DEFAULT_CHECK_INTERVAL, DEFAULT_SLOT_TIME_ALERT_THRESHOLD, SlotTimeMonitorConfig,
 };
 use crate::subspace::{
-    BlockInfo, BlockNumber, LOCAL_SUBSPACE_NODE_URL, SubspaceClient, create_subspace_client,
-    spawn_metadata_update_task,
+    BlockInfo, BlockNumber, LOCAL_SUBSPACE_NODE_URL, SubspaceClient, SubspaceConfig,
+    create_subspace_client, spawn_metadata_update_task,
 };
 use clap::{Parser, ValueHint};
 use slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor};
+use std::collections::VecDeque;
 use std::panic;
 use subspace_process::{AsyncJoinOnDrop, init_logger, set_exit_on_panic, shutdown_signal};
-use tokio::select;
+use subxt::blocks::{Block, Extrinsics};
 use tokio::sync::{mpsc, watch};
+use tokio::{select, task};
 use tracing::{error, info, warn};
 
 /// The number of blocks between info-level block number logs.
@@ -133,7 +135,7 @@ async fn run() -> anyhow::Result<()> {
     let mut first_block = true;
 
     // Keep the previous block's info for block to block alerts.
-    let mut prev_block_info = None;
+    let mut prev_block_info: Option<BlockInfo> = None;
     // A channel that shares the latest block info with concurrently running tasks.
     let latest_block_tx = watch::Sender::new(None);
 
@@ -161,15 +163,10 @@ async fn run() -> anyhow::Result<()> {
         let block = block?;
         // These errors represent a connection failure or similar, and require a restart.
         let extrinsics = block.extrinsics().await?;
-        let events = block.events().await?;
-
         let block_info = BlockInfo::new(&block, &extrinsics, &genesis_hash);
 
-        // Notify spawned tasks that a new block has arrived.
-        latest_block_tx.send_replace(Some(block_info));
-
         if first_block {
-            alerts::startup_alert(&alert_tx, &block_info).await?;
+            alerts::startup_alert(BlockCheckMode::Current, &alert_tx, &block_info).await?;
             first_block = false;
         } else if block_info
             .block_height
@@ -182,33 +179,223 @@ async fn run() -> anyhow::Result<()> {
             );
         }
 
-        // Check for block stalls, and check the block itself for alerts.
-        alerts::check_for_block_stall(alert_tx.clone(), block_info, latest_block_tx.subscribe())
+        // Notify spawned tasks that a new block has arrived, and give them time to process that
+        // block. This is needed even if there is a block gap, because replaying missed blocks can
+        // take a while.
+        latest_block_tx.send_replace(Some(block_info));
+        task::yield_now().await;
+
+        // Check for a gap in the subscribed blocks.
+        if let Some(prev_block_info) = prev_block_info
+            && block_info.block_height != prev_block_info.block_height + 1
+        {
+            // Go back in the chain and check missed blocks for alerts.
+            replay_previous_blocks(
+                &chain_client,
+                &block_info,
+                &prev_block_info,
+                &mut slot_time_monitor,
+                &mut farming_monitor,
+                &alert_tx,
+            )
+            .await?;
+        } else {
+            // Only run alerts on a block if there is no gap.
+
+            // We only check for block stalls on current blocks.
+            alerts::check_for_block_stall(
+                BlockCheckMode::Current,
+                alert_tx.clone(),
+                block_info,
+                latest_block_tx.subscribe(),
+            )
             .await;
 
-        alerts::check_block(&alert_tx, &block_info, &prev_block_info).await?;
-        slot_time_monitor.process_block(&block_info).await;
-        farming_monitor
-            .process_block(block_info, events.clone())
-            .await;
-
-        // Check each extrinsic and event for alerts.
-        for extrinsic in extrinsics.iter() {
-            alerts::check_extrinsic(&alert_tx, &extrinsic, &block_info).await?;
+            run_on_block(
+                BlockCheckMode::Current,
+                &block,
+                &block_info,
+                &extrinsics,
+                &prev_block_info,
+                &mut slot_time_monitor,
+                &mut farming_monitor,
+                &alert_tx,
+            )
+            .await?;
         }
 
-        for event in events.iter() {
-            match event {
-                Ok(event) => {
-                    alerts::check_event(&alert_tx, &event, &block_info).await?;
-                }
-                Err(e) => {
-                    warn!("error parsing event, other events in this block have been skipped: {e}");
-                }
-            }
-        }
+        // Give spawned tasks another opportunity to run.
+        task::yield_now().await;
 
         prev_block_info = Some(block_info);
+    }
+
+    Ok(())
+}
+
+/// When we've missed some blocks, re-check them, but without spawning block stall checks.
+/// (The blocks have already happened, so we can only alert on stall resumes.)
+#[expect(clippy::missing_panics_doc, reason = "can't actually panic")]
+pub async fn replay_previous_blocks(
+    chain_client: &SubspaceClient,
+    block_info: &BlockInfo,
+    prev_block_info: &BlockInfo,
+    slot_time_monitor: &mut MemorySlotTimeMonitor,
+    farming_monitor: &mut MemoryFarmingMonitor,
+    alert_tx: &mpsc::Sender<Alert>,
+) -> anyhow::Result<()> {
+    let genesis_hash = block_info.genesis_hash;
+
+    let (gap_start, gap_end) = if block_info.block_height <= prev_block_info.block_height {
+        // Multiple blocks at the same height, a chain fork.
+        info!(
+            "chain fork detected: {} ({}) -> {} ({})\n\
+            checking skipped blocks",
+            prev_block_info.block_height,
+            prev_block_info.block_hash,
+            block_info.block_height,
+            block_info.block_hash,
+        );
+
+        // For now, just assume the fork is at the previous block.
+        // TODO: add proper chain fork detection and alerts
+        (
+            // TODO: turn this into a struct
+            (block_info.parent_hash, block_info.block_height - 1),
+            block_info,
+        )
+    } else {
+        // A gap in the chain of blocks.
+        warn!(
+            "{} block gap detected: {} ({}) -> {} ({})\n\
+            checking skipped blocks",
+            block_info.block_height - prev_block_info.block_height - 1,
+            prev_block_info.block_height,
+            prev_block_info.block_hash,
+            block_info.block_height,
+            block_info.block_hash,
+        );
+
+        // We know the exact gap, but it could be a fork, so keep the height as well.
+        (
+            (prev_block_info.block_hash, prev_block_info.block_height),
+            block_info,
+        )
+    };
+
+    // Walk the chain backwards, saving the block hashes.
+    let mut missed_block_hashes = VecDeque::from([gap_end.block_hash]);
+    let mut missed_block_height = gap_end.block_height;
+
+    // When we reach the gap start height, insert that block hash, then stop.
+    // TODO: limit how far back we go, very old alerts aren't worth checking for
+    while gap_start.1 < missed_block_height {
+        // We don't store the missed blocks because they could take up a lot of memory.
+        let missed_block = chain_client
+            .blocks()
+            .at(*missed_block_hashes
+                .front()
+                .expect("always contains the final hash"))
+            .await?;
+        missed_block_hashes.push_front(missed_block.header().parent_hash);
+        missed_block_height = missed_block.number() - 1;
+    }
+
+    if Some(&gap_start.0) != missed_block_hashes.front() {
+        // The gap was a fork, we found a sibling/cousin of the gap start.
+        info!(
+            "chain fork at {} confirmed: {} is a fork of {} -> {} ({})",
+            gap_start.1,
+            missed_block_hashes
+                .front()
+                .expect("always contains the final hash"),
+            gap_start.0,
+            gap_end.block_hash,
+            gap_end.block_height,
+        );
+    }
+
+    // Now walk forwards, checking for alerts.
+    // We skip block stall checks, because we know these blocks already have children.
+    // (But we still do stall resume checks.)
+    let mut prev_block_info: Option<BlockInfo> = None;
+
+    for missed_block_hash in missed_block_hashes {
+        let block = chain_client.blocks().at(missed_block_hash).await?;
+        let extrinsics = block.extrinsics().await?;
+        let block_info = BlockInfo::new(&block, &extrinsics, &genesis_hash);
+
+        // We already checked the start of the gap, so skip checking it again.
+        // (We're just using it for the previous block info.)
+        if prev_block_info.is_some() {
+            if block_info
+                .block_height
+                .is_multiple_of(BLOCK_UPDATE_LOGGING_INTERVAL)
+            {
+                // Let the user know we're still alive
+                info!(
+                    "Replayed missed block:\n\
+                    {block_info}"
+                );
+            }
+
+            run_on_block(
+                BlockCheckMode::Replay,
+                &block,
+                &block_info,
+                &extrinsics,
+                &prev_block_info,
+                slot_time_monitor,
+                farming_monitor,
+                alert_tx,
+            )
+            .await?;
+        }
+
+        // We don't spawn any tasks, so we don't need to yield here.
+        prev_block_info = Some(block_info);
+    }
+
+    Ok(())
+}
+
+/// Run checks on a single block, against its previous block.
+async fn run_on_block(
+    mode: BlockCheckMode,
+    block: &Block<SubspaceConfig, SubspaceClient>,
+    block_info: &BlockInfo,
+    extrinsics: &Extrinsics<SubspaceConfig, SubspaceClient>,
+    prev_block_info: &Option<BlockInfo>,
+    slot_time_monitor: &mut MemorySlotTimeMonitor,
+    farming_monitor: &mut MemoryFarmingMonitor,
+    alert_tx: &mpsc::Sender<Alert>,
+) -> anyhow::Result<()> {
+    let events = block.events().await?;
+
+    // Check the block itself for alerts, including stall resumes.
+    alerts::check_block(mode, alert_tx, block_info, prev_block_info).await?;
+    slot_time_monitor.process_block(mode, block_info).await;
+    farming_monitor
+        .process_block(block_info.clone(), mode, block.events().await?)
+        .await;
+
+    // Check each extrinsic and event for alerts.
+    for extrinsic in extrinsics.iter() {
+        alerts::check_extrinsic(mode, alert_tx, &extrinsic, block_info).await?;
+    }
+
+    for event in events.iter() {
+        match event {
+            Ok(event) => {
+                alerts::check_event(mode, alert_tx, &event, block_info).await?;
+            }
+            Err(e) => {
+                warn!(
+                    ?mode,
+                    "error parsing event, other events in this block have been skipped: {e}"
+                );
+            }
+        }
     }
 
     Ok(())

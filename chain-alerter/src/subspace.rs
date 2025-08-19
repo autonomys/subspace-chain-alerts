@@ -105,6 +105,9 @@ pub struct BlockInfo {
     /// The block hash.
     pub block_hash: H256,
 
+    /// The parent block hash.
+    pub parent_hash: H256,
+
     /// The genesis block hash for this network.
     pub genesis_hash: H256,
 
@@ -114,25 +117,36 @@ pub struct BlockInfo {
 
 impl Display for BlockInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "Block Height: {}", self.block_height)?;
+        let Self {
+            block_height,
+            block_time,
+            block_hash,
+            // Skip the parent hash because it's too verbose in alerts.
+            parent_hash: _,
+            genesis_hash,
+            block_slot,
+        } = self;
+
+        writeln!(f, "Block Height: {block_height}")?;
         writeln!(
             f,
             "Time: {}",
-            self.block_time
+            block_time
                 .as_ref()
                 .map(|bt| bt.to_string())
                 .unwrap_or_else(|| "unknown".to_string())
         )?;
         // Show full block hash but truncated genesis hash.
-        writeln!(f, "Hash: {:?}", self.block_hash)?;
+        writeln!(f, "Hash: {block_hash:?}")?;
         writeln!(
             f,
             "Slot: {}",
-            self.block_slot
+            block_slot
                 .map(|bs| bs.to_string())
                 .unwrap_or_else(|| "unknown".to_string())
         )?;
-        write!(f, "Genesis: {}", self.genesis_hash)?;
+        write!(f, "Genesis: {genesis_hash}")?;
+
         Ok(())
     }
 }
@@ -152,6 +166,7 @@ impl BlockInfo {
             block_time: BlockTime::new(extrinsics),
             block_slot: Slot::new(block),
             block_hash: block.hash(),
+            parent_hash: block.header().parent_hash,
             genesis_hash: *genesis_hash,
         }
     }
@@ -245,13 +260,18 @@ pub struct ExtrinsicInfo {
 
 impl Display for ExtrinsicInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(
-            f,
-            "Extrinsic {}::{} (index {})",
-            self.pallet, self.call, self.index
-        )?;
-        writeln!(f, "Hash: {:?}", self.hash)?;
-        write!(f, "{}", self.fields_str())?;
+        let Self {
+            pallet,
+            call,
+            index,
+            hash,
+            fields,
+        } = self;
+
+        writeln!(f, "Extrinsic {pallet}::{call} (index {index})")?;
+        writeln!(f, "Hash: {hash:?}")?;
+        write!(f, "{}", fmt_fields(fields))?;
+
         Ok(())
     }
 }
@@ -327,13 +347,18 @@ pub struct EventInfo {
 
 impl Display for EventInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(
-            f,
-            "Event {}::{} (index {})",
-            self.pallet, self.kind, self.index
-        )?;
-        writeln!(f, "Phase: {:?}", self.phase)?;
-        write!(f, "{}", self.fields_str())?;
+        let Self {
+            pallet,
+            kind,
+            index,
+            phase,
+            fields,
+        } = self;
+
+        writeln!(f, "Event {pallet}::{kind} (index {index})")?;
+        writeln!(f, "Phase: {phase:?}")?;
+        write!(f, "{}", fmt_fields(fields))?;
+
         Ok(())
     }
 }

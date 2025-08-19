@@ -3,7 +3,7 @@
 //! Set the `NODE_URL` env var to the RPC URL of a Subspace node to override the default public
 //! instance.
 
-use crate::alerts::{self, AlertKind};
+use crate::alerts::{self, Alert, AlertKind, BlockCheckMode};
 use crate::slot_time_monitor::test_utils::mock_block_info;
 use crate::slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor, SlotTimeMonitorConfig};
 use crate::subspace::tests::{
@@ -63,10 +63,12 @@ async fn test_startup_alert() -> anyhow::Result<()> {
 
     let (block_info, _, _) = fetch_block_info(&subspace_client, None, None).await?;
 
-    alerts::startup_alert(&alert_tx, &block_info).await?;
+    alerts::startup_alert(BlockCheckMode::Current, &alert_tx, &block_info).await?;
     let alert = alert_rx.try_recv().expect("no alert received");
-    assert_eq!(alert.alert, AlertKind::Startup);
-    assert_eq!(alert.block_info, block_info);
+    assert_eq!(
+        alert,
+        Alert::new(AlertKind::Startup, block_info, BlockCheckMode::Current),
+    );
 
     // Check block slot parsing works on real blocks.
     assert_matches!(alert.block_info.block_slot, Some(Slot(_)));
@@ -86,9 +88,16 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
     let (extrinsic, extrinsic_info) =
         decode_extrinsic(&block_info, &extrinsics, SUDO_BLOCK.2).await?;
 
-    alerts::check_extrinsic(&alert_tx, &extrinsic, &block_info).await?;
+    alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info).await?;
     let alert = alert_rx.try_recv().expect("no alert received");
-    assert_eq!(alert.alert, AlertKind::SudoCall { extrinsic_info });
+    assert_eq!(
+        alert,
+        Alert::new(
+            AlertKind::SudoCall { extrinsic_info },
+            block_info,
+            BlockCheckMode::Replay,
+        )
+    );
     assert_eq!(
         alert
             .alert
@@ -96,13 +105,19 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
             .map(|ei| (ei.pallet.as_str(), ei.call.as_str())),
         Some(("Sudo", "sudo"))
     );
-    assert_eq!(alert.block_info, block_info);
 
     let (event, event_info) = decode_event(&block_info, &events, SUDO_BLOCK.3).await?;
 
-    alerts::check_event(&alert_tx, &event, &block_info).await?;
+    alerts::check_event(BlockCheckMode::Replay, &alert_tx, &event, &block_info).await?;
     let alert = alert_rx.try_recv().expect("no alert received");
-    assert_eq!(alert.alert, AlertKind::SudoEvent { event_info });
+    assert_eq!(
+        alert,
+        Alert::new(
+            AlertKind::SudoEvent { event_info },
+            block_info,
+            BlockCheckMode::Replay,
+        )
+    );
     assert_eq!(
         alert
             .alert
@@ -110,7 +125,6 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
             .map(|ei| (ei.pallet.as_str(), ei.kind.as_str())),
         Some(("Sudo", "Sudid"))
     );
-    assert_eq!(alert.block_info, block_info);
 
     // Check block slot parsing works on a known slot value.
     assert_eq!(alert.block_info.block_slot, Some(SUDO_BLOCK.4));
@@ -131,16 +145,19 @@ async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
         let (extrinsic, extrinsic_info) =
             decode_extrinsic(&block_info, &extrinsics, extrinsic_index).await?;
 
-        alerts::check_extrinsic(&alert_tx, &extrinsic, &block_info).await?;
+        alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info).await?;
         let alert = alert_rx.try_recv().expect("no alert received");
         assert_eq!(
-            alert.alert,
-            AlertKind::LargeBalanceTransfer {
-                extrinsic_info,
-                transfer_value,
-            }
+            alert,
+            Alert::new(
+                AlertKind::LargeBalanceTransfer {
+                    extrinsic_info,
+                    transfer_value,
+                },
+                block_info,
+                BlockCheckMode::Replay,
+            )
         );
-        assert_eq!(alert.block_info, block_info);
 
         // Check block slot parsing works on a known slot value.
         assert_eq!(alert.block_info.block_slot, Some(slot));
@@ -165,8 +182,12 @@ async fn no_expected_test_slot_time_alert() -> anyhow::Result<()> {
         }
     });
 
-    naive_slot_time_monitor.process_block(&first_block).await;
-    naive_slot_time_monitor.process_block(&second_block).await;
+    naive_slot_time_monitor
+        .process_block(BlockCheckMode::Replay, &first_block)
+        .await;
+    naive_slot_time_monitor
+        .process_block(BlockCheckMode::Replay, &second_block)
+        .await;
 
     alert_rx
         .try_recv()
@@ -192,25 +213,32 @@ async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
         }
     });
 
-    strict_slot_time_monitor.process_block(&first_block).await;
-    strict_slot_time_monitor.process_block(&second_block).await;
+    strict_slot_time_monitor
+        .process_block(BlockCheckMode::Replay, &first_block)
+        .await;
+    strict_slot_time_monitor
+        .process_block(BlockCheckMode::Replay, &second_block)
+        .await;
 
     let alert = alert_rx
         .try_recv()
         .expect("alert not received when expected");
 
     assert_eq!(
-        alert.alert,
-        AlertKind::SlotTime {
-            current_ratio: 0.01,
-            threshold: 0.0,
-            interval: Duration::from_secs(1),
-            first_slot_time: first_block
-                .block_time
-                .expect("block must have time to trigger alert"),
-        }
+        alert,
+        Alert::new(
+            AlertKind::SlotTime {
+                current_ratio: 0.01,
+                threshold: 0.0,
+                interval: Duration::from_secs(1),
+                first_slot_time: first_block
+                    .block_time
+                    .expect("block must have time to trigger alert"),
+            },
+            second_block,
+            BlockCheckMode::Replay,
+        )
     );
-    assert_eq!(alert.block_info, second_block);
 
     Ok(())
 }
@@ -232,8 +260,12 @@ async fn expected_test_slot_time_alert_but_not_yet() -> anyhow::Result<()> {
         }
     });
 
-    strict_slot_time_monitor.process_block(&first_block).await;
-    strict_slot_time_monitor.process_block(&second_block).await;
+    strict_slot_time_monitor
+        .process_block(BlockCheckMode::Replay, &first_block)
+        .await;
+    strict_slot_time_monitor
+        .process_block(BlockCheckMode::Replay, &second_block)
+        .await;
 
     alert_rx
         .try_recv()

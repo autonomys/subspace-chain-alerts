@@ -8,6 +8,7 @@ pub fn mock_block_info(time: RawTime, slot: Slot) -> BlockInfo {
         block_height: 100,
         block_time: Some(BlockTime { unix_time: time }),
         block_hash: H256::zero(),
+        parent_hash: H256::zero(),
         genesis_hash: H256::zero(),
         block_slot: Some(slot),
     }

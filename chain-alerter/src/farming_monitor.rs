@@ -1,7 +1,7 @@
 //! Farming monitor that tracks the number of farmers with votes in the last `max_block_interval`
 //! blocks and emits alerts if the number of farmers with votes is outside the alert thresholds.
 
-use crate::alerts::{Alert, AlertKind};
+use crate::alerts::{Alert, AlertKind, BlockCheckMode};
 use crate::subspace::decode::decode_h256_from_composite;
 use crate::subspace::{BlockInfo, BlockNumber, SubspaceConfig};
 use scale_value::Composite;
@@ -28,7 +28,12 @@ pub const DEFAULT_FARMING_MAX_BLOCK_INTERVAL: BlockNumber = 100;
 /// Interface for farming monitors that consume blocks and perform checks.
 pub trait FarmingMonitor {
     /// Ingest a block and update internal state; may emit alerts.
-    async fn process_block(&mut self, block: BlockInfo, block_events: Events<SubspaceConfig>);
+    async fn process_block(
+        &mut self,
+        block: BlockInfo,
+        mode: BlockCheckMode,
+        block_events: Events<SubspaceConfig>,
+    );
 }
 
 #[derive(Debug, Clone)]
@@ -50,6 +55,7 @@ pub struct FarmingMonitorConfig {
 }
 
 /// State tracked by the farming monitor, and updated at the same time.
+#[derive(Debug, Clone)]
 pub struct FarmingMonitorState {
     /// The last block voted by a farmer.
     last_block_voted_by_farmer: HashMap<H256, BlockNumber>,
@@ -59,6 +65,7 @@ pub struct FarmingMonitorState {
 
 /// A farming monitor that tracks the number of farmers with votes in the last `max_block_interval`
 /// blocks and emits alerts if the number of farmers with votes is outside the alert thresholds.
+#[derive(Debug, Clone)]
 pub struct MemoryFarmingMonitor {
     /// Monitor configuration parameters.
     config: FarmingMonitorConfig,
@@ -67,7 +74,12 @@ pub struct MemoryFarmingMonitor {
 }
 
 impl FarmingMonitor for MemoryFarmingMonitor {
-    async fn process_block(&mut self, block: BlockInfo, block_events: Events<SubspaceConfig>) {
+    async fn process_block(
+        &mut self,
+        block: BlockInfo,
+        mode: BlockCheckMode,
+        block_events: Events<SubspaceConfig>,
+    ) {
         // Update the last voted block for each farmer that voted in this block.
         self.update_last_voted_block(&block_events, block.block_height);
 
@@ -83,7 +95,7 @@ impl FarmingMonitor for MemoryFarmingMonitor {
             .saturating_sub(self.config.minimum_block_interval)
             > 0;
         if has_passed_minimum_block_interval {
-            self.check_farmer_count(block).await;
+            self.check_farmer_count(block, mode).await;
         }
     }
 }
@@ -190,7 +202,7 @@ impl MemoryFarmingMonitor {
 
     /// Check the number of farmers with votes in the last `max_block_interval` blocks
     /// and emit alerts if the number of farmers with votes is outside the alert thresholds.
-    async fn check_farmer_count(&mut self, block_info: BlockInfo) {
+    async fn check_farmer_count(&mut self, block_info: BlockInfo, mode: BlockCheckMode) {
         if self.state.active_farmers_in_last_blocks.is_empty() {
             return;
         }
@@ -228,6 +240,7 @@ impl MemoryFarmingMonitor {
                         .expect("farmers should fit in a u32 integer"),
                     },
                     block_info,
+                    mode,
                 ))
                 .await;
         } else if percentage_to_average > self.config.high_end_change_threshold {
@@ -244,6 +257,7 @@ impl MemoryFarmingMonitor {
                         .expect("farmers should fit in a u32 integer"),
                     },
                     block_info,
+                    mode,
                 ))
                 .await;
         }
@@ -287,13 +301,17 @@ mod tests {
             block_height.saturating_sub(farming_monitor.config.minimum_block_interval) > 0;
         if has_passed_minimum_block_interval {
             farming_monitor
-                .check_farmer_count(BlockInfo {
-                    block_height,
-                    block_time: None,
-                    block_hash: H256::default(),
-                    genesis_hash: H256::zero(),
-                    block_slot: None,
-                })
+                .check_farmer_count(
+                    BlockInfo {
+                        block_height,
+                        block_time: None,
+                        block_hash: H256::default(),
+                        genesis_hash: H256::zero(),
+                        block_slot: None,
+                        parent_hash: H256::zero(),
+                    },
+                    BlockCheckMode::Current,
+                )
                 .await;
         }
     }
@@ -380,9 +398,12 @@ mod tests {
             block_hash: H256::default(),
             genesis_hash: H256::zero(),
             block_slot: None,
+            parent_hash: H256::zero(),
         };
         farming_monitor.update_number_of_farmers_with_votes();
-        farming_monitor.check_farmer_count(block_info).await;
+        farming_monitor
+            .check_farmer_count(block_info, BlockCheckMode::Current)
+            .await;
 
         let alert = alert_rx.recv().await.expect("expected decrease alert");
 
@@ -394,7 +415,8 @@ mod tests {
                     average_number_of_farmers_with_votes: f64::from(10 + 10 + 10 + 5) / 4.0f64,
                     number_of_blocks: 4,
                 },
-                block_info
+                block_info,
+                BlockCheckMode::Current,
             )
         );
     }
@@ -432,10 +454,13 @@ mod tests {
             block_hash: H256::default(),
             genesis_hash: H256::zero(),
             block_slot: None,
+            parent_hash: H256::zero(),
         };
 
         farming_monitor.update_number_of_farmers_with_votes();
-        farming_monitor.check_farmer_count(mock_block_info).await;
+        farming_monitor
+            .check_farmer_count(mock_block_info, BlockCheckMode::Current)
+            .await;
 
         let alert = alert_rx.recv().await.expect("expected increase alert");
 
@@ -447,7 +472,8 @@ mod tests {
                     average_number_of_farmers_with_votes: f64::from(10 + 10 + 10 + 15) / 4.0f64,
                     number_of_blocks: 4,
                 },
-                mock_block_info
+                mock_block_info,
+                BlockCheckMode::Current,
             )
         );
     }
@@ -482,13 +508,17 @@ mod tests {
 
         farming_monitor.update_number_of_farmers_with_votes();
         farming_monitor
-            .check_farmer_count(BlockInfo {
-                block_height: 1,
-                block_time: None,
-                block_hash: H256::default(),
-                genesis_hash: H256::zero(),
-                block_slot: None,
-            })
+            .check_farmer_count(
+                BlockInfo {
+                    block_height: 1,
+                    block_time: None,
+                    block_hash: H256::default(),
+                    genesis_hash: H256::zero(),
+                    block_slot: None,
+                    parent_hash: H256::zero(),
+                },
+                BlockCheckMode::Current,
+            )
             .await;
 
         // No alert expected
