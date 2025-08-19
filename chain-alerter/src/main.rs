@@ -151,8 +151,8 @@ async fn run() -> anyhow::Result<()> {
     let mut farming_monitor = MemoryFarmingMonitor::new(&FarmingMonitorConfig {
         alert_tx: alert_tx.clone(),
         max_block_interval: DEFAULT_FARMING_MAX_BLOCK_INTERVAL,
-        low_end_percentage_threshold: DEFAULT_LOW_END_FARMING_ALERT_THRESHOLD,
-        high_end_percentage_threshold: DEFAULT_HIGH_END_FARMING_ALERT_THRESHOLD,
+        low_end_change_threshold: DEFAULT_LOW_END_FARMING_ALERT_THRESHOLD,
+        high_end_change_threshold: DEFAULT_HIGH_END_FARMING_ALERT_THRESHOLD,
         inactive_block_threshold: DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD,
         minimum_block_interval: DEFAULT_FARMING_MINIMUM_BLOCK_INTERVAL,
     });

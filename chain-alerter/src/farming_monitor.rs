@@ -3,10 +3,9 @@
 
 use crate::alerts::{Alert, AlertKind};
 use crate::subspace::decode::decode_h256_from_composite;
-use crate::subspace::{BlockInfo, BlockNumber};
+use crate::subspace::{BlockInfo, BlockNumber, SubspaceConfig};
 use scale_value::Composite;
 use std::collections::{HashMap, VecDeque};
-use subxt::SubstrateConfig;
 use subxt::events::Events;
 use tracing::{debug, trace, warn};
 
@@ -17,18 +16,18 @@ pub const DEFAULT_LOW_END_FARMING_ALERT_THRESHOLD: f64 = 0.75;
 pub const DEFAULT_HIGH_END_FARMING_ALERT_THRESHOLD: f64 = 1.25;
 
 /// The default threshold for the farming monitor.
-pub const DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD: u32 = 10;
+pub const DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD: BlockNumber = 10;
 
 /// The default minimum block interval for the farming monitor.
-pub const DEFAULT_FARMING_MINIMUM_BLOCK_INTERVAL: u32 = 100;
+pub const DEFAULT_FARMING_MINIMUM_BLOCK_INTERVAL: BlockNumber = 100;
 
 /// The default number of blocks to check for farming.
-pub const DEFAULT_FARMING_MAX_BLOCK_INTERVAL: u32 = 100;
+pub const DEFAULT_FARMING_MAX_BLOCK_INTERVAL: BlockNumber = 100;
 
 /// Interface for farming monitors that consume blocks and perform checks.
 pub trait FarmingMonitor {
     /// Ingest a block and update internal state; may emit alerts.
-    async fn process_block(&mut self, block: BlockInfo, block_events: Events<SubstrateConfig>);
+    async fn process_block(&mut self, block: BlockInfo, block_events: Events<SubspaceConfig>);
 }
 
 #[derive(Debug, Clone)]
@@ -37,16 +36,16 @@ pub struct FarmingMonitorConfig {
     /// Channel used to emit alerts.
     pub alert_tx: tokio::sync::mpsc::Sender<Alert>,
     /// The size of the window to check for farming.
-    pub max_block_interval: u32,
+    pub max_block_interval: BlockNumber,
     /// The percentage threshold for alerting a network from average within the checking window.
-    pub low_end_percentage_threshold: f64,
+    pub low_end_change_threshold: f64,
     /// The percentage threshold for alerting a network from average within the checking
     /// window.
-    pub high_end_percentage_threshold: f64,
+    pub high_end_change_threshold: f64,
     /// The number of blocks that a farmer should not vote until they are mark as inactive.
-    pub inactive_block_threshold: u32,
+    pub inactive_block_threshold: BlockNumber,
     /// The minimum of blocks that must pass before any alert is emitted.
-    pub minimum_block_interval: u32,
+    pub minimum_block_interval: BlockNumber,
 }
 
 /// State tracked by the farming monitor, and updated at the same time.
@@ -67,7 +66,7 @@ pub struct MemoryFarmingMonitor {
 }
 
 impl FarmingMonitor for MemoryFarmingMonitor {
-    async fn process_block(&mut self, block: BlockInfo, block_events: Events<SubstrateConfig>) {
+    async fn process_block(&mut self, block: BlockInfo, block_events: Events<SubspaceConfig>) {
         // Update the last voted block for each farmer that voted in this block.
         self.update_last_voted_block(&block_events, block.block_height);
 
@@ -105,7 +104,7 @@ impl MemoryFarmingMonitor {
     /// Update the last voted block for each farmer that voted in the block.
     fn update_last_voted_block(
         &mut self,
-        block_events: &Events<SubstrateConfig>,
+        block_events: &Events<SubspaceConfig>,
         block_height: BlockNumber,
     ) {
         for event in block_events.iter() {
@@ -191,7 +190,7 @@ impl MemoryFarmingMonitor {
     /// Check the number of farmers with votes in the last `max_block_interval` blocks
     /// and emit alerts if the number of farmers with votes is outside the alert thresholds.
     async fn check_farmer_count(&mut self, block_info: BlockInfo) {
-        if self.state.active_farmers_in_last_blocks.len() == 0 {
+        if self.state.active_farmers_in_last_blocks.is_empty() {
             return;
         }
 
@@ -202,19 +201,17 @@ impl MemoryFarmingMonitor {
                 / u32::try_from(self.state.active_farmers_in_last_blocks.len())
                     .expect("farmers should fit in a u32 integer");
 
-        let &number_of_farmers_with_votes = match self.state.active_farmers_in_last_blocks.front() {
-            Some(number_of_farmers_with_votes) => number_of_farmers_with_votes,
-            None => {
-                warn!("No number of farmers with votes found");
-                return;
-            }
-        };
+        let &number_of_farmers_with_votes = self
+            .state
+            .active_farmers_in_last_blocks
+            .front()
+            .expect("already checked not empty");
 
         let percentage_to_average = f64::from(number_of_farmers_with_votes)
             / f64::from(average_number_of_farmers_with_votes);
 
         // Check if the current number of farmers with votes is greater than the alert threshold.
-        if percentage_to_average < self.config.low_end_percentage_threshold {
+        if percentage_to_average < self.config.low_end_change_threshold {
             let _ = self
                 .config
                 .alert_tx
@@ -230,7 +227,7 @@ impl MemoryFarmingMonitor {
                     block_info,
                 ))
                 .await;
-        } else if percentage_to_average > self.config.high_end_percentage_threshold {
+        } else if percentage_to_average > self.config.high_end_change_threshold {
             let _ = self
                 .config
                 .alert_tx
@@ -298,8 +295,8 @@ mod tests {
         let config = FarmingMonitorConfig {
             alert_tx,
             max_block_interval: DEFAULT_FARMING_MAX_BLOCK_INTERVAL,
-            low_end_percentage_threshold: DEFAULT_LOW_END_FARMING_ALERT_THRESHOLD,
-            high_end_percentage_threshold: DEFAULT_HIGH_END_FARMING_ALERT_THRESHOLD,
+            low_end_change_threshold: DEFAULT_LOW_END_FARMING_ALERT_THRESHOLD,
+            high_end_change_threshold: DEFAULT_HIGH_END_FARMING_ALERT_THRESHOLD,
             inactive_block_threshold: DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD,
             minimum_block_interval: DEFAULT_FARMING_MINIMUM_BLOCK_INTERVAL,
         };
@@ -346,8 +343,8 @@ mod tests {
         let config = FarmingMonitorConfig {
             alert_tx,
             max_block_interval: 10,
-            low_end_percentage_threshold: 0.8,
-            high_end_percentage_threshold: 1.25,
+            low_end_change_threshold: 0.8,
+            high_end_change_threshold: 1.25,
             inactive_block_threshold: 10,
             minimum_block_interval: 0,
         };
@@ -366,31 +363,29 @@ mod tests {
                 .insert(format!("f{i}"), 1);
         }
 
+        let block_info = BlockInfo {
+            block_height: 1,
+            block_time: None,
+            block_hash: H256::default(),
+            genesis_hash: H256::zero(),
+            block_slot: None,
+        };
         farming_monitor.update_number_of_farmers_with_votes();
-        farming_monitor
-            .check_farmer_count(BlockInfo {
-                block_height: 1,
-                block_time: None,
-                block_hash: H256::default(),
-                genesis_hash: H256::zero(),
-                block_slot: None,
-            })
-            .await;
+        farming_monitor.check_farmer_count(block_info).await;
 
-        let Alert { alert, .. } = alert_rx.recv().await.expect("expected decrease alert");
+        let alert = alert_rx.recv().await.expect("expected decrease alert");
 
-        match alert {
-            AlertKind::FarmersDecreasedSuddenly {
-                number_of_farmers_with_votes,
-                average_number_of_farmers_with_votes,
-                number_of_blocks,
-            } => {
-                assert_eq!(number_of_farmers_with_votes, 5);
-                assert_eq!(average_number_of_farmers_with_votes, (10 + 10 + 10 + 5) / 4);
-                assert_eq!(number_of_blocks, 4);
-            }
-            _ => panic!("unexpected alert kind: {alert:?}"),
-        }
+        assert_eq!(
+            alert,
+            Alert::new(
+                AlertKind::FarmersDecreasedSuddenly {
+                    number_of_farmers_with_votes: 5,
+                    average_number_of_farmers_with_votes: (10 + 10 + 10 + 5) / 4,
+                    number_of_blocks: 4,
+                },
+                block_info
+            )
+        );
     }
 
     #[tokio::test]
@@ -400,8 +395,8 @@ mod tests {
         let config = FarmingMonitorConfig {
             alert_tx,
             max_block_interval: 10,
-            low_end_percentage_threshold: 0.8,
-            high_end_percentage_threshold: 1.25,
+            low_end_change_threshold: 0.8,
+            high_end_change_threshold: 1.25,
             inactive_block_threshold: 10,
             minimum_block_interval: 0,
         };
@@ -420,34 +415,30 @@ mod tests {
                 .insert(format!("f{i}"), 1);
         }
 
+        let mock_block_info = BlockInfo {
+            block_height: 1,
+            block_time: None,
+            block_hash: H256::default(),
+            genesis_hash: H256::zero(),
+            block_slot: None,
+        };
+
         farming_monitor.update_number_of_farmers_with_votes();
-        farming_monitor
-            .check_farmer_count(BlockInfo {
-                block_height: 1,
-                block_time: None,
-                block_hash: H256::default(),
-                genesis_hash: H256::zero(),
-                block_slot: None,
-            })
-            .await;
+        farming_monitor.check_farmer_count(mock_block_info).await;
 
-        let Alert { alert, .. } = alert_rx.recv().await.expect("expected increase alert");
+        let alert = alert_rx.recv().await.expect("expected increase alert");
 
-        match alert {
-            AlertKind::FarmersIncreasedSuddenly {
-                number_of_farmers_with_votes,
-                average_number_of_farmers_with_votes,
-                number_of_blocks,
-            } => {
-                assert_eq!(number_of_farmers_with_votes, 15);
-                assert_eq!(
-                    average_number_of_farmers_with_votes,
-                    (10 + 10 + 10 + 15) / 4
-                );
-                assert_eq!(number_of_blocks, 4);
-            }
-            _ => panic!("unexpected alert kind: {alert:?}"),
-        }
+        assert_eq!(
+            alert,
+            Alert::new(
+                AlertKind::FarmersIncreasedSuddenly {
+                    number_of_farmers_with_votes: 15,
+                    average_number_of_farmers_with_votes: (10 + 10 + 10 + 15) / 4,
+                    number_of_blocks: 4,
+                },
+                mock_block_info
+            )
+        );
     }
 
     #[tokio::test]
@@ -458,8 +449,8 @@ mod tests {
         let config = FarmingMonitorConfig {
             alert_tx,
             max_block_interval: 10,
-            low_end_percentage_threshold: 0.8,
-            high_end_percentage_threshold: 1.25,
+            low_end_change_threshold: 0.8,
+            high_end_change_threshold: 1.25,
             inactive_block_threshold: 10,
             minimum_block_interval: 0,
         };
