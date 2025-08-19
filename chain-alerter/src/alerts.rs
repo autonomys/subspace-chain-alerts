@@ -43,10 +43,6 @@ pub enum BlockCheckMode {
 
 impl BlockCheckMode {
     /// Whether we are checking current blocks.
-    #[expect(
-        dead_code,
-        reason = "TODO: use when we implement alerts that don't work on replayed blocks"
-    )]
     pub fn is_current(&self) -> bool {
         *self == BlockCheckMode::Current
     }
@@ -60,12 +56,19 @@ pub struct Alert {
 
     /// The block the alert occurred in.
     pub block_info: BlockInfo,
+
+    /// The mode the alert was triggered in.
+    pub mode: BlockCheckMode,
 }
 
 impl Alert {
     /// Create a new alert.
-    pub fn new(alert: AlertKind, block_info: BlockInfo) -> Self {
-        Self { alert, block_info }
+    pub fn new(alert: AlertKind, block_info: BlockInfo, mode: BlockCheckMode) -> Self {
+        Self {
+            alert,
+            block_info,
+            mode,
+        }
     }
 }
 
@@ -322,15 +325,21 @@ impl AlertKind {
 ///
 /// Any returned errors are fatal and require a restart.
 pub async fn startup_alert(
+    mode: BlockCheckMode,
     alert_tx: &mpsc::Sender<Alert>,
     block_info: &BlockInfo,
 ) -> anyhow::Result<()> {
+    assert!(
+        mode.is_current(),
+        "should only be called on the first current block"
+    );
+
     // TODO:
     // - always post this to the test channel, because it's not a real "alert"
     // - link to the prod channel from this message: <https://docs.slack.dev/messaging/formatting-message-text/#linking-channels>
 
     alert_tx
-        .send(Alert::new(AlertKind::Startup, *block_info))
+        .send(Alert::new(AlertKind::Startup, *block_info, mode))
         .await?;
 
     Ok(())
@@ -361,6 +370,7 @@ pub async fn check_block(
                         prev_block_info: *prev_block_info,
                     },
                     *block_info,
+                    mode,
                 ))
                 .await?;
         }
@@ -386,10 +396,13 @@ pub async fn check_block(
 ///
 /// Fatal errors will panic in the spawned task.
 pub async fn check_for_block_stall(
+    mode: BlockCheckMode,
     alert_tx: mpsc::Sender<Alert>,
     block_info: BlockInfo,
     latest_block_rx: watch::Receiver<Option<BlockInfo>>,
 ) {
+    assert!(mode.is_current(), "doesn't work on replayed blocks");
+
     let old_block_info = block_info;
 
     // Since we exit on panic, there's no need to check the result of the spawned task.
@@ -415,6 +428,7 @@ pub async fn check_for_block_stall(
             .send(Alert::new(
                 AlertKind::BlockProductionStall { gap },
                 old_block_info,
+                mode,
             ))
             .await
             .expect("sending Slack alert failed");
@@ -459,6 +473,7 @@ where
             .send(Alert::new(
                 AlertKind::SudoCall { extrinsic_info },
                 *block_info,
+                mode,
             ))
             .await?;
     } else if extrinsic_info.pallet == "Balances" {
@@ -495,6 +510,7 @@ where
                         transfer_value,
                     },
                     *block_info,
+                    mode,
                 ))
                 .await?;
         } else if let Some(transfer_value) = transfer_value
@@ -507,6 +523,7 @@ where
                         transfer_value,
                     },
                     *block_info,
+                    mode,
                 ))
                 .await?;
         } else if transfer_value.is_none()
@@ -532,7 +549,7 @@ where
 /// Any returned errors are fatal and require a restart.
 pub async fn check_event(
     // TODO: when we add a check that doesn't work on replayed blocks, skip it using mode
-    _mode: BlockCheckMode,
+    mode: BlockCheckMode,
     alert_tx: &mpsc::Sender<Alert>,
     event: &EventDetails<SubspaceConfig>,
     block_info: &BlockInfo,
@@ -554,12 +571,17 @@ pub async fn check_event(
             .send(Alert::new(
                 AlertKind::OperatorSlashed { event_info },
                 *block_info,
+                mode,
             ))
             .await?;
     } else if event_info.pallet == "Sudo" {
         // We already alert on sudo calls, so this exists mainly to test events.
         alert_tx
-            .send(Alert::new(AlertKind::SudoEvent { event_info }, *block_info))
+            .send(Alert::new(
+                AlertKind::SudoEvent { event_info },
+                *block_info,
+                mode,
+            ))
             .await?;
     }
 

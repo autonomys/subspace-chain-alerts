@@ -123,7 +123,7 @@ impl SlotTimeMonitor for MemorySlotTimeMonitor {
                             ?mode,
                             "Time per slot alert triggered, time_per_slot: {time_per_slot}",
                         );
-                        let _ = self.send_alert(time_per_slot, *block_info).await;
+                        let _ = self.send_alert(time_per_slot, *block_info, mode).await;
                     } else {
                         debug!(
                             ?mode,
@@ -162,11 +162,12 @@ impl MemorySlotTimeMonitor {
         &self,
         slot_diff_per_time_diff: f64,
         block_info: BlockInfo,
+        mode: BlockCheckMode,
     ) -> Result<(), SendError<Alert>> {
         self.config
             .alert_tx
-            .send(Alert {
-                alert: AlertKind::SlotTime {
+            .send(Alert::new(
+                AlertKind::SlotTime {
                     current_ratio: slot_diff_per_time_diff,
                     threshold: self.config.alert_threshold,
                     interval: self.config.check_interval,
@@ -176,7 +177,8 @@ impl MemorySlotTimeMonitor {
                         .first_slot_time,
                 },
                 block_info,
-            })
+                mode,
+            ))
             .await
     }
 

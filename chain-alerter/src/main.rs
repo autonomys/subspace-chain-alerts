@@ -150,7 +150,7 @@ async fn run() -> anyhow::Result<()> {
         let block_info = BlockInfo::new(&block, &extrinsics, &genesis_hash);
 
         if first_block {
-            alerts::startup_alert(&alert_tx, &block_info).await?;
+            alerts::startup_alert(BlockCheckMode::Current, &alert_tx, &block_info).await?;
             first_block = false;
         } else if block_info
             .block_height
@@ -187,6 +187,7 @@ async fn run() -> anyhow::Result<()> {
 
             // We only check for block stalls on current blocks.
             alerts::check_for_block_stall(
+                BlockCheckMode::Current,
                 alert_tx.clone(),
                 block_info,
                 latest_block_tx.subscribe(),
