@@ -6,12 +6,19 @@
 #![feature(assert_matches)]
 
 mod alerts;
+mod farming_monitor;
 mod format;
 mod slack;
 mod slot_time_monitor;
 mod subspace;
 
 use crate::alerts::{Alert, BlockCheckMode};
+use crate::farming_monitor::{
+    DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD, DEFAULT_FARMING_MAX_BLOCK_INTERVAL,
+    DEFAULT_FARMING_MINIMUM_BLOCK_INTERVAL, DEFAULT_HIGH_END_FARMING_ALERT_THRESHOLD,
+    DEFAULT_LOW_END_FARMING_ALERT_THRESHOLD, FarmingMonitor, FarmingMonitorConfig,
+    MemoryFarmingMonitor,
+};
 use crate::slack::{SLACK_OAUTH_SECRET_PATH, SlackClientInfo};
 use crate::slot_time_monitor::{
     DEFAULT_CHECK_INTERVAL, DEFAULT_SLOT_TIME_ALERT_THRESHOLD, SlotTimeMonitorConfig,
@@ -161,6 +168,15 @@ async fn run() -> anyhow::Result<()> {
         alert_tx.clone(),
     ));
 
+    let mut farming_monitor = MemoryFarmingMonitor::new(&FarmingMonitorConfig {
+        alert_tx: alert_tx.clone(),
+        max_block_interval: DEFAULT_FARMING_MAX_BLOCK_INTERVAL,
+        low_end_change_threshold: DEFAULT_LOW_END_FARMING_ALERT_THRESHOLD,
+        high_end_change_threshold: DEFAULT_HIGH_END_FARMING_ALERT_THRESHOLD,
+        inactive_block_threshold: DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD,
+        minimum_block_interval: DEFAULT_FARMING_MINIMUM_BLOCK_INTERVAL,
+    });
+
     while let Some(block) = blocks_sub.next().await {
         let block = block?;
         // These errors represent a connection failure or similar, and require a restart.
@@ -196,6 +212,7 @@ async fn run() -> anyhow::Result<()> {
                 &block_info,
                 &prev_block_info,
                 &mut slot_time_monitor,
+                &mut farming_monitor,
                 &alert_tx,
             )
             .await?;
@@ -218,6 +235,7 @@ async fn run() -> anyhow::Result<()> {
                 &extrinsics,
                 &prev_block_info,
                 &mut slot_time_monitor,
+                &mut farming_monitor,
                 &alert_tx,
             )
             .await?;
@@ -240,6 +258,7 @@ pub async fn replay_previous_blocks(
     block_info: &BlockInfo,
     prev_block_info: &BlockInfo,
     slot_time_monitor: &mut MemorySlotTimeMonitor,
+    farming_monitor: &mut MemoryFarmingMonitor,
     alert_tx: &mpsc::Sender<Alert>,
 ) -> anyhow::Result<()> {
     let genesis_hash = block_info.genesis_hash;
@@ -339,6 +358,7 @@ pub async fn replay_previous_blocks(
                 &extrinsics,
                 &prev_block_info,
                 slot_time_monitor,
+                farming_monitor,
                 alert_tx,
             )
             .await?;
@@ -351,6 +371,7 @@ pub async fn replay_previous_blocks(
     Ok(())
 }
 
+#[expect(clippy::too_many_arguments, reason = "too many arguments is fine here")]
 /// Run checks on a single block, against its previous block.
 async fn run_on_block(
     mode: BlockCheckMode,
@@ -359,6 +380,7 @@ async fn run_on_block(
     extrinsics: &Extrinsics<SubspaceConfig, SubspaceClient>,
     prev_block_info: &Option<BlockInfo>,
     slot_time_monitor: &mut MemorySlotTimeMonitor,
+    farming_monitor: &mut MemoryFarmingMonitor,
     alert_tx: &mpsc::Sender<Alert>,
 ) -> anyhow::Result<()> {
     let events = block.events().await?;
@@ -366,6 +388,9 @@ async fn run_on_block(
     // Check the block itself for alerts, including stall resumes.
     alerts::check_block(mode, alert_tx, block_info, prev_block_info).await?;
     slot_time_monitor.process_block(mode, block_info).await;
+    farming_monitor
+        .process_block(*block_info, mode, block.events().await?)
+        .await;
 
     // Check each extrinsic and event for alerts.
     for extrinsic in extrinsics.iter() {
