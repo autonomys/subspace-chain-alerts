@@ -12,7 +12,7 @@ mod slack;
 mod slot_time_monitor;
 mod subspace;
 
-use crate::alerts::{Alert, BlockCheckMode};
+use crate::alerts::{Alert, AlertKind, BlockCheckMode};
 use crate::farming_monitor::{
     DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD, DEFAULT_FARMING_MAX_HISTORY_BLOCK_INTERVAL,
     DEFAULT_FARMING_MIN_ALERT_BLOCK_INTERVAL, DEFAULT_HIGH_END_FARMING_ALERT_THRESHOLD,
@@ -316,17 +316,32 @@ pub async fn replay_previous_blocks(
     }
 
     if Some(&gap_start.hash) != missed_block_hashes.front() {
+        let second_fork_hash = missed_block_hashes
+            .front()
+            .expect("always contains the final hash");
+
         // The gap was a fork, we found a sibling/cousin of the gap start.
         info!(
             "chain fork at {} confirmed: {} is a fork of {} -> {} ({})",
             gap_start.hash,
-            missed_block_hashes
-                .front()
-                .expect("always contains the final hash"),
+            second_fork_hash,
             gap_start.height,
             gap_end.hash(),
             gap_end.height(),
         );
+
+        alert_tx
+            .send(Alert::new(
+                AlertKind::ChainFork {
+                    fork_height: gap_start.height,
+                    first_fork_hash: gap_start.hash,
+                    second_fork_hash: *second_fork_hash,
+                    prev_block_info: *prev_block_info,
+                },
+                *block_info,
+                BlockCheckMode::Replay,
+            ))
+            .await?;
     }
 
     // Now walk forwards, checking for alerts.

@@ -5,14 +5,15 @@ mod tests;
 
 use crate::format::{fmt_amount, fmt_duration, fmt_timestamp};
 use crate::subspace::{
-    AI3, Balance, BlockInfo, BlockTime, Event, EventInfo, ExtrinsicInfo, SubspaceClient,
-    SubspaceConfig, TARGET_BLOCK_INTERVAL, gap_since_last_block, gap_since_time,
+    AI3, Balance, BlockInfo, BlockNumber, BlockTime, Event, EventInfo, ExtrinsicInfo,
+    SubspaceClient, SubspaceConfig, TARGET_BLOCK_INTERVAL, gap_since_last_block, gap_since_time,
 };
 use chrono::Utc;
 use scale_value::Composite;
 use std::fmt::{self, Display};
 use std::time::Duration;
 use subxt::blocks::ExtrinsicDetails;
+use subxt::utils::H256;
 use tokio::sync::{mpsc, watch};
 use tokio::time::sleep;
 use tracing::{debug, warn};
@@ -92,6 +93,22 @@ pub enum AlertKind {
         gap: Duration,
 
         /// The previous block.
+        prev_block_info: BlockInfo,
+    },
+
+    /// A chain fork / reorg has been detected.
+    /// TODO: split up chain forks and reorgs into separate alerts
+    ChainFork {
+        /// The height of the fork.
+        fork_height: BlockNumber,
+
+        /// The first block hash seen in the fork.
+        first_fork_hash: H256,
+
+        /// The second block hash seen in the fork.
+        second_fork_hash: H256,
+
+        /// The last block seen before the fork.
         prev_block_info: BlockInfo,
     },
 
@@ -201,6 +218,23 @@ impl Display for AlertKind {
                 )
             }
 
+            AlertKind::ChainFork {
+                fork_height,
+                first_fork_hash,
+                second_fork_hash,
+                prev_block_info,
+            } => {
+                write!(
+                    f,
+                    "**Chain fork detected**\n\
+                    Fork height: {fork_height}\n\
+                    First fork hash: {first_fork_hash:?}\n\
+                    Second fork hash: {second_fork_hash:?}\n\
+                    Previous block:\n\
+                    {prev_block_info}",
+                )
+            }
+
             AlertKind::ForceBalanceTransfer {
                 extrinsic_info,
                 transfer_value,
@@ -305,6 +339,9 @@ impl AlertKind {
         match self {
             AlertKind::BlockProductionResumed {
                 prev_block_info, ..
+            }
+            | AlertKind::ChainFork {
+                prev_block_info, ..
             } => Some(prev_block_info),
             // Deliberately repeat each enum variant here, so we can't forget to update this
             // method when adding new variants.
@@ -333,6 +370,7 @@ impl AlertKind {
             | AlertKind::FarmersIncreasedSuddenly { .. }
             | AlertKind::BlockProductionStall { .. }
             | AlertKind::BlockProductionResumed { .. }
+            | AlertKind::ChainFork { .. }
             | AlertKind::SudoEvent { .. }
             | AlertKind::OperatorSlashed { .. }
             | AlertKind::SlotTime { .. } => None,
@@ -350,6 +388,7 @@ impl AlertKind {
             | AlertKind::FarmersIncreasedSuddenly { .. }
             | AlertKind::BlockProductionStall { .. }
             | AlertKind::BlockProductionResumed { .. }
+            | AlertKind::ChainFork { .. }
             | AlertKind::SudoCall { .. }
             | AlertKind::SudoEvent { .. }
             | AlertKind::OperatorSlashed { .. }
@@ -366,6 +405,7 @@ impl AlertKind {
             AlertKind::Startup
             | AlertKind::BlockProductionStall { .. }
             | AlertKind::BlockProductionResumed { .. }
+            | AlertKind::ChainFork { .. }
             | AlertKind::ForceBalanceTransfer { .. }
             | AlertKind::LargeBalanceTransfer { .. }
             | AlertKind::SudoCall { .. }
