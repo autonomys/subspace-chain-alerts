@@ -147,6 +147,30 @@ pub enum AlertKind {
         /// The time of the first slot in the interval.
         first_slot_time: BlockTime,
     },
+
+    /// Farmers count has decreased suddenly.
+    FarmersDecreasedSuddenly {
+        /// The number of farmers with votes.
+        number_of_farmers_with_votes: u32,
+
+        /// The average number of farmers with votes.
+        average_number_of_farmers_with_votes: f64,
+
+        /// The number of blocks in the interval.
+        number_of_blocks: u32,
+    },
+
+    /// Farmers count has increased suddenly.
+    FarmersIncreasedSuddenly {
+        /// The number of farmers with votes.
+        number_of_farmers_with_votes: u32,
+
+        /// The average number of farmers with votes.
+        average_number_of_farmers_with_votes: f64,
+
+        /// The number of blocks in the interval.
+        number_of_blocks: u32,
+    },
 }
 
 impl Display for AlertKind {
@@ -247,6 +271,31 @@ impl Display for AlertKind {
                     fmt_timestamp(first_slot_time.date_time()),
                 )
             }
+
+            AlertKind::FarmersDecreasedSuddenly {
+                number_of_farmers_with_votes,
+                average_number_of_farmers_with_votes,
+                number_of_blocks,
+            } => {
+                write!(
+                    f,
+                    "**Farmers count has decreased significantly in the last blocks**\n\
+                    Number of farmers with votes: {number_of_farmers_with_votes}\n\
+                    Average number of farmers with votes in previous {number_of_blocks} blocks: {average_number_of_farmers_with_votes}",
+                )
+            }
+            AlertKind::FarmersIncreasedSuddenly {
+                number_of_farmers_with_votes,
+                average_number_of_farmers_with_votes,
+                number_of_blocks,
+            } => {
+                write!(
+                    f,
+                    "**Farmers count has increased significantly in the last blocks**\n\
+                    Number of farmers with votes: {number_of_farmers_with_votes}\n\
+                    Average number of farmers with votes in previous {number_of_blocks} blocks: {average_number_of_farmers_with_votes}",
+                )
+            }
         }
     }
 }
@@ -262,6 +311,8 @@ impl AlertKind {
             // Deliberately repeat each enum variant here, so we can't forget to update this
             // method when adding new variants.
             AlertKind::Startup
+            | AlertKind::FarmersDecreasedSuddenly { .. }
+            | AlertKind::FarmersIncreasedSuddenly { .. }
             | AlertKind::BlockProductionStall { .. }
             | AlertKind::ForceBalanceTransfer { .. }
             | AlertKind::LargeBalanceTransfer { .. }
@@ -280,6 +331,8 @@ impl AlertKind {
             AlertKind::LargeBalanceTransfer { extrinsic_info, .. } => Some(extrinsic_info),
             AlertKind::SudoCall { extrinsic_info } => Some(extrinsic_info),
             AlertKind::Startup
+            | AlertKind::FarmersDecreasedSuddenly { .. }
+            | AlertKind::FarmersIncreasedSuddenly { .. }
             | AlertKind::BlockProductionStall { .. }
             | AlertKind::BlockProductionResumed { .. }
             | AlertKind::SudoEvent { .. }
@@ -295,6 +348,8 @@ impl AlertKind {
             AlertKind::ForceBalanceTransfer { transfer_value, .. } => *transfer_value,
             AlertKind::LargeBalanceTransfer { transfer_value, .. } => Some(*transfer_value),
             AlertKind::Startup
+            | AlertKind::FarmersDecreasedSuddenly { .. }
+            | AlertKind::FarmersIncreasedSuddenly { .. }
             | AlertKind::BlockProductionStall { .. }
             | AlertKind::BlockProductionResumed { .. }
             | AlertKind::SudoCall { .. }
@@ -316,7 +371,9 @@ impl AlertKind {
             | AlertKind::ForceBalanceTransfer { .. }
             | AlertKind::LargeBalanceTransfer { .. }
             | AlertKind::SudoCall { .. }
-            | AlertKind::SlotTime { .. } => None,
+            | AlertKind::SlotTime { .. }
+            | AlertKind::FarmersDecreasedSuddenly { .. }
+            | AlertKind::FarmersIncreasedSuddenly { .. } => None,
         }
     }
 }

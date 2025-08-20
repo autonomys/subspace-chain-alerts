@@ -1,5 +1,6 @@
 //! Subspace chain connection and block parsing code.
 
+pub mod decode;
 #[cfg(test)]
 pub mod tests;
 
