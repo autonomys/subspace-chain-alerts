@@ -16,7 +16,7 @@ rustls.workspace = true
 scale-value.workspace = true
 serde_json.workspace = true
 subspace-process.workspace = true
-subxt = { workspace = true, features = ["jsonrpsee", "native"] }
+subxt = { workspace = true, features = ["jsonrpsee", "native", "reconnecting-rpc-client"] }
 tokio = { workspace = true, features = ["macros", "parking_lot", "rt-multi-thread", "fs"] }
 tracing.workspace = true
 slack-morphism = { workspace = true, features = ["hyper"] }
