@@ -359,6 +359,7 @@ pub async fn replay_previous_blocks(
     Ok(())
 }
 
+#[expect(clippy::too_many_arguments, reason = "too many arguments is fine here")]
 /// Run checks on a single block, against its previous block.
 async fn run_on_block(
     mode: BlockCheckMode,
@@ -376,7 +377,7 @@ async fn run_on_block(
     alerts::check_block(mode, alert_tx, block_info, prev_block_info).await?;
     slot_time_monitor.process_block(mode, block_info).await;
     farming_monitor
-        .process_block(block_info.clone(), mode, block.events().await?)
+        .process_block(*block_info, mode, block.events().await?)
         .await;
 
     // Check each extrinsic and event for alerts.
