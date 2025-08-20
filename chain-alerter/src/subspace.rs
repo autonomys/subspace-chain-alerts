@@ -23,6 +23,9 @@ use tracing::{debug, info, trace, warn};
 /// Copied from subspace-runtime-primitives.
 pub const AI3: Balance = 10_u128.pow(18);
 
+/// The target block interval, in seconds.
+pub const TARGET_BLOCK_INTERVAL: u64 = 6;
+
 /// The default RPC URL for a local Subspace node.
 pub const LOCAL_SUBSPACE_NODE_URL: &str = "ws://127.0.0.1:9944";
 
