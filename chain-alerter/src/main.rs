@@ -17,7 +17,7 @@ use crate::slot_time_monitor::{
     DEFAULT_CHECK_INTERVAL, DEFAULT_SLOT_TIME_ALERT_THRESHOLD, SlotTimeMonitorConfig,
 };
 use crate::subspace::{
-    BlockInfo, BlockNumber, LOCAL_SUBSPACE_NODE_URL, SubspaceClient, SubspaceConfig,
+    BlockInfo, BlockNumber, LOCAL_SUBSPACE_NODE_URL, RawRpcClient, SubspaceClient, SubspaceConfig,
     create_subspace_client, spawn_metadata_update_task,
 };
 use clap::{Parser, ValueHint};
@@ -64,9 +64,16 @@ struct Args {
 /// Any returned errors are fatal and require a restart.
 ///
 /// This needs to be kept in sync with `subspace::tests::test_setup()`.
+///
+/// TODO: make this return the same struct as `subspace::tests::test_setup()`
 async fn setup(
     args: Args,
-) -> anyhow::Result<(SlackClientInfo, SubspaceClient, AsyncJoinOnDrop<()>)> {
+) -> anyhow::Result<(
+    SlackClientInfo,
+    SubspaceClient,
+    RawRpcClient,
+    AsyncJoinOnDrop<()>,
+)> {
     // Avoid a crypto provider conflict: jsonrpsee activates ring, and hyper-rustls activates
     // aws-lc, but there can only be one per process. We use the library with more formal
     // verification.
@@ -86,11 +93,11 @@ async fn setup(
     .await?;
 
     // Create a client that subscribes to the configured Substrate node.
-    let chain_client = create_subspace_client(&args.node_rpc_url).await?;
+    let (chain_client, raw_rpc_client) = create_subspace_client(&args.node_rpc_url).await?;
 
     let update_task = spawn_metadata_update_task(&chain_client).await;
 
-    Ok((slack_client_info, chain_client, update_task))
+    Ok((slack_client_info, chain_client, raw_rpc_client, update_task))
 }
 
 /// Receives alerts on a channel and posts them to Slack.
@@ -111,7 +118,8 @@ async fn slack_poster(slack_client: SlackClientInfo, mut alert_rx: mpsc::Receive
 async fn run() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    let (slack_client_info, chain_client, _metadata_update_task) = setup(args).await?;
+    let (slack_client_info, chain_client, _raw_rpc_client, _metadata_update_task) =
+        setup(args).await?;
 
     // Spawn a background task to post alerts to Slack.
     // We don't need to wait for the task to finish, because it will panic on failure.
@@ -170,6 +178,8 @@ async fn run() -> anyhow::Result<()> {
         task::yield_now().await;
 
         // Check for a gap in the subscribed blocks.
+        // Best block subscriptions do not automatically recover missed blocks after a reconnection:
+        // <https://github.com/paritytech/subxt/issues/1568>
         if let Some(prev_block_info) = prev_block_info
             && block_info.block_height != prev_block_info.block_height + 1
         {

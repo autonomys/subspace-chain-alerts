@@ -11,10 +11,12 @@ use std::fmt::{self, Display};
 use std::ops::Sub;
 use std::time::Duration;
 use subspace_process::AsyncJoinOnDrop;
+use subxt::backend::rpc::reconnecting_rpc_client::ExponentialBackoff;
 use subxt::blocks::{Block, ExtrinsicDetails, Extrinsics};
 use subxt::client::OnlineClientT;
 use subxt::config::substrate::DigestItem;
 use subxt::events::{EventDetails, Phase};
+use subxt::ext::subxt_rpcs::client::ReconnectingRpcClient;
 use subxt::utils::H256;
 use subxt::{OnlineClient, SubstrateConfig};
 use tracing::{debug, info, trace, warn};
@@ -25,6 +27,15 @@ pub const AI3: Balance = 10_u128.pow(18);
 
 /// The target block interval, in seconds.
 pub const TARGET_BLOCK_INTERVAL: u64 = 6;
+
+/// The minumum delay between RPC reconnection attempts, in milliseconds.
+pub const MIN_RECONNECTION_DELAY: u64 = 10;
+
+/// The maximum delay between RPC reconnection attempts, in milliseconds.
+pub const MAX_RECONNECTION_DELAY: u64 = 10_000;
+
+/// The maximum number of RPC reconnection attempts before failing and exiting the process.
+pub const MAX_RECONNECTION_ATTEMPTS: usize = 10;
 
 /// The default RPC URL for a local Subspace node.
 pub const LOCAL_SUBSPACE_NODE_URL: &str = "ws://127.0.0.1:9944";
@@ -56,6 +67,9 @@ pub type SubspaceConfig = SubstrateConfig;
 /// The type of Subspace client we're using.
 pub type SubspaceClient = OnlineClient<SubspaceConfig>;
 
+/// The type of raw RPC client we're using.
+pub type RawRpcClient = ReconnectingRpcClient;
+
 /// The raw block hash literal type.
 #[allow(dead_code, reason = "only used in tests")]
 pub type RawBlockHash = [u8; 32];
@@ -66,15 +80,31 @@ pub type ExtrinsicIndex = u32;
 /// The Subspace/subxt event index type.
 pub type EventIndex = u32;
 
-/// Create a new Subspace client.
+/// Create a new reconnecting Subspace client.
 pub async fn create_subspace_client(
     node_url: impl AsRef<str>,
-) -> Result<SubspaceClient, anyhow::Error> {
+) -> Result<(SubspaceClient, RawRpcClient), anyhow::Error> {
     info!("connecting to Subspace node at {}", node_url.as_ref());
 
-    SubspaceClient::from_url(node_url.as_ref())
-        .await
-        .map_err(anyhow::Error::msg)
+    // Create a new client with with a reconnecting RPC client.
+    let rpc = RawRpcClient::builder()
+        // Reconnect with exponential backoff, take limits the number of retries.
+        // The exponential series multiplies by the minimum reconnection delay each retry.
+        .retry_policy(
+            ExponentialBackoff::from_millis(MIN_RECONNECTION_DELAY)
+                .max_delay(Duration::from_millis(MAX_RECONNECTION_DELAY))
+                .take(MAX_RECONNECTION_ATTEMPTS),
+        )
+        .build(node_url)
+        .await?;
+
+    // TODO: decide if we want to use the chainhead backend with the reconnecting RPC client:
+    // let backend = ChainHeadBackend::builder().build_with_background_task(rpc.clone());
+    // let client = SubspaceClient::from_backend(Arc::new(backend)).await?;
+
+    let client = SubspaceClient::from_rpc_client(rpc.clone()).await?;
+
+    Ok((client, rpc))
 }
 
 /// Spawn a background task to keep the runtime metadata up to date.
