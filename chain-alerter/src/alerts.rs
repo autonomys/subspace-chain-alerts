@@ -378,10 +378,9 @@ pub async fn check_block(
         // No block time to check against.
         warn!(
             ?mode,
-            "Block time unavailable in block:\n\
-            {block_info}\n\
-            Previous block:\n\
-            {prev_block_info}"
+            ?block_info,
+            ?prev_block_info,
+            "Block time unavailable in block",
         );
     };
 
@@ -533,8 +532,8 @@ where
             // TODO: check transfer_all by accessing account storage to get the value
             warn!(
                 ?mode,
-                "Balance: extrinsic amount unavailable in block:\n\
-                {extrinsic_info}",
+                ?extrinsic_info,
+                "Balance: extrinsic amount unavailable in block",
             );
         }
     }

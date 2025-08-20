@@ -175,10 +175,7 @@ async fn run() -> anyhow::Result<()> {
             .is_multiple_of(BLOCK_UPDATE_LOGGING_INTERVAL)
         {
             // Let the user know we're still alive
-            info!(
-                "Processed block:\n\
-                {block_info}"
-            );
+            info!(?block_info, "Processed block");
         }
 
         // Notify spawned tasks that a new block has arrived, and give them time to process that
@@ -250,8 +247,7 @@ pub async fn replay_previous_blocks(
     let (gap_start, gap_end) = if block_info.block_height <= prev_block_info.block_height {
         // Multiple blocks at the same height, a chain fork.
         info!(
-            "chain fork detected: {} ({}) -> {} ({})\n\
-            checking skipped blocks",
+            "chain fork detected: {} ({}) -> {} ({}), checking skipped blocks",
             prev_block_info.block_height,
             prev_block_info.block_hash,
             block_info.block_height,
@@ -268,8 +264,7 @@ pub async fn replay_previous_blocks(
     } else {
         // A gap in the chain of blocks.
         warn!(
-            "{} block gap detected: {} ({}) -> {} ({})\n\
-            checking skipped blocks",
+            "{} block gap detected: {} ({}) -> {} ({}), checking skipped blocks",
             block_info.block_height - prev_block_info.block_height - 1,
             prev_block_info.block_height,
             prev_block_info.block_hash,
@@ -334,10 +329,7 @@ pub async fn replay_previous_blocks(
                 .is_multiple_of(BLOCK_UPDATE_LOGGING_INTERVAL)
             {
                 // Let the user know we're still alive
-                info!(
-                    "Replayed missed block:\n\
-                    {block_info}"
-                );
+                info!(?block_info, "Replayed missed block");
             }
 
             run_on_block(
