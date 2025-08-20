@@ -17,17 +17,21 @@ use crate::slot_time_monitor::{
     DEFAULT_CHECK_INTERVAL, DEFAULT_SLOT_TIME_ALERT_THRESHOLD, SlotTimeMonitorConfig,
 };
 use crate::subspace::{
-    BlockInfo, BlockNumber, LOCAL_SUBSPACE_NODE_URL, RawRpcClient, SubspaceClient, SubspaceConfig,
-    create_subspace_client, spawn_metadata_update_task,
+    BlockInfo, BlockNumber, LOCAL_SUBSPACE_NODE_URL, MAX_RECONNECTION_ATTEMPTS,
+    MAX_RECONNECTION_DELAY, RawRpcClient, SubspaceClient, SubspaceConfig, create_subspace_client,
+    spawn_metadata_update_task,
 };
 use clap::{Parser, ValueHint};
 use slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor};
 use std::collections::VecDeque;
 use std::panic;
+use std::time::Duration;
 use subspace_process::{AsyncJoinOnDrop, init_logger, set_exit_on_panic, shutdown_signal};
 use subxt::blocks::{Block, Extrinsics};
+use subxt::ext::futures::FutureExt;
 use tokio::sync::{mpsc, watch};
-use tokio::{select, task};
+use tokio::time::sleep;
+use tokio::{pin, select, task};
 use tracing::{error, info, warn};
 
 /// The number of blocks between info-level block number logs.
@@ -394,20 +398,35 @@ async fn run_on_block(
 async fn main() -> anyhow::Result<()> {
     set_exit_on_panic();
     init_logger();
-    let shutdown_fut = shutdown_signal("chain-alerter");
 
-    select! {
-        _ = shutdown_fut => {
-            info!("chain-alerter exited due to user shutdown");
-        }
+    let shutdown_handle = shutdown_signal("chain-alerter").fuse();
+    pin!(shutdown_handle);
 
-        result = run() => {
-            if let Err(e) = result {
-                error!("chain-alerter exited with error: {e}");
-            } else {
-                info!("chain-alerter exited");
+    for reconnection_attempt in 0..=MAX_RECONNECTION_ATTEMPTS {
+        select! {
+            _ = &mut shutdown_handle => {
+                info!(%reconnection_attempt, "chain-alerter exited due to user shutdown");
+                break;
+            }
+
+            // TODO:
+            // - store the most recent block and pass it to run()
+            // - create the RPC client outside this method and re-use it (but this might be more error-prone)
+            result = run() => {
+                if let Err(error) = result {
+                    error!(
+                        %reconnection_attempt,
+                        %error,
+                        "chain-alerter exited with error, restarting..."
+                    );
+                } else {
+                    info!(%reconnection_attempt, "chain-alerter exited, restarting...");
+                }
             }
         }
+
+        // Wait for RPC reconnection before restarting.
+        sleep(Duration::from_millis(MAX_RECONNECTION_DELAY)).await;
     }
 
     Ok(())
