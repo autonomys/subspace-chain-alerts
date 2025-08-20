@@ -82,10 +82,16 @@ async fn setup(
     // aws-lc, but there can only be one per process. We use the library with more formal
     // verification.
     //
+    // We expect errors here during reconnections, so we log and ignore them.
+    //
     // TODO: remove ring to reduce compile time/size
-    rustls::crypto::aws_lc_rs::default_provider()
+    let _ = rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
-        .map_err(|_| anyhow::anyhow!("Selecting default TLS crypto provider failed"))?;
+        .inspect_err(|_| {
+            warn!(
+                "Selecting default TLS crypto provider failed, this is expected during reconnections"
+            )
+        });
 
     // Connect to Slack and get basic info.
     let slack_client_info = SlackClientInfo::new(
