@@ -6,7 +6,7 @@ mod tests;
 use crate::format::{fmt_amount, fmt_duration, fmt_timestamp};
 use crate::subspace::{
     AI3, Balance, BlockInfo, BlockTime, EventInfo, ExtrinsicInfo, SubspaceConfig,
-    gap_since_last_block, gap_since_time,
+    TARGET_BLOCK_INTERVAL, gap_since_last_block, gap_since_time,
 };
 use chrono::Utc;
 use scale_value::Composite;
@@ -28,7 +28,7 @@ const MIN_BALANCE_CHANGE: Balance = 1_000_000 * AI3;
 /// `pallet-timestamp` enforces a `MinimumPeriod` of 3 seconds in Subspace, and a
 /// `MAX_TIMESTAMP_DRIFT_MILLIS` of 30 seconds from each node's local clock.
 /// <https://github.com/paritytech/polkadot-sdk/blob/0034d178fff88a0fd87cf0ec1d8f122ae0011d78/substrate/frame/timestamp/src/lib.rs#L307>
-const MIN_BLOCK_GAP: Duration = Duration::from_secs(60);
+const MIN_BLOCK_GAP: Duration = Duration::from_secs(TARGET_BLOCK_INTERVAL * 10);
 
 /// Whether we are replaying missed blocks, or checking current blocks.
 /// This impacts block stall checks, which can only be spawned on new blocks.

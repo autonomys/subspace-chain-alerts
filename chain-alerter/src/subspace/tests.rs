@@ -4,8 +4,8 @@ use crate::ALERT_BUFFER_SIZE;
 use crate::alerts::Alert;
 use crate::subspace::{
     BlockInfo, BlockNumber, EventIndex, EventInfo, ExtrinsicIndex, ExtrinsicInfo,
-    FOUNDATION_SUBSPACE_NODE_URL, SubspaceClient, SubspaceConfig, create_subspace_client,
-    spawn_metadata_update_task,
+    FOUNDATION_SUBSPACE_NODE_URL, RawRpcClient, SubspaceClient, SubspaceConfig,
+    create_subspace_client, spawn_metadata_update_task,
 };
 use std::env;
 use subspace_process::{AsyncJoinOnDrop, init_logger};
@@ -30,11 +30,12 @@ pub fn node_rpc_url() -> String {
 ///
 /// This needs to be kept in sync with `main::setup()`.
 ///
-/// TODO: make this return a struct instead
+/// TODO: make this return the same struct as `main::setup()`
 pub async fn test_setup(
     node_rpc_url: impl AsRef<str>,
 ) -> anyhow::Result<(
     SubspaceClient,
+    RawRpcClient,
     mpsc::Sender<Alert>,
     mpsc::Receiver<Alert>,
     AsyncJoinOnDrop<()>,
@@ -46,14 +47,20 @@ pub async fn test_setup(
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     // Create a client that subscribes to the configured Substrate node.
-    let chain_client = create_subspace_client(node_rpc_url.as_ref()).await?;
+    let (chain_client, raw_rpc_client) = create_subspace_client(node_rpc_url.as_ref()).await?;
 
     let update_task = spawn_metadata_update_task(&chain_client).await;
 
     // Create a channel to receive alerts.
     let (alert_tx, alert_rx) = mpsc::channel(ALERT_BUFFER_SIZE);
 
-    Ok((chain_client, alert_tx, alert_rx, update_task))
+    Ok((
+        chain_client,
+        raw_rpc_client,
+        alert_tx,
+        alert_rx,
+        update_task,
+    ))
 }
 
 /// Get the block info, extrinsics, and events for a block.
@@ -62,7 +69,9 @@ pub async fn test_setup(
 /// block. If `expected_block_height` is provided, it will be used to check that the block height is
 /// correct, otherwise it will not be checked.
 ///
-/// TODO: make this return a struct instead
+/// TODO:
+/// - make this return a struct
+/// - add a method that takes a raw RPC client, and uses it to fetch the block info by block height
 pub async fn fetch_block_info(
     subspace_client: &SubspaceClient,
     block_hash: impl Into<Option<H256>>,
