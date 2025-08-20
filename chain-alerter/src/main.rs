@@ -24,17 +24,21 @@ use crate::slot_time_monitor::{
     DEFAULT_CHECK_INTERVAL, DEFAULT_SLOT_TIME_ALERT_THRESHOLD, SlotTimeMonitorConfig,
 };
 use crate::subspace::{
-    BlockInfo, BlockNumber, LOCAL_SUBSPACE_NODE_URL, RawRpcClient, SubspaceClient, SubspaceConfig,
-    create_subspace_client, spawn_metadata_update_task,
+    BlockInfo, BlockNumber, LOCAL_SUBSPACE_NODE_URL, MAX_RECONNECTION_ATTEMPTS,
+    MAX_RECONNECTION_DELAY, RawRpcClient, SubspaceClient, SubspaceConfig, create_subspace_client,
+    spawn_metadata_update_task,
 };
 use clap::{Parser, ValueHint};
 use slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor};
 use std::collections::VecDeque;
 use std::panic;
+use std::time::Duration;
 use subspace_process::{AsyncJoinOnDrop, init_logger, set_exit_on_panic, shutdown_signal};
 use subxt::blocks::{Block, Extrinsics};
+use subxt::ext::futures::FutureExt;
 use tokio::sync::{mpsc, watch};
-use tokio::{select, task};
+use tokio::time::sleep;
+use tokio::{pin, select, task};
 use tracing::{error, info, warn};
 
 /// The number of blocks between info-level block number logs.
@@ -85,10 +89,16 @@ async fn setup(
     // aws-lc, but there can only be one per process. We use the library with more formal
     // verification.
     //
+    // We expect errors here during reconnections, so we log and ignore them.
+    //
     // TODO: remove ring to reduce compile time/size
-    rustls::crypto::aws_lc_rs::default_provider()
+    let _ = rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
-        .map_err(|_| anyhow::anyhow!("Selecting default TLS crypto provider failed"))?;
+        .inspect_err(|_| {
+            warn!(
+                "Selecting default TLS crypto provider failed, this is expected during reconnections"
+            )
+        });
 
     // Connect to Slack and get basic info.
     let slack_client_info = SlackClientInfo::new(
@@ -181,10 +191,7 @@ async fn run() -> anyhow::Result<()> {
             .is_multiple_of(BLOCK_UPDATE_LOGGING_INTERVAL)
         {
             // Let the user know we're still alive
-            info!(
-                "Processed block:\n\
-                {block_info}"
-            );
+            info!(?block_info, "Processed block");
         }
 
         // Notify spawned tasks that a new block has arrived, and give them time to process that
@@ -259,8 +266,7 @@ pub async fn replay_previous_blocks(
     let (gap_start, gap_end) = if block_info.block_height <= prev_block_info.block_height {
         // Multiple blocks at the same height, a chain fork.
         info!(
-            "chain fork detected: {} ({}) -> {} ({})\n\
-            checking skipped blocks",
+            "chain fork detected: {} ({}) -> {} ({}), checking skipped blocks",
             prev_block_info.block_height,
             prev_block_info.block_hash,
             block_info.block_height,
@@ -277,8 +283,7 @@ pub async fn replay_previous_blocks(
     } else {
         // A gap in the chain of blocks.
         warn!(
-            "{} block gap detected: {} ({}) -> {} ({})\n\
-            checking skipped blocks",
+            "{} block gap detected: {} ({}) -> {} ({}), checking skipped blocks",
             block_info.block_height - prev_block_info.block_height - 1,
             prev_block_info.block_height,
             prev_block_info.block_hash,
@@ -343,10 +348,7 @@ pub async fn replay_previous_blocks(
                 .is_multiple_of(BLOCK_UPDATE_LOGGING_INTERVAL)
             {
                 // Let the user know we're still alive
-                info!(
-                    "Replayed missed block:\n\
-                    {block_info}"
-                );
+                info!(?block_info, "Replayed missed block");
             }
 
             run_on_block(
@@ -419,20 +421,35 @@ async fn run_on_block(
 async fn main() -> anyhow::Result<()> {
     set_exit_on_panic();
     init_logger();
-    let shutdown_fut = shutdown_signal("chain-alerter");
 
-    select! {
-        _ = shutdown_fut => {
-            info!("chain-alerter exited due to user shutdown");
-        }
+    let shutdown_handle = shutdown_signal("chain-alerter").fuse();
+    pin!(shutdown_handle);
 
-        result = run() => {
-            if let Err(e) = result {
-                error!("chain-alerter exited with error: {e}");
-            } else {
-                info!("chain-alerter exited");
+    for reconnection_attempt in 0..=MAX_RECONNECTION_ATTEMPTS {
+        select! {
+            _ = &mut shutdown_handle => {
+                info!(%reconnection_attempt, "chain-alerter exited due to user shutdown");
+                break;
+            }
+
+            // TODO:
+            // - store the most recent block and pass it to run()
+            // - create the RPC client outside this method and re-use it (but this might be more error-prone)
+            result = run() => {
+                if let Err(error) = result {
+                    error!(
+                        %reconnection_attempt,
+                        %error,
+                        "chain-alerter exited with error, restarting..."
+                    );
+                } else {
+                    info!(%reconnection_attempt, "chain-alerter exited, restarting...");
+                }
             }
         }
+
+        // Wait for RPC reconnection before restarting.
+        sleep(Duration::from_millis(MAX_RECONNECTION_DELAY)).await;
     }
 
     Ok(())

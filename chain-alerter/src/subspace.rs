@@ -322,8 +322,8 @@ impl ExtrinsicInfo {
             // If we can't get the extrinsic pallet and call name, there's nothing we can do.
             // Just log it and move on.
             warn!(
-                "extrinsic {} pallet/name unavailable in block:\n\
-                {block_info}",
+                ?block_info,
+                "extrinsic {} pallet/name unavailable in block",
                 extrinsic.index(),
             );
             return None;
@@ -333,13 +333,12 @@ impl ExtrinsicInfo {
         // extrinsic alerts. So we just warn and substitute empty fields.
         let fields = extrinsic.field_values().unwrap_or_else(|_| {
             warn!(
-                "extrinsic {}:{} ({}) fields unavailable in block:\n\
-                Hash: {:?}\n\
-                {block_info}",
+                ?block_info,
+                hash = ?extrinsic.hash(),
+                "extrinsic {}:{} ({}) fields unavailable in block",
                 meta.pallet.name(),
                 meta.variant.name,
                 extrinsic.index(),
-                extrinsic.hash(),
             );
             Composite::unnamed(Vec::new())
         });
@@ -405,8 +404,8 @@ impl EventInfo {
         // event alerts. So we just warn and substitute empty fields.
         let fields = event.field_values().unwrap_or_else(|_| {
             warn!(
-                "event {}:{} ({}) fields unavailable in block:\n\
-                {block_info}",
+                ?block_info,
+                "event {}:{} ({}) fields unavailable in block",
                 meta.pallet.name(),
                 meta.variant.name,
                 event.index(),

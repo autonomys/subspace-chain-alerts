@@ -299,9 +299,9 @@ impl SlackClientInfo {
         let slack_session = self.open_session();
 
         info!(
-            "posting message to '{TEST_CHANNEL_NAME}' channel id: {:?}...\n\
-            {alert:?}",
-            self.channel_id,
+            ?alert,
+            channel_id =?self.channel_id,
+            "posting message to '{TEST_CHANNEL_NAME}'",
         );
 
         let Alert {
