@@ -404,7 +404,8 @@ pub async fn check_for_block_stall(
 
     let old_block_info = block_info;
 
-    // Since we exit on panic, there's no need to check the result of the spawned task.
+    // There's no need to check the result of the spawned task, panics are impossible, and other
+    // errors are handled by replaying missed blocks on restart.
     tokio::spawn(async move {
         sleep(MIN_BLOCK_GAP).await;
 
@@ -422,15 +423,15 @@ pub async fn check_for_block_stall(
 
         let gap = gap_since_time(Utc::now(), old_block_info);
 
-        // Send errors are fatal and require a restart.
-        alert_tx
+        // If we have restarted, the new alerter will replay missed blocks, so we can ignore any
+        // send errors to dropped channels. This also avoids panics during process shutdown.
+        let _ = alert_tx
             .send(Alert::new(
                 AlertKind::BlockProductionStall { gap },
                 old_block_info,
                 mode,
             ))
-            .await
-            .expect("sending Slack alert failed");
+            .await;
     });
 }
 
