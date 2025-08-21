@@ -150,7 +150,7 @@ pub enum AlertKind {
     /// Farmers count has decreased suddenly.
     FarmersDecreasedSuddenly {
         /// The number of farmers with votes.
-        number_of_farmers_with_votes: u32,
+        number_of_farmers_with_votes: usize,
 
         /// The average number of farmers with votes.
         average_number_of_farmers_with_votes: f64,
@@ -162,7 +162,7 @@ pub enum AlertKind {
     /// Farmers count has increased suddenly.
     FarmersIncreasedSuddenly {
         /// The number of farmers with votes.
-        number_of_farmers_with_votes: u32,
+        number_of_farmers_with_votes: usize,
 
         /// The average number of farmers with votes.
         average_number_of_farmers_with_votes: f64,
