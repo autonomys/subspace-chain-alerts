@@ -83,10 +83,10 @@ impl FarmingMonitor for MemoryFarmingMonitor {
         events: &[Event],
     ) {
         // Update the last voted block for each farmer that voted in this block.
-        self.update_last_voted_block(events, block_info.block_height);
+        self.update_last_voted_block(events, block_info.height());
 
         // Remove farmers that have not voted in the last `inactive_block_threshold` blocks.
-        self.remove_inactive_farmers(block_info.block_height);
+        self.remove_inactive_farmers(block_info.height());
 
         // Update the number of farmers with votes in the last `max_block_interval` blocks.
         self.update_number_of_farmers_with_votes();
@@ -265,6 +265,7 @@ impl MemoryFarmingMonitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::subspace::BlockPosition;
     use subxt::utils::H256;
 
     fn farmers() -> [H256; 3] {
@@ -299,12 +300,11 @@ mod tests {
             farming_monitor
                 .check_farmer_count(
                     &BlockInfo {
-                        block_height,
-                        block_time: None,
-                        block_hash: H256::default(),
-                        genesis_hash: H256::zero(),
-                        block_slot: None,
+                        position: BlockPosition::new(block_height, H256::zero()),
+                        time: None,
+                        slot: None,
                         parent_hash: H256::zero(),
+                        genesis_hash: H256::zero(),
                     },
                     BlockCheckMode::Current,
                 )
@@ -389,12 +389,11 @@ mod tests {
         }
 
         let block_info = BlockInfo {
-            block_height: 1,
-            block_time: None,
-            block_hash: H256::default(),
-            genesis_hash: H256::zero(),
-            block_slot: None,
+            position: BlockPosition::new(1, H256::zero()),
+            time: None,
+            slot: None,
             parent_hash: H256::zero(),
+            genesis_hash: H256::zero(),
         };
         farming_monitor.update_number_of_farmers_with_votes();
         farming_monitor
@@ -445,12 +444,11 @@ mod tests {
         }
 
         let mock_block_info = BlockInfo {
-            block_height: 1,
-            block_time: None,
-            block_hash: H256::default(),
-            genesis_hash: H256::zero(),
-            block_slot: None,
+            position: BlockPosition::new(1, H256::zero()),
+            time: None,
+            slot: None,
             parent_hash: H256::zero(),
+            genesis_hash: H256::zero(),
         };
 
         farming_monitor.update_number_of_farmers_with_votes();
@@ -506,11 +504,10 @@ mod tests {
         farming_monitor
             .check_farmer_count(
                 &BlockInfo {
-                    block_height: 1,
-                    block_time: None,
-                    block_hash: H256::default(),
+                    position: BlockPosition::new(1, H256::zero()),
+                    time: None,
+                    slot: None,
                     genesis_hash: H256::zero(),
-                    block_slot: None,
                     parent_hash: H256::zero(),
                 },
                 BlockCheckMode::Current,

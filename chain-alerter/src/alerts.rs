@@ -5,15 +5,14 @@ mod tests;
 
 use crate::format::{fmt_amount, fmt_duration, fmt_timestamp};
 use crate::subspace::{
-    AI3, Balance, BlockInfo, BlockTime, Event, EventInfo, ExtrinsicInfo, SubspaceConfig,
-    TARGET_BLOCK_INTERVAL, gap_since_last_block, gap_since_time,
+    AI3, Balance, BlockInfo, BlockTime, Event, EventInfo, ExtrinsicInfo, SubspaceClient,
+    SubspaceConfig, TARGET_BLOCK_INTERVAL, gap_since_last_block, gap_since_time,
 };
 use chrono::Utc;
 use scale_value::Composite;
 use std::fmt::{self, Display};
 use std::time::Duration;
 use subxt::blocks::ExtrinsicDetails;
-use subxt::client::OnlineClientT;
 use tokio::sync::{mpsc, watch};
 use tokio::time::sleep;
 use tracing::{debug, warn};
@@ -470,7 +469,7 @@ pub async fn check_for_block_stall(
             .borrow()
             .expect("never empty, a block is sent before spawning this task");
 
-        if latest_block_info.block_time > old_block_info.block_time {
+        if latest_block_info.time > old_block_info.time {
             // There's a new block since we sent our block and spawned our task, so block
             // production hasn't stalled. But the latest block also spawned a task, so it
             // will alert if there is actually a stall.
@@ -498,16 +497,13 @@ pub async fn check_for_block_stall(
 /// recover after we pick up the runtime upgrade in the next block.
 ///
 /// Any returned errors are fatal and require a restart.
-pub async fn check_extrinsic<Client>(
+pub async fn check_extrinsic(
     // TODO: when we add a check that doesn't work on replayed blocks, skip it using mode
     mode: BlockCheckMode,
     alert_tx: &mpsc::Sender<Alert>,
-    extrinsic: &ExtrinsicDetails<SubspaceConfig, Client>,
+    extrinsic: &ExtrinsicDetails<SubspaceConfig, SubspaceClient>,
     block_info: &BlockInfo,
-) -> anyhow::Result<()>
-where
-    Client: OnlineClientT<SubspaceConfig>,
-{
+) -> anyhow::Result<()> {
     let Some(extrinsic_info) = ExtrinsicInfo::new(extrinsic, block_info) else {
         return Ok(());
     };

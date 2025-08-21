@@ -24,9 +24,9 @@ use crate::slot_time_monitor::{
     DEFAULT_CHECK_INTERVAL, DEFAULT_SLOT_TIME_ALERT_THRESHOLD, SlotTimeMonitorConfig,
 };
 use crate::subspace::{
-    BlockInfo, BlockNumber, Event, LOCAL_SUBSPACE_NODE_URL, MAX_RECONNECTION_ATTEMPTS,
-    MAX_RECONNECTION_DELAY, RawRpcClient, SubspaceClient, SubspaceConfig, create_subspace_client,
-    spawn_metadata_update_task,
+    BlockInfo, BlockNumber, BlockPosition, Event, LOCAL_SUBSPACE_NODE_URL,
+    MAX_RECONNECTION_ATTEMPTS, MAX_RECONNECTION_DELAY, RawRpcClient, SubspaceClient,
+    SubspaceConfig, create_subspace_client, spawn_metadata_update_task,
 };
 use clap::{Parser, ValueHint};
 use slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor};
@@ -187,7 +187,7 @@ async fn run() -> anyhow::Result<()> {
             alerts::startup_alert(BlockCheckMode::Current, &alert_tx, &block_info).await?;
             first_block = false;
         } else if block_info
-            .block_height
+            .height()
             .is_multiple_of(BLOCK_UPDATE_LOGGING_INTERVAL)
         {
             // Let the user know we're still alive
@@ -204,7 +204,7 @@ async fn run() -> anyhow::Result<()> {
         // Best block subscriptions do not automatically recover missed blocks after a reconnection:
         // <https://github.com/paritytech/subxt/issues/1568>
         if let Some(prev_block_info) = prev_block_info
-            && block_info.block_height != prev_block_info.block_height + 1
+            && block_info.height() != prev_block_info.height() + 1
         {
             // Go back in the chain and check missed blocks for alerts.
             replay_previous_blocks(
@@ -263,48 +263,44 @@ pub async fn replay_previous_blocks(
 ) -> anyhow::Result<()> {
     let genesis_hash = block_info.genesis_hash;
 
-    let (gap_start, gap_end) = if block_info.block_height <= prev_block_info.block_height {
+    let (gap_start, gap_end) = if block_info.height() <= prev_block_info.height() {
         // Multiple blocks at the same height, a chain fork.
         info!(
             "chain fork detected: {} ({}) -> {} ({}), checking skipped blocks",
-            prev_block_info.block_height,
-            prev_block_info.block_hash,
-            block_info.block_height,
-            block_info.block_hash,
+            prev_block_info.height(),
+            prev_block_info.hash(),
+            block_info.height(),
+            block_info.hash(),
         );
 
         // For now, just assume the fork is at the previous block.
         // TODO: add proper chain fork detection and alerts
         (
-            // TODO: turn this into a struct
-            (block_info.parent_hash, block_info.block_height - 1),
+            BlockPosition::new(block_info.height() - 1, block_info.parent_hash),
             block_info,
         )
     } else {
         // A gap in the chain of blocks.
         warn!(
             "{} block gap detected: {} ({}) -> {} ({}), checking skipped blocks",
-            block_info.block_height - prev_block_info.block_height - 1,
-            prev_block_info.block_height,
-            prev_block_info.block_hash,
-            block_info.block_height,
-            block_info.block_hash,
+            block_info.height() - prev_block_info.height() - 1,
+            prev_block_info.height(),
+            prev_block_info.hash(),
+            block_info.height(),
+            block_info.hash(),
         );
 
         // We know the exact gap, but it could be a fork, so keep the height as well.
-        (
-            (prev_block_info.block_hash, prev_block_info.block_height),
-            block_info,
-        )
+        (prev_block_info.position, block_info)
     };
 
     // Walk the chain backwards, saving the block hashes.
-    let mut missed_block_hashes = VecDeque::from([gap_end.block_hash]);
-    let mut missed_block_height = gap_end.block_height;
+    let mut missed_block_hashes = VecDeque::from([gap_end.hash()]);
+    let mut missed_block_height = gap_end.height();
 
     // When we reach the gap start height, insert that block hash, then stop.
     // TODO: limit how far back we go, very old alerts aren't worth checking for
-    while gap_start.1 < missed_block_height {
+    while gap_start.height < missed_block_height {
         // We don't store the missed blocks because they could take up a lot of memory.
         let missed_block = chain_client
             .blocks()
@@ -316,17 +312,17 @@ pub async fn replay_previous_blocks(
         missed_block_height = missed_block.number() - 1;
     }
 
-    if Some(&gap_start.0) != missed_block_hashes.front() {
+    if Some(&gap_start.hash) != missed_block_hashes.front() {
         // The gap was a fork, we found a sibling/cousin of the gap start.
         info!(
             "chain fork at {} confirmed: {} is a fork of {} -> {} ({})",
-            gap_start.1,
+            gap_start.hash,
             missed_block_hashes
                 .front()
                 .expect("always contains the final hash"),
-            gap_start.0,
-            gap_end.block_hash,
-            gap_end.block_height,
+            gap_start.height,
+            gap_end.hash(),
+            gap_end.height(),
         );
     }
 
@@ -344,7 +340,7 @@ pub async fn replay_previous_blocks(
         // (We're just using it for the previous block info.)
         if prev_block_info.is_some() {
             if block_info
-                .block_height
+                .height()
                 .is_multiple_of(BLOCK_UPDATE_LOGGING_INTERVAL)
             {
                 // Let the user know we're still alive

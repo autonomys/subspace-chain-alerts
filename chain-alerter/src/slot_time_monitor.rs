@@ -79,7 +79,7 @@ impl SlotTimeMonitorConfig {
 impl SlotTimeMonitor for MemorySlotTimeMonitor {
     /// Process a new block, updating internal scheduling and sending alerts when needed.
     async fn process_block(&mut self, mode: BlockCheckMode, block_info: &BlockInfo) {
-        let (block_time, block_slot) = match (block_info.block_time, block_info.block_slot) {
+        let (block_time, block_slot) = match (block_info.time, block_info.slot) {
             (Some(block_time), Some(block_slot)) => (block_time, block_slot),
             (None, None) => {
                 warn!(?mode, "Block time and slot not found");
@@ -97,7 +97,9 @@ impl SlotTimeMonitor for MemorySlotTimeMonitor {
 
         debug!(
             ?mode,
-            "Extracted slot: {:?} for block {:?}", block_slot, block_info.block_height,
+            "Extracted slot: {:?} for block {:?}",
+            block_slot,
+            block_info.height(),
         );
 
         match self.state {

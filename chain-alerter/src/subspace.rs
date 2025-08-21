@@ -14,7 +14,6 @@ use std::time::Duration;
 use subspace_process::AsyncJoinOnDrop;
 use subxt::backend::rpc::reconnecting_rpc_client::ExponentialBackoff;
 use subxt::blocks::{Block, ExtrinsicDetails, Extrinsics};
-use subxt::client::OnlineClientT;
 use subxt::config::substrate::DigestItem;
 use subxt::events::{EventDetails, Phase};
 use subxt::ext::subxt_rpcs::client::ReconnectingRpcClient;
@@ -129,56 +128,83 @@ pub async fn spawn_metadata_update_task(chain_client: &SubspaceClient) -> AsyncJ
     )
 }
 
+/// Block position in the chain, including height and hash.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Ord, PartialOrd, Hash)]
+pub struct BlockPosition {
+    /// The block number.
+    pub height: BlockNumber,
+
+    /// The block hash.
+    pub hash: H256,
+}
+
+impl Display for BlockPosition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} ({:?})", self.height, self.hash)?;
+
+        Ok(())
+    }
+}
+
+impl BlockPosition {
+    /// Create a new block position from a block height and hash.
+    pub fn new(height: BlockNumber, hash: H256) -> Self {
+        BlockPosition { height, hash }
+    }
+
+    /// Create a new block position from a block.
+    pub fn from_block(block: &Block<SubspaceConfig, SubspaceClient>) -> Self {
+        BlockPosition {
+            height: block.header().number,
+            hash: block.hash(),
+        }
+    }
+}
+
 /// Block info that can be formatted.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Ord, PartialOrd)]
 pub struct BlockInfo {
-    /// The block number.
-    pub block_height: BlockNumber,
+    /// The block height and hash.
+    pub position: BlockPosition,
 
     /// The time extrinsic in the block, if it exists.
-    pub block_time: Option<BlockTime>,
+    pub time: Option<BlockTime>,
 
-    /// The block hash.
-    pub block_hash: H256,
+    /// The block slot.
+    pub slot: Option<Slot>,
 
     /// The parent block hash.
     pub parent_hash: H256,
 
     /// The genesis block hash for this network.
     pub genesis_hash: H256,
-
-    /// The block slot.
-    pub block_slot: Option<Slot>,
 }
 
 impl Display for BlockInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self {
-            block_height,
-            block_time,
-            block_hash,
+            position: BlockPosition { height, hash },
+            time,
+            slot,
             // Skip the parent hash because it's too verbose in alerts.
             parent_hash: _,
             genesis_hash,
-            block_slot,
         } = self;
 
-        writeln!(f, "Block Height: {block_height}")?;
+        writeln!(f, "Block Height: {height}")?;
+        // Show full block hash but truncated genesis hash.
+        writeln!(f, "Hash: {hash:?}")?;
         writeln!(
             f,
             "Time: {}",
-            block_time
-                .as_ref()
+            time.as_ref()
                 .map(|bt| bt.to_string())
                 .unwrap_or_else(|| "unknown".to_string())
         )?;
-        // Show full block hash but truncated genesis hash.
-        writeln!(f, "Hash: {block_hash:?}")?;
         writeln!(
             f,
             "Slot: {}",
-            block_slot
-                .map(|bs| bs.to_string())
+            slot.map(|bs| bs.to_string())
                 .unwrap_or_else(|| "unknown".to_string())
         )?;
         write!(f, "Genesis: {genesis_hash}")?;
@@ -189,22 +215,28 @@ impl Display for BlockInfo {
 
 impl BlockInfo {
     /// Create a block info from a block and its extrinsics.
-    pub fn new<Client>(
-        block: &Block<SubspaceConfig, Client>,
-        extrinsics: &Extrinsics<SubspaceConfig, Client>,
+    pub fn new(
+        block: &Block<SubspaceConfig, SubspaceClient>,
+        extrinsics: &Extrinsics<SubspaceConfig, SubspaceClient>,
         genesis_hash: &H256,
-    ) -> BlockInfo
-    where
-        Client: OnlineClientT<SubspaceConfig>,
-    {
+    ) -> BlockInfo {
         BlockInfo {
-            block_height: block.header().number,
-            block_time: BlockTime::new(extrinsics),
-            block_slot: Slot::new(block),
-            block_hash: block.hash(),
+            position: BlockPosition::from_block(block),
+            time: BlockTime::new(extrinsics),
+            slot: Slot::new(block),
             parent_hash: block.header().parent_hash,
             genesis_hash: *genesis_hash,
         }
+    }
+
+    /// Returns the block height.
+    pub fn height(&self) -> BlockNumber {
+        self.position.height
+    }
+
+    /// Returns the block hash.
+    pub fn hash(&self) -> H256 {
+        self.position.hash
     }
 }
 
@@ -226,12 +258,7 @@ impl BlockTime {
     /// string.
     ///
     /// If the block does not have a timestamp set extrinsic, or parsing fails, returns `None`.
-    pub fn new<Client>(extrinsics: &Extrinsics<SubspaceConfig, Client>) -> Option<BlockTime>
-    where
-        Client: OnlineClientT<SubspaceConfig>,
-    {
-        // TODO: return a struct rather than a tuple
-
+    pub fn new(extrinsics: &Extrinsics<SubspaceConfig, SubspaceClient>) -> Option<BlockTime> {
         // Find the timestamp set extrinsic (usually the first extrinsic).
         for extrinsic in extrinsics.iter() {
             let Ok(meta) = extrinsic.extrinsic_metadata() else {
@@ -314,13 +341,10 @@ impl Display for ExtrinsicInfo {
 
 impl ExtrinsicInfo {
     /// Check and collect an extrinsic's info.
-    pub fn new<Client>(
-        extrinsic: &ExtrinsicDetails<SubspaceConfig, Client>,
+    pub fn new(
+        extrinsic: &ExtrinsicDetails<SubspaceConfig, SubspaceClient>,
         block_info: &BlockInfo,
-    ) -> Option<ExtrinsicInfo>
-    where
-        Client: OnlineClientT<SubspaceConfig>,
-    {
+    ) -> Option<ExtrinsicInfo> {
         let Ok(meta) = extrinsic.extrinsic_metadata() else {
             // If we can't get the extrinsic pallet and call name, there's nothing we can do.
             // Just log it and move on.
@@ -438,7 +462,7 @@ pub fn gap_since_time(
     prev_block_info: impl Into<Option<BlockInfo>>,
 ) -> Option<Duration> {
     let prev_block_info = prev_block_info.into()?;
-    let prev_block_time = prev_block_info.block_time?;
+    let prev_block_time = prev_block_info.time?;
 
     let gap = latest_time.signed_duration_since(prev_block_time.date_time()?);
 
@@ -452,7 +476,7 @@ pub fn gap_since_last_block(
     prev_block_info: impl Into<Option<BlockInfo>>,
 ) -> Option<Duration> {
     let block_info = block_info.into()?;
-    let block_time = block_info.block_time?;
+    let block_time = block_info.time?;
 
     gap_since_time(block_time.date_time()?, prev_block_info)
 }
@@ -495,10 +519,7 @@ impl Slot {
     const SLOT_OFFSET: usize = 1;
 
     /// Create a new slot from a block.
-    pub fn new<Client>(block: &Block<SubspaceConfig, Client>) -> Option<Slot>
-    where
-        Client: OnlineClientT<SubspaceConfig>,
-    {
+    pub fn new(block: &Block<SubspaceConfig, SubspaceClient>) -> Option<Slot> {
         for log in block.header().digest.logs.clone() {
             trace!("Checking log {:?}, looking for pre runtime digest", log);
 
