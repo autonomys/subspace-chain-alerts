@@ -3,10 +3,9 @@
 
 use crate::alerts::{Alert, AlertKind, BlockCheckMode};
 use crate::subspace::decode::decode_h256_from_composite;
-use crate::subspace::{BlockInfo, BlockNumber, SubspaceConfig};
+use crate::subspace::{BlockInfo, BlockNumber, Event};
 use scale_value::Composite;
 use std::collections::{HashMap, VecDeque};
-use subxt::events::Events;
 use subxt::utils::H256;
 use tracing::{debug, trace, warn};
 
@@ -30,9 +29,9 @@ pub trait FarmingMonitor {
     /// Ingest a block and update internal state; may emit alerts.
     async fn process_block(
         &mut self,
-        block: BlockInfo,
         mode: BlockCheckMode,
-        block_events: Events<SubspaceConfig>,
+        block_info: &BlockInfo,
+        events: &[Event],
     );
 }
 
@@ -43,9 +42,10 @@ pub struct FarmingMonitorConfig {
     pub alert_tx: tokio::sync::mpsc::Sender<Alert>,
     /// The size of the window to check for farming.
     pub max_block_interval: BlockNumber,
-    /// The percentage threshold for alerting a network from average within the checking window.
+    /// The minimum allowed change from the average farmer votes within the checking
+    /// window.
     pub low_end_change_threshold: f64,
-    /// The percentage threshold for alerting a network from average within the checking
+    /// The maximum allowed change from the average farmer votes within the checking
     /// window.
     pub high_end_change_threshold: f64,
     /// The number of blocks that a farmer should not vote until they are mark as inactive.
@@ -76,26 +76,26 @@ pub struct MemoryFarmingMonitor {
 impl FarmingMonitor for MemoryFarmingMonitor {
     async fn process_block(
         &mut self,
-        block: BlockInfo,
         mode: BlockCheckMode,
-        block_events: Events<SubspaceConfig>,
+        block_info: &BlockInfo,
+        events: &[Event],
     ) {
         // Update the last voted block for each farmer that voted in this block.
-        self.update_last_voted_block(&block_events, block.block_height);
+        self.update_last_voted_block(events, block_info.block_height);
 
         // Remove farmers that have not voted in the last `inactive_block_threshold` blocks.
-        self.remove_inactive_farmers(block.block_height);
+        self.remove_inactive_farmers(block_info.block_height);
 
         // Update the number of farmers with votes in the last `max_block_interval` blocks.
         self.update_number_of_farmers_with_votes();
 
         // Run checks on the number of farmers.
-        let has_passed_minimum_block_interval = block
+        let has_passed_minimum_block_interval = block_info
             .block_height
             .saturating_sub(self.config.minimum_block_interval)
             > 0;
         if has_passed_minimum_block_interval {
-            self.check_farmer_count(block, mode).await;
+            self.check_farmer_count(block_info, mode).await;
         }
     }
 }
@@ -115,20 +115,8 @@ impl MemoryFarmingMonitor {
     }
 
     /// Update the last voted block for each farmer that voted in the block.
-    fn update_last_voted_block(
-        &mut self,
-        block_events: &Events<SubspaceConfig>,
-        block_height: BlockNumber,
-    ) {
-        for event in block_events.iter() {
-            let event = match event {
-                Ok(event) => event,
-                Err(e) => {
-                    warn!("failed to get event details: {e}");
-                    continue;
-                }
-            };
-
+    fn update_last_voted_block(&mut self, events: &[Event], block_height: BlockNumber) {
+        for event in events.iter() {
             let pallet_name = event.pallet_name();
             let variant_name = event.variant_name();
 
@@ -202,7 +190,7 @@ impl MemoryFarmingMonitor {
 
     /// Check the number of farmers with votes in the last `max_block_interval` blocks
     /// and emit alerts if the number of farmers with votes is outside the alert thresholds.
-    async fn check_farmer_count(&mut self, block_info: BlockInfo, mode: BlockCheckMode) {
+    async fn check_farmer_count(&mut self, block_info: &BlockInfo, mode: BlockCheckMode) {
         if self.state.active_farmers_in_last_blocks.is_empty() {
             return;
         }
@@ -239,7 +227,7 @@ impl MemoryFarmingMonitor {
                         )
                         .expect("farmers should fit in a u32 integer"),
                     },
-                    block_info,
+                    *block_info,
                     mode,
                 ))
                 .await;
@@ -256,7 +244,7 @@ impl MemoryFarmingMonitor {
                         )
                         .expect("farmers should fit in a u32 integer"),
                     },
-                    block_info,
+                    *block_info,
                     mode,
                 ))
                 .await;
@@ -302,7 +290,7 @@ mod tests {
         if has_passed_minimum_block_interval {
             farming_monitor
                 .check_farmer_count(
-                    BlockInfo {
+                    &BlockInfo {
                         block_height,
                         block_time: None,
                         block_hash: H256::default(),
@@ -402,7 +390,7 @@ mod tests {
         };
         farming_monitor.update_number_of_farmers_with_votes();
         farming_monitor
-            .check_farmer_count(block_info, BlockCheckMode::Current)
+            .check_farmer_count(&block_info, BlockCheckMode::Current)
             .await;
 
         let alert = alert_rx.recv().await.expect("expected decrease alert");
@@ -459,7 +447,7 @@ mod tests {
 
         farming_monitor.update_number_of_farmers_with_votes();
         farming_monitor
-            .check_farmer_count(mock_block_info, BlockCheckMode::Current)
+            .check_farmer_count(&mock_block_info, BlockCheckMode::Current)
             .await;
 
         let alert = alert_rx.recv().await.expect("expected increase alert");
@@ -509,7 +497,7 @@ mod tests {
         farming_monitor.update_number_of_farmers_with_votes();
         farming_monitor
             .check_farmer_count(
-                BlockInfo {
+                &BlockInfo {
                     block_height: 1,
                     block_time: None,
                     block_hash: H256::default(),

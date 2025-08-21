@@ -5,7 +5,7 @@ mod tests;
 
 use crate::format::{fmt_amount, fmt_duration, fmt_timestamp};
 use crate::subspace::{
-    AI3, Balance, BlockInfo, BlockTime, EventInfo, ExtrinsicInfo, SubspaceConfig,
+    AI3, Balance, BlockInfo, BlockTime, Event, EventInfo, ExtrinsicInfo, SubspaceConfig,
     TARGET_BLOCK_INTERVAL, gap_since_last_block, gap_since_time,
 };
 use chrono::Utc;
@@ -14,7 +14,6 @@ use std::fmt::{self, Display};
 use std::time::Duration;
 use subxt::blocks::ExtrinsicDetails;
 use subxt::client::OnlineClientT;
-use subxt::events::EventDetails;
 use tokio::sync::{mpsc, watch};
 use tokio::time::sleep;
 use tracing::{debug, warn};
@@ -608,7 +607,7 @@ pub async fn check_event(
     // TODO: when we add a check that doesn't work on replayed blocks, skip it using mode
     mode: BlockCheckMode,
     alert_tx: &mpsc::Sender<Alert>,
-    event: &EventDetails<SubspaceConfig>,
+    event: &Event,
     block_info: &BlockInfo,
 ) -> anyhow::Result<()> {
     let event_info = EventInfo::new(event, block_info);

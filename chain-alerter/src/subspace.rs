@@ -81,6 +81,9 @@ pub type ExtrinsicIndex = u32;
 /// The Subspace/subxt event index type.
 pub type EventIndex = u32;
 
+/// The Subspace/subxt event details type.
+pub type Event = EventDetails<SubspaceConfig>;
+
 /// Create a new reconnecting Subspace client.
 pub async fn create_subspace_client(
     node_url: impl AsRef<str>,
