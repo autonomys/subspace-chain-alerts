@@ -19,7 +19,7 @@ pub const DEFAULT_HIGH_END_FARMING_ALERT_THRESHOLD: f64 = 1.25;
 pub const DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD: BlockNumber = 10;
 
 /// The default minimum block interval for the farming monitor.
-pub const DEFAULT_FARMING_MINIMUM_BLOCK_INTERVAL: BlockNumber = 100;
+pub const DEFAULT_FARMING_MINIMUM_BLOCK_INTERVAL: usize = 100;
 
 /// The default number of blocks to check for farming.
 pub const DEFAULT_FARMING_MAX_BLOCK_INTERVAL: BlockNumber = 100;
@@ -51,7 +51,7 @@ pub struct FarmingMonitorConfig {
     /// The number of blocks that a farmer should not vote until they are mark as inactive.
     pub inactive_block_threshold: BlockNumber,
     /// The minimum of blocks that must pass before any alert is emitted.
-    pub minimum_block_interval: BlockNumber,
+    pub minimum_block_interval: usize,
 }
 
 /// State tracked by the farming monitor, and updated at the same time.
@@ -90,11 +90,7 @@ impl FarmingMonitor for MemoryFarmingMonitor {
         self.update_number_of_farmers_with_votes();
 
         // Run checks on the number of farmers.
-        let has_passed_minimum_block_interval = block_info
-            .block_height
-            .saturating_sub(self.config.minimum_block_interval)
-            > 0;
-        if has_passed_minimum_block_interval {
+        if self.has_passed_minimum_block_interval() {
             self.check_farmer_count(block_info, mode).await;
         }
     }
@@ -112,6 +108,11 @@ impl MemoryFarmingMonitor {
                 ),
             },
         }
+    }
+
+    /// Check if there are enough records in the state to pass the minimum block interval.
+    pub fn has_passed_minimum_block_interval(&self) -> bool {
+        self.state.active_farmers_in_last_blocks.len() >= self.config.minimum_block_interval
     }
 
     /// Update the last voted block for each farmer that voted in the block.
@@ -285,9 +286,7 @@ mod tests {
         farming_monitor.update_number_of_farmers_with_votes();
 
         // Run checks on the number of farmers.
-        let has_passed_minimum_block_interval =
-            block_height.saturating_sub(farming_monitor.config.minimum_block_interval) > 0;
-        if has_passed_minimum_block_interval {
+        if farming_monitor.has_passed_minimum_block_interval() {
             farming_monitor
                 .check_farmer_count(
                     &BlockInfo {
