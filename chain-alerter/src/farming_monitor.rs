@@ -152,24 +152,19 @@ impl MemoryFarmingMonitor {
 
     /// Remove farmers that have not voted in the last `inactive_block_threshold` blocks.
     fn remove_inactive_farmers(&mut self, block_height: BlockNumber) {
-        let config = self.config.clone();
-        let last_block_voted_by_farmer = self.state.last_block_voted_by_farmer.clone();
-
-        // Filter in the farmers that have not voted in the last `inactive_block_threshold` blocks.
-        let farmers_going_inactive =
-            last_block_voted_by_farmer
-                .iter()
-                .filter(|(_, last_block_voted)| {
-                    let active_block_threshold =
-                        block_height.saturating_sub(config.clone().inactive_block_threshold);
-                    **last_block_voted < active_block_threshold
-                });
+        let inactive_block_threshold = self.config.inactive_block_threshold;
 
         // Remove the farmers that have not voted in the last `inactive_block_threshold` blocks.
-        farmers_going_inactive.for_each(|(public_key, _)| {
-            trace!("Farmer {public_key} is going inactive");
-            self.state.last_block_voted_by_farmer.remove(public_key);
-        });
+        self.state
+            .last_block_voted_by_farmer
+            .retain(|farmer_public_key, ref last_block_voted| {
+                let active_block_threshold = block_height.saturating_sub(inactive_block_threshold);
+                let retain = **last_block_voted >= active_block_threshold;
+                if !retain {
+                    trace!("Farmer {farmer_public_key} is going inactive");
+                }
+                retain
+            });
     }
 
     /// Update the number of farmers with votes in the last `max_block_interval` blocks.
