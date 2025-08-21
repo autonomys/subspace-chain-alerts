@@ -9,20 +9,22 @@ use std::collections::{HashMap, VecDeque};
 use subxt::utils::H256;
 use tracing::{debug, trace, warn};
 
-/// The default threshold for the farming monitor.
-pub const DEFAULT_LOW_END_FARMING_ALERT_THRESHOLD: f64 = 0.75;
+/// The default minimum allowed change from the average farmer votes within the checking
+/// window.
+pub const DEFAULT_LOW_END_FARMING_ALERT_THRESHOLD: f64 = 0.33;
 
-/// The default threshold for the farming monitor.
-pub const DEFAULT_HIGH_END_FARMING_ALERT_THRESHOLD: f64 = 1.25;
+/// The default maximum allowed change from the average farmer votes within the checking
+/// window.
+pub const DEFAULT_HIGH_END_FARMING_ALERT_THRESHOLD: f64 = 3.0;
 
-/// The default threshold for the farming monitor.
-pub const DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD: BlockNumber = 10;
+/// The default farmer inactivity threshold for the farming monitor.
+pub const DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD: BlockNumber = 100;
 
-/// The default minimum block interval for the farming monitor.
-pub const DEFAULT_FARMING_MINIMUM_BLOCK_INTERVAL: usize = 100;
+/// The default minimum block interval for farming monitor alerts.
+pub const DEFAULT_FARMING_MIN_ALERT_BLOCK_INTERVAL: usize = 1000;
 
-/// The default number of blocks to check for farming.
-pub const DEFAULT_FARMING_MAX_BLOCK_INTERVAL: usize = 100;
+/// The default maximum history size for the farming monitor.
+pub const DEFAULT_FARMING_MAX_HISTORY_BLOCK_INTERVAL: usize = 1000;
 
 /// Interface for farming monitors that consume blocks and perform checks.
 pub trait FarmingMonitor {
@@ -315,11 +317,11 @@ mod tests {
         let alert_tx = tokio::sync::mpsc::channel(100).0;
         let config = FarmingMonitorConfig {
             alert_tx,
-            max_block_interval: DEFAULT_FARMING_MAX_BLOCK_INTERVAL,
+            max_block_interval: DEFAULT_FARMING_MAX_HISTORY_BLOCK_INTERVAL,
             low_end_change_threshold: DEFAULT_LOW_END_FARMING_ALERT_THRESHOLD,
             high_end_change_threshold: DEFAULT_HIGH_END_FARMING_ALERT_THRESHOLD,
             inactive_block_threshold: DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD,
-            minimum_block_interval: DEFAULT_FARMING_MINIMUM_BLOCK_INTERVAL,
+            minimum_block_interval: DEFAULT_FARMING_MIN_ALERT_BLOCK_INTERVAL,
         };
         let mut farming_monitor = MemoryFarmingMonitor::new(&config);
 
