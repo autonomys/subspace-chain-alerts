@@ -159,10 +159,10 @@ impl MemoryFarmingMonitor {
         let farmers_going_inactive =
             last_block_voted_by_farmer
                 .iter()
-                .filter(|(_, last_voted_block)| {
-                    let last_block_voted =
+                .filter(|(_, last_block_voted)| {
+                    let active_block_threshold =
                         block_height.saturating_sub(config.clone().inactive_block_threshold);
-                    last_voted_block.lt(&&last_block_voted)
+                    **last_block_voted < active_block_threshold
                 });
 
         // Remove the farmers that have not voted in the last `inactive_block_threshold` blocks.
