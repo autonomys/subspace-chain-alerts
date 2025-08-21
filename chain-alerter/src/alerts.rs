@@ -184,7 +184,7 @@ impl Display for AlertKind {
                 write!(
                     f,
                     "**Block production stalled**\n\
-                    Gap: {}",
+                    Time since last block: {}",
                     fmt_duration(*gap),
                 )
             }
