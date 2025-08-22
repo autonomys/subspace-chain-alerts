@@ -7,6 +7,7 @@ use crate::subspace::{BlockInfo, BlockNumber, Event};
 use scale_value::Composite;
 use std::collections::{HashMap, VecDeque};
 use subxt::utils::H256;
+use tokio::sync::mpsc;
 use tracing::{debug, trace, warn};
 
 /// The default minimum allowed change from the average farmer votes within the checking
@@ -41,7 +42,7 @@ pub trait FarmingMonitor {
 /// Configuration for the farming monitor.
 pub struct FarmingMonitorConfig {
     /// Channel used to emit alerts.
-    pub alert_tx: tokio::sync::mpsc::Sender<Alert>,
+    pub alert_tx: mpsc::Sender<Alert>,
     /// The size of the window to check for farming.
     pub max_block_interval: usize,
     /// The minimum allowed change from the average farmer votes within the checking
@@ -267,6 +268,7 @@ mod tests {
     use super::*;
     use crate::subspace::BlockPosition;
     use subxt::utils::H256;
+    use tokio::sync::mpsc;
 
     fn farmers() -> [H256; 3] {
         [
@@ -314,7 +316,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_farmers_going_inactive() {
-        let alert_tx = tokio::sync::mpsc::channel(100).0;
+        let alert_tx = mpsc::channel(100).0;
         let config = FarmingMonitorConfig {
             alert_tx,
             max_block_interval: DEFAULT_FARMING_MAX_HISTORY_BLOCK_INTERVAL,
@@ -364,7 +366,7 @@ mod tests {
     #[tokio::test]
     /// Test that an alert is emitted when the number of farmers with votes decreases suddenly.
     async fn test_alert_emitted_on_drop_in_active_farmers() {
-        let (alert_tx, mut alert_rx) = tokio::sync::mpsc::channel(10);
+        let (alert_tx, mut alert_rx) = mpsc::channel(10);
         let config = FarmingMonitorConfig {
             alert_tx,
             max_block_interval: 10,
@@ -419,7 +421,7 @@ mod tests {
     #[tokio::test]
     /// Test that an alert is emitted when the number of farmers with votes increases suddenly.
     async fn test_alert_emitted_on_increase_in_active_farmers() {
-        let (alert_tx, mut alert_rx) = tokio::sync::mpsc::channel(10);
+        let (alert_tx, mut alert_rx) = mpsc::channel(10);
         let config = FarmingMonitorConfig {
             alert_tx,
             max_block_interval: 10,
@@ -476,7 +478,7 @@ mod tests {
     /// Test that no alert is emitted when the number of farmers with votes is within the
     /// thresholds.
     async fn test_no_alert_within_thresholds() {
-        let (alert_tx, mut alert_rx) = tokio::sync::mpsc::channel(10);
+        let (alert_tx, mut alert_rx) = mpsc::channel(10);
         let config = FarmingMonitorConfig {
             alert_tx,
             max_block_interval: 10,

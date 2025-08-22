@@ -9,6 +9,7 @@ pub mod test_utils;
 use crate::alerts::{Alert, AlertKind, BlockCheckMode};
 use crate::subspace::{BlockInfo, BlockTime, RawTime, Slot};
 use std::time::Duration;
+use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
 use tracing::{debug, info, warn};
 
@@ -33,7 +34,7 @@ pub struct SlotTimeMonitorConfig {
     /// TODO: also alert on a maximum threshold
     pub alert_threshold: f64,
     /// Channel used to emit alerts.
-    pub alert_tx: tokio::sync::mpsc::Sender<Alert>,
+    pub alert_tx: mpsc::Sender<Alert>,
 }
 
 /// In-memory implementation of a slot time monitor.
@@ -61,7 +62,7 @@ impl SlotTimeMonitorConfig {
     pub fn new(
         check_interval: Duration,
         alert_threshold: f64,
-        alert_tx: tokio::sync::mpsc::Sender<Alert>,
+        alert_tx: mpsc::Sender<Alert>,
     ) -> Self {
         assert!(
             u64::try_from(check_interval.as_millis()).is_ok(),
