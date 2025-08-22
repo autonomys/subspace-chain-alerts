@@ -93,7 +93,7 @@ pub async fn fetch_block_info(
     let block_info = BlockInfo::new(&block, &extrinsics, &genesis_hash);
 
     if let Some(expected_block_height) = expected_block_height.into() {
-        assert_eq!(block_info.block_height, expected_block_height);
+        assert_eq!(block_info.height(), expected_block_height);
     }
 
     Ok((block_info, extrinsics, events))

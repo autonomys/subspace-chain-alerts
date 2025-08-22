@@ -71,7 +71,7 @@ async fn test_startup_alert() -> anyhow::Result<()> {
     );
 
     // Check block slot parsing works on real blocks.
-    assert_matches!(alert.block_info.block_slot, Some(Slot(_)));
+    assert_matches!(alert.block_info.slot, Some(Slot(_)));
 
     Ok(())
 }
@@ -127,7 +127,7 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
     );
 
     // Check block slot parsing works on a known slot value.
-    assert_eq!(alert.block_info.block_slot, Some(SUDO_BLOCK.4));
+    assert_eq!(alert.block_info.slot, Some(SUDO_BLOCK.4));
 
     Ok(())
 }
@@ -160,7 +160,7 @@ async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
         );
 
         // Check block slot parsing works on a known slot value.
-        assert_eq!(alert.block_info.block_slot, Some(slot));
+        assert_eq!(alert.block_info.slot, Some(slot));
     }
 
     Ok(())
@@ -232,7 +232,7 @@ async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
                 threshold: 0.0,
                 interval: Duration::from_secs(1),
                 first_slot_time: first_block
-                    .block_time
+                    .time
                     .expect("block must have time to trigger alert"),
             },
             second_block,

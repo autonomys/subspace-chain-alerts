@@ -3,17 +3,17 @@
 #[cfg(test)]
 mod tests;
 
+use crate::chain_fork_monitor::ChainForkEvent;
 use crate::format::{fmt_amount, fmt_duration, fmt_timestamp};
 use crate::subspace::{
-    AI3, Balance, BlockInfo, BlockTime, Event, EventInfo, ExtrinsicInfo, SubspaceConfig,
-    TARGET_BLOCK_INTERVAL, gap_since_last_block, gap_since_time,
+    AI3, Balance, BlockInfo, BlockPosition, BlockTime, Event, EventInfo, ExtrinsicInfo,
+    SubspaceClient, SubspaceConfig, TARGET_BLOCK_INTERVAL, gap_since_last_block, gap_since_time,
 };
 use chrono::Utc;
 use scale_value::Composite;
 use std::fmt::{self, Display};
 use std::time::Duration;
 use subxt::blocks::ExtrinsicDetails;
-use subxt::client::OnlineClientT;
 use tokio::sync::{mpsc, watch};
 use tokio::time::sleep;
 use tracing::{debug, warn};
@@ -69,6 +69,33 @@ impl Alert {
             mode,
         }
     }
+
+    /// Create a new alert from a chain fork event.
+    pub fn from_chain_fork_event(
+        event: ChainForkEvent,
+        block_info: BlockInfo,
+        mode: BlockCheckMode,
+    ) -> Self {
+        let alert_kind = match event {
+            // The new block is always the same as block_info, so we ignore it.
+            ChainForkEvent::NewFork { tip: _, fork_depth } => AlertKind::NewFork { fork_depth },
+            ChainForkEvent::ForkExtended { tip: _, fork_depth } => {
+                AlertKind::ForkExtended { fork_depth }
+            }
+            ChainForkEvent::Reorg {
+                new_best_block: _,
+                old_best_block,
+                old_fork_depth,
+                new_fork_depth,
+            } => AlertKind::Reorg {
+                old_best_block: old_best_block.position,
+                old_fork_depth,
+                new_fork_depth,
+            },
+        };
+
+        Self::new(alert_kind, block_info, mode)
+    }
 }
 
 /// The type of alert.
@@ -94,6 +121,34 @@ pub enum AlertKind {
 
         /// The previous block.
         prev_block_info: BlockInfo,
+    },
+
+    /// A new chain fork was seen.
+    /// The tip of the fork is `Alert.block_info`.
+    NewFork {
+        /// The number of blocks from the fork tip to the fork point.
+        fork_depth: usize,
+    },
+
+    /// A chain fork was extended by a non-best block.
+    /// The tip of the fork is `Alert.block_info`.
+    ForkExtended {
+        /// The number of blocks from the fork tip to the fork point.
+        fork_depth: usize,
+    },
+
+    /// A reorg was seen, this takes priority over fork events.
+    /// The new best block is `Alert.block_info`.
+    Reorg {
+        /// The old best block.
+        old_best_block: BlockPosition,
+
+        /// The number of blocks from the old best block to the reorg point (the fork point with
+        /// the new best block).
+        old_fork_depth: usize,
+
+        /// The number of blocks from the new best block to the reorg point.
+        new_fork_depth: usize,
     },
 
     /// A `force_*` Balances call has been detected.
@@ -183,7 +238,7 @@ impl Display for AlertKind {
                 write!(
                     f,
                     "**Block production stalled**\n\
-                    Time since last block: {}",
+                    Time since last best block: {}",
                     fmt_duration(*gap),
                 )
             }
@@ -196,9 +251,39 @@ impl Display for AlertKind {
                     f,
                     "**Block production resumed**\n\
                     Gap: {}\n\n\
-                    Previous block:\n\
+                    Previous best block:\n\
                     {prev_block_info}",
                     fmt_duration(*gap),
+                )
+            }
+
+            AlertKind::NewFork { fork_depth } => {
+                write!(
+                    f,
+                    "**New chain fork detected**\n\
+                    Fork depth: {fork_depth}",
+                )
+            }
+
+            AlertKind::ForkExtended { fork_depth } => {
+                write!(
+                    f,
+                    "**Chain fork extended**\n\
+                    Fork depth: {fork_depth}",
+                )
+            }
+
+            AlertKind::Reorg {
+                old_best_block,
+                old_fork_depth,
+                new_fork_depth,
+            } => {
+                write!(
+                    f,
+                    "**Reorg detected**\n\
+                    New fork depth: {new_fork_depth}\n\
+                    Old fork depth: {old_fork_depth}\n\
+                    Old best block: {old_best_block}",
                 )
             }
 
@@ -300,7 +385,9 @@ impl Display for AlertKind {
 }
 
 impl AlertKind {
-    /// Extract the previous block from the alert, if present.
+    /// Extract the previous block info from the alert, if present.
+    /// The Reorg alert doesn't have a previous block info, but it does have a previous block
+    /// position.
     #[allow(dead_code, reason = "TODO: use in tests")]
     pub fn prev_block_info(&self) -> Option<&BlockInfo> {
         match self {
@@ -310,15 +397,43 @@ impl AlertKind {
             // Deliberately repeat each enum variant here, so we can't forget to update this
             // method when adding new variants.
             AlertKind::Startup
-            | AlertKind::FarmersDecreasedSuddenly { .. }
-            | AlertKind::FarmersIncreasedSuddenly { .. }
             | AlertKind::BlockProductionStall { .. }
+            | AlertKind::NewFork { .. }
+            | AlertKind::ForkExtended { .. }
+            | AlertKind::Reorg { .. }
             | AlertKind::ForceBalanceTransfer { .. }
             | AlertKind::LargeBalanceTransfer { .. }
             | AlertKind::SudoCall { .. }
             | AlertKind::SudoEvent { .. }
             | AlertKind::OperatorSlashed { .. }
-            | AlertKind::SlotTime { .. } => None,
+            | AlertKind::SlotTime { .. }
+            | AlertKind::FarmersDecreasedSuddenly { .. }
+            | AlertKind::FarmersIncreasedSuddenly { .. } => None,
+        }
+    }
+
+    /// Extract the previous block link from the alert, if present.
+    /// The Reorg alert doesn't have a previous block info, but it does have a previous block
+    /// position.
+    #[allow(dead_code, reason = "TODO: use in tests")]
+    pub fn prev_block_position(&self) -> Option<BlockPosition> {
+        match self {
+            AlertKind::BlockProductionResumed {
+                prev_block_info, ..
+            } => Some(prev_block_info.position),
+            AlertKind::Reorg { old_best_block, .. } => Some(*old_best_block),
+            AlertKind::Startup
+            | AlertKind::BlockProductionStall { .. }
+            | AlertKind::NewFork { .. }
+            | AlertKind::ForkExtended { .. }
+            | AlertKind::ForceBalanceTransfer { .. }
+            | AlertKind::LargeBalanceTransfer { .. }
+            | AlertKind::SudoCall { .. }
+            | AlertKind::SudoEvent { .. }
+            | AlertKind::OperatorSlashed { .. }
+            | AlertKind::SlotTime { .. }
+            | AlertKind::FarmersDecreasedSuddenly { .. }
+            | AlertKind::FarmersIncreasedSuddenly { .. } => None,
         }
     }
 
@@ -334,6 +449,9 @@ impl AlertKind {
             | AlertKind::FarmersIncreasedSuddenly { .. }
             | AlertKind::BlockProductionStall { .. }
             | AlertKind::BlockProductionResumed { .. }
+            | AlertKind::NewFork { .. }
+            | AlertKind::ForkExtended { .. }
+            | AlertKind::Reorg { .. }
             | AlertKind::SudoEvent { .. }
             | AlertKind::OperatorSlashed { .. }
             | AlertKind::SlotTime { .. } => None,
@@ -351,6 +469,9 @@ impl AlertKind {
             | AlertKind::FarmersIncreasedSuddenly { .. }
             | AlertKind::BlockProductionStall { .. }
             | AlertKind::BlockProductionResumed { .. }
+            | AlertKind::NewFork { .. }
+            | AlertKind::ForkExtended { .. }
+            | AlertKind::Reorg { .. }
             | AlertKind::SudoCall { .. }
             | AlertKind::SudoEvent { .. }
             | AlertKind::OperatorSlashed { .. }
@@ -367,6 +488,9 @@ impl AlertKind {
             AlertKind::Startup
             | AlertKind::BlockProductionStall { .. }
             | AlertKind::BlockProductionResumed { .. }
+            | AlertKind::NewFork { .. }
+            | AlertKind::ForkExtended { .. }
+            | AlertKind::Reorg { .. }
             | AlertKind::ForceBalanceTransfer { .. }
             | AlertKind::LargeBalanceTransfer { .. }
             | AlertKind::SudoCall { .. }
@@ -470,7 +594,7 @@ pub async fn check_for_block_stall(
             .borrow()
             .expect("never empty, a block is sent before spawning this task");
 
-        if latest_block_info.block_time > old_block_info.block_time {
+        if latest_block_info.time > old_block_info.time {
             // There's a new block since we sent our block and spawned our task, so block
             // production hasn't stalled. But the latest block also spawned a task, so it
             // will alert if there is actually a stall.
@@ -498,16 +622,13 @@ pub async fn check_for_block_stall(
 /// recover after we pick up the runtime upgrade in the next block.
 ///
 /// Any returned errors are fatal and require a restart.
-pub async fn check_extrinsic<Client>(
+pub async fn check_extrinsic(
     // TODO: when we add a check that doesn't work on replayed blocks, skip it using mode
     mode: BlockCheckMode,
     alert_tx: &mpsc::Sender<Alert>,
-    extrinsic: &ExtrinsicDetails<SubspaceConfig, Client>,
+    extrinsic: &ExtrinsicDetails<SubspaceConfig, SubspaceClient>,
     block_info: &BlockInfo,
-) -> anyhow::Result<()>
-where
-    Client: OnlineClientT<SubspaceConfig>,
-{
+) -> anyhow::Result<()> {
     let Some(extrinsic_info) = ExtrinsicInfo::new(extrinsic, block_info) else {
         return Ok(());
     };

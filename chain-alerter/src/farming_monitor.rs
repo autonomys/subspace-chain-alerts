@@ -7,6 +7,7 @@ use crate::subspace::{BlockInfo, BlockNumber, Event};
 use scale_value::Composite;
 use std::collections::{HashMap, VecDeque};
 use subxt::utils::H256;
+use tokio::sync::mpsc;
 use tracing::{debug, trace, warn};
 
 /// The default minimum allowed change from the average farmer votes within the checking
@@ -41,7 +42,7 @@ pub trait FarmingMonitor {
 /// Configuration for the farming monitor.
 pub struct FarmingMonitorConfig {
     /// Channel used to emit alerts.
-    pub alert_tx: tokio::sync::mpsc::Sender<Alert>,
+    pub alert_tx: mpsc::Sender<Alert>,
     /// The size of the window to check for farming.
     pub max_block_interval: usize,
     /// The minimum allowed change from the average farmer votes within the checking
@@ -83,10 +84,10 @@ impl FarmingMonitor for MemoryFarmingMonitor {
         events: &[Event],
     ) {
         // Update the last voted block for each farmer that voted in this block.
-        self.update_last_voted_block(events, block_info.block_height);
+        self.update_last_voted_block(events, block_info.height());
 
         // Remove farmers that have not voted in the last `inactive_block_threshold` blocks.
-        self.remove_inactive_farmers(block_info.block_height);
+        self.remove_inactive_farmers(block_info.height());
 
         // Update the number of farmers with votes in the last `max_block_interval` blocks.
         self.update_number_of_farmers_with_votes();
@@ -265,7 +266,9 @@ impl MemoryFarmingMonitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::subspace::BlockPosition;
     use subxt::utils::H256;
+    use tokio::sync::mpsc;
 
     fn farmers() -> [H256; 3] {
         [
@@ -299,12 +302,11 @@ mod tests {
             farming_monitor
                 .check_farmer_count(
                     &BlockInfo {
-                        block_height,
-                        block_time: None,
-                        block_hash: H256::default(),
-                        genesis_hash: H256::zero(),
-                        block_slot: None,
+                        position: BlockPosition::new(block_height, H256::zero()),
+                        time: None,
+                        slot: None,
                         parent_hash: H256::zero(),
+                        genesis_hash: H256::zero(),
                     },
                     BlockCheckMode::Current,
                 )
@@ -314,7 +316,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_farmers_going_inactive() {
-        let alert_tx = tokio::sync::mpsc::channel(100).0;
+        let alert_tx = mpsc::channel(100).0;
         let config = FarmingMonitorConfig {
             alert_tx,
             max_block_interval: DEFAULT_FARMING_MAX_HISTORY_BLOCK_INTERVAL,
@@ -364,7 +366,7 @@ mod tests {
     #[tokio::test]
     /// Test that an alert is emitted when the number of farmers with votes decreases suddenly.
     async fn test_alert_emitted_on_drop_in_active_farmers() {
-        let (alert_tx, mut alert_rx) = tokio::sync::mpsc::channel(10);
+        let (alert_tx, mut alert_rx) = mpsc::channel(10);
         let config = FarmingMonitorConfig {
             alert_tx,
             max_block_interval: 10,
@@ -389,12 +391,11 @@ mod tests {
         }
 
         let block_info = BlockInfo {
-            block_height: 1,
-            block_time: None,
-            block_hash: H256::default(),
-            genesis_hash: H256::zero(),
-            block_slot: None,
+            position: BlockPosition::new(1, H256::zero()),
+            time: None,
+            slot: None,
             parent_hash: H256::zero(),
+            genesis_hash: H256::zero(),
         };
         farming_monitor.update_number_of_farmers_with_votes();
         farming_monitor
@@ -420,7 +421,7 @@ mod tests {
     #[tokio::test]
     /// Test that an alert is emitted when the number of farmers with votes increases suddenly.
     async fn test_alert_emitted_on_increase_in_active_farmers() {
-        let (alert_tx, mut alert_rx) = tokio::sync::mpsc::channel(10);
+        let (alert_tx, mut alert_rx) = mpsc::channel(10);
         let config = FarmingMonitorConfig {
             alert_tx,
             max_block_interval: 10,
@@ -445,12 +446,11 @@ mod tests {
         }
 
         let mock_block_info = BlockInfo {
-            block_height: 1,
-            block_time: None,
-            block_hash: H256::default(),
-            genesis_hash: H256::zero(),
-            block_slot: None,
+            position: BlockPosition::new(1, H256::zero()),
+            time: None,
+            slot: None,
             parent_hash: H256::zero(),
+            genesis_hash: H256::zero(),
         };
 
         farming_monitor.update_number_of_farmers_with_votes();
@@ -478,7 +478,7 @@ mod tests {
     /// Test that no alert is emitted when the number of farmers with votes is within the
     /// thresholds.
     async fn test_no_alert_within_thresholds() {
-        let (alert_tx, mut alert_rx) = tokio::sync::mpsc::channel(10);
+        let (alert_tx, mut alert_rx) = mpsc::channel(10);
         let config = FarmingMonitorConfig {
             alert_tx,
             max_block_interval: 10,
@@ -506,11 +506,10 @@ mod tests {
         farming_monitor
             .check_farmer_count(
                 &BlockInfo {
-                    block_height: 1,
-                    block_time: None,
-                    block_hash: H256::default(),
+                    position: BlockPosition::new(1, H256::zero()),
+                    time: None,
+                    slot: None,
                     genesis_hash: H256::zero(),
-                    block_slot: None,
                     parent_hash: H256::zero(),
                 },
                 BlockCheckMode::Current,
