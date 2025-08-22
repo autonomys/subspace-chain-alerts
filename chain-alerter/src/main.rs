@@ -14,8 +14,8 @@ mod subspace;
 
 use crate::alerts::{Alert, BlockCheckMode};
 use crate::farming_monitor::{
-    DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD, DEFAULT_FARMING_MAX_BLOCK_INTERVAL,
-    DEFAULT_FARMING_MINIMUM_BLOCK_INTERVAL, DEFAULT_HIGH_END_FARMING_ALERT_THRESHOLD,
+    DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD, DEFAULT_FARMING_MAX_HISTORY_BLOCK_INTERVAL,
+    DEFAULT_FARMING_MIN_ALERT_BLOCK_INTERVAL, DEFAULT_HIGH_END_FARMING_ALERT_THRESHOLD,
     DEFAULT_LOW_END_FARMING_ALERT_THRESHOLD, FarmingMonitor, FarmingMonitorConfig,
     MemoryFarmingMonitor,
 };
@@ -24,7 +24,7 @@ use crate::slot_time_monitor::{
     DEFAULT_CHECK_INTERVAL, DEFAULT_SLOT_TIME_ALERT_THRESHOLD, SlotTimeMonitorConfig,
 };
 use crate::subspace::{
-    BlockInfo, BlockNumber, LOCAL_SUBSPACE_NODE_URL, MAX_RECONNECTION_ATTEMPTS,
+    BlockInfo, BlockNumber, Event, LOCAL_SUBSPACE_NODE_URL, MAX_RECONNECTION_ATTEMPTS,
     MAX_RECONNECTION_DELAY, RawRpcClient, SubspaceClient, SubspaceConfig, create_subspace_client,
     spawn_metadata_update_task,
 };
@@ -170,11 +170,11 @@ async fn run() -> anyhow::Result<()> {
 
     let mut farming_monitor = MemoryFarmingMonitor::new(&FarmingMonitorConfig {
         alert_tx: alert_tx.clone(),
-        max_block_interval: DEFAULT_FARMING_MAX_BLOCK_INTERVAL,
+        max_block_interval: DEFAULT_FARMING_MAX_HISTORY_BLOCK_INTERVAL,
         low_end_change_threshold: DEFAULT_LOW_END_FARMING_ALERT_THRESHOLD,
         high_end_change_threshold: DEFAULT_HIGH_END_FARMING_ALERT_THRESHOLD,
         inactive_block_threshold: DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD,
-        minimum_block_interval: DEFAULT_FARMING_MINIMUM_BLOCK_INTERVAL,
+        minimum_block_interval: DEFAULT_FARMING_MIN_ALERT_BLOCK_INTERVAL,
     });
 
     while let Some(block) = blocks_sub.next().await {
@@ -384,12 +384,25 @@ async fn run_on_block(
     alert_tx: &mpsc::Sender<Alert>,
 ) -> anyhow::Result<()> {
     let events = block.events().await?;
+    let events = events
+        .iter()
+        .filter_map(|event_result| {
+            event_result
+                .inspect_err(|e| {
+                    warn!(
+                        ?mode,
+                        "error parsing event, other events in this block have been skipped: {e}"
+                    );
+                })
+                .ok()
+        })
+        .collect::<Vec<Event>>();
 
     // Check the block itself for alerts, including stall resumes.
     alerts::check_block(mode, alert_tx, block_info, prev_block_info).await?;
     slot_time_monitor.process_block(mode, block_info).await;
     farming_monitor
-        .process_block(*block_info, mode, block.events().await?)
+        .process_block(mode, block_info, &events)
         .await;
 
     // Check each extrinsic and event for alerts.
@@ -398,17 +411,7 @@ async fn run_on_block(
     }
 
     for event in events.iter() {
-        match event {
-            Ok(event) => {
-                alerts::check_event(mode, alert_tx, &event, block_info).await?;
-            }
-            Err(e) => {
-                warn!(
-                    ?mode,
-                    "error parsing event, other events in this block have been skipped: {e}"
-                );
-            }
-        }
+        alerts::check_event(mode, alert_tx, event, block_info).await?;
     }
 
     Ok(())

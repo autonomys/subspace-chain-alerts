@@ -3,14 +3,14 @@
 use crate::ALERT_BUFFER_SIZE;
 use crate::alerts::Alert;
 use crate::subspace::{
-    BlockInfo, BlockNumber, EventIndex, EventInfo, ExtrinsicIndex, ExtrinsicInfo,
+    BlockInfo, BlockNumber, Event, EventIndex, EventInfo, ExtrinsicIndex, ExtrinsicInfo,
     FOUNDATION_SUBSPACE_NODE_URL, RawRpcClient, SubspaceClient, SubspaceConfig,
     create_subspace_client, spawn_metadata_update_task,
 };
 use std::env;
 use subspace_process::{AsyncJoinOnDrop, init_logger};
 use subxt::blocks::{ExtrinsicDetails, Extrinsics};
-use subxt::events::{EventDetails, Events};
+use subxt::events::Events;
 use subxt::utils::H256;
 use tokio::sync::mpsc;
 use tracing::info;
@@ -128,7 +128,7 @@ pub async fn decode_event(
     block_info: &BlockInfo,
     events: &Events<SubspaceConfig>,
     event_index: EventIndex,
-) -> anyhow::Result<(EventDetails<SubspaceConfig>, EventInfo)> {
+) -> anyhow::Result<(Event, EventInfo)> {
     // TODO: extract this into a subspace test helper function
     let event = events
         .iter()

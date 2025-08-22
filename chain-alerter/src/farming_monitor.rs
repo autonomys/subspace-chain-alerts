@@ -3,36 +3,37 @@
 
 use crate::alerts::{Alert, AlertKind, BlockCheckMode};
 use crate::subspace::decode::decode_h256_from_composite;
-use crate::subspace::{BlockInfo, BlockNumber, SubspaceConfig};
+use crate::subspace::{BlockInfo, BlockNumber, Event};
 use scale_value::Composite;
 use std::collections::{HashMap, VecDeque};
-use subxt::events::Events;
 use subxt::utils::H256;
 use tracing::{debug, trace, warn};
 
-/// The default threshold for the farming monitor.
-pub const DEFAULT_LOW_END_FARMING_ALERT_THRESHOLD: f64 = 0.75;
+/// The default minimum allowed change from the average farmer votes within the checking
+/// window.
+pub const DEFAULT_LOW_END_FARMING_ALERT_THRESHOLD: f64 = 0.33;
 
-/// The default threshold for the farming monitor.
-pub const DEFAULT_HIGH_END_FARMING_ALERT_THRESHOLD: f64 = 1.25;
+/// The default maximum allowed change from the average farmer votes within the checking
+/// window.
+pub const DEFAULT_HIGH_END_FARMING_ALERT_THRESHOLD: f64 = 3.0;
 
-/// The default threshold for the farming monitor.
-pub const DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD: BlockNumber = 10;
+/// The default farmer inactivity threshold for the farming monitor.
+pub const DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD: BlockNumber = 100;
 
-/// The default minimum block interval for the farming monitor.
-pub const DEFAULT_FARMING_MINIMUM_BLOCK_INTERVAL: BlockNumber = 100;
+/// The default minimum block interval for farming monitor alerts.
+pub const DEFAULT_FARMING_MIN_ALERT_BLOCK_INTERVAL: usize = 1000;
 
-/// The default number of blocks to check for farming.
-pub const DEFAULT_FARMING_MAX_BLOCK_INTERVAL: BlockNumber = 100;
+/// The default maximum history size for the farming monitor.
+pub const DEFAULT_FARMING_MAX_HISTORY_BLOCK_INTERVAL: usize = 1000;
 
 /// Interface for farming monitors that consume blocks and perform checks.
 pub trait FarmingMonitor {
     /// Ingest a block and update internal state; may emit alerts.
     async fn process_block(
         &mut self,
-        block: BlockInfo,
         mode: BlockCheckMode,
-        block_events: Events<SubspaceConfig>,
+        block_info: &BlockInfo,
+        events: &[Event],
     );
 }
 
@@ -42,16 +43,17 @@ pub struct FarmingMonitorConfig {
     /// Channel used to emit alerts.
     pub alert_tx: tokio::sync::mpsc::Sender<Alert>,
     /// The size of the window to check for farming.
-    pub max_block_interval: BlockNumber,
-    /// The percentage threshold for alerting a network from average within the checking window.
+    pub max_block_interval: usize,
+    /// The minimum allowed change from the average farmer votes within the checking
+    /// window.
     pub low_end_change_threshold: f64,
-    /// The percentage threshold for alerting a network from average within the checking
+    /// The maximum allowed change from the average farmer votes within the checking
     /// window.
     pub high_end_change_threshold: f64,
     /// The number of blocks that a farmer should not vote until they are mark as inactive.
     pub inactive_block_threshold: BlockNumber,
     /// The minimum of blocks that must pass before any alert is emitted.
-    pub minimum_block_interval: BlockNumber,
+    pub minimum_block_interval: usize,
 }
 
 /// State tracked by the farming monitor, and updated at the same time.
@@ -60,7 +62,7 @@ pub struct FarmingMonitorState {
     /// The last block voted by a farmer.
     last_block_voted_by_farmer: HashMap<H256, BlockNumber>,
     /// The number of farmers that have votes in the last `max_block_interval` blocks.
-    active_farmers_in_last_blocks: VecDeque<u32>,
+    active_farmers_in_last_blocks: VecDeque<usize>,
 }
 
 /// A farming monitor that tracks the number of farmers with votes in the last `max_block_interval`
@@ -76,26 +78,22 @@ pub struct MemoryFarmingMonitor {
 impl FarmingMonitor for MemoryFarmingMonitor {
     async fn process_block(
         &mut self,
-        block: BlockInfo,
         mode: BlockCheckMode,
-        block_events: Events<SubspaceConfig>,
+        block_info: &BlockInfo,
+        events: &[Event],
     ) {
         // Update the last voted block for each farmer that voted in this block.
-        self.update_last_voted_block(&block_events, block.block_height);
+        self.update_last_voted_block(events, block_info.block_height);
 
         // Remove farmers that have not voted in the last `inactive_block_threshold` blocks.
-        self.remove_inactive_farmers(block.block_height);
+        self.remove_inactive_farmers(block_info.block_height);
 
         // Update the number of farmers with votes in the last `max_block_interval` blocks.
         self.update_number_of_farmers_with_votes();
 
         // Run checks on the number of farmers.
-        let has_passed_minimum_block_interval = block
-            .block_height
-            .saturating_sub(self.config.minimum_block_interval)
-            > 0;
-        if has_passed_minimum_block_interval {
-            self.check_farmer_count(block, mode).await;
+        if self.has_passed_minimum_block_interval() {
+            self.check_farmer_count(block_info, mode).await;
         }
     }
 }
@@ -107,28 +105,19 @@ impl MemoryFarmingMonitor {
             config: config.clone(),
             state: FarmingMonitorState {
                 last_block_voted_by_farmer: HashMap::new(),
-                active_farmers_in_last_blocks: VecDeque::with_capacity(
-                    config.max_block_interval as usize,
-                ),
+                active_farmers_in_last_blocks: VecDeque::with_capacity(config.max_block_interval),
             },
         }
     }
 
-    /// Update the last voted block for each farmer that voted in the block.
-    fn update_last_voted_block(
-        &mut self,
-        block_events: &Events<SubspaceConfig>,
-        block_height: BlockNumber,
-    ) {
-        for event in block_events.iter() {
-            let event = match event {
-                Ok(event) => event,
-                Err(e) => {
-                    warn!("failed to get event details: {e}");
-                    continue;
-                }
-            };
+    /// Check if there are enough records in the state to pass the minimum block interval.
+    pub fn has_passed_minimum_block_interval(&self) -> bool {
+        self.state.active_farmers_in_last_blocks.len() >= self.config.minimum_block_interval
+    }
 
+    /// Update the last voted block for each farmer that voted in the block.
+    fn update_last_voted_block(&mut self, events: &[Event], block_height: BlockNumber) {
+        for event in events.iter() {
             let pallet_name = event.pallet_name();
             let variant_name = event.variant_name();
 
@@ -163,70 +152,79 @@ impl MemoryFarmingMonitor {
 
     /// Remove farmers that have not voted in the last `inactive_block_threshold` blocks.
     fn remove_inactive_farmers(&mut self, block_height: BlockNumber) {
-        let config = self.config.clone();
-        let last_block_voted_by_farmer = self.state.last_block_voted_by_farmer.clone();
-
-        // Filter in the farmers that have not voted in the last `inactive_block_threshold` blocks.
-        let farmers_going_inactive =
-            last_block_voted_by_farmer
-                .iter()
-                .filter(|(_, last_voted_block)| {
-                    let last_block_voted =
-                        block_height.saturating_sub(config.clone().inactive_block_threshold);
-                    last_voted_block.lt(&&last_block_voted)
-                });
+        let inactive_block_threshold = self.config.inactive_block_threshold;
 
         // Remove the farmers that have not voted in the last `inactive_block_threshold` blocks.
-        farmers_going_inactive.for_each(|(public_key, _)| {
-            trace!("Farmer {public_key} is going inactive");
-            self.state.last_block_voted_by_farmer.remove(public_key);
-        });
+        self.state
+            .last_block_voted_by_farmer
+            .retain(|farmer_public_key, ref last_block_voted| {
+                let active_block_threshold = block_height.saturating_sub(inactive_block_threshold);
+                let retain = **last_block_voted >= active_block_threshold;
+                if !retain {
+                    trace!("Farmer {farmer_public_key} is going inactive");
+                }
+                retain
+            });
     }
 
     /// Update the number of farmers with votes in the last `max_block_interval` blocks.
     fn update_number_of_farmers_with_votes(&mut self) {
-        let number_of_farmers_with_votes =
-            u32::try_from(self.state.last_block_voted_by_farmer.len())
-                .expect("farmers should fit in a u32 integer");
-        let blocks_in_deque = u32::try_from(self.state.active_farmers_in_last_blocks.len())
-            .expect("blocks should fit in a u32 integer");
-
-        if blocks_in_deque >= self.config.max_block_interval {
-            self.state.active_farmers_in_last_blocks.pop_back();
-        }
+        let number_of_farmers_with_votes = self.state.last_block_voted_by_farmer.len();
 
         self.state
             .active_farmers_in_last_blocks
             .push_front(number_of_farmers_with_votes);
+
+        self.state
+            .active_farmers_in_last_blocks
+            .truncate(self.config.max_block_interval);
+    }
+
+    /// Returns the current number of farmers with votes, and the fraction that number is of the
+    /// average.
+    /// Returns `None` if there are no blocks in the window.
+    ///
+    /// TODO: return a struct here
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "numbers are much smaller than 52 bits"
+    )]
+    fn compare_to_average(&self) -> Option<(usize, f64, f64)> {
+        let number_of_farmers_with_votes = *self.state.active_farmers_in_last_blocks.front()?;
+
+        // Calculate the average number of farmers with votes in the last `max_block_interval`
+        // blocks.
+        let average_number_of_farmers_with_votes = (self
+            .state
+            .active_farmers_in_last_blocks
+            .iter()
+            .sum::<usize>() as f64)
+            / (self.state.active_farmers_in_last_blocks.len() as f64);
+
+        let fraction_of_average =
+            (number_of_farmers_with_votes as f64) / average_number_of_farmers_with_votes;
+
+        Some((
+            number_of_farmers_with_votes,
+            average_number_of_farmers_with_votes,
+            fraction_of_average,
+        ))
     }
 
     /// Check the number of farmers with votes in the last `max_block_interval` blocks
     /// and emit alerts if the number of farmers with votes is outside the alert thresholds.
-    async fn check_farmer_count(&mut self, block_info: BlockInfo, mode: BlockCheckMode) {
-        if self.state.active_farmers_in_last_blocks.is_empty() {
+    async fn check_farmer_count(&mut self, block_info: &BlockInfo, mode: BlockCheckMode) {
+        let Some((
+            number_of_farmers_with_votes,
+            average_number_of_farmers_with_votes,
+            fraction_of_average,
+        )) = self.compare_to_average()
+        else {
             return;
-        }
-
-        // Calculate the average number of farmers with votes in the last `max_block_interval`
-        // blocks.
-        let average_number_of_farmers_with_votes =
-            f64::from(self.state.active_farmers_in_last_blocks.iter().sum::<u32>())
-                / f64::from(
-                    u32::try_from(self.state.active_farmers_in_last_blocks.len())
-                        .expect("farmers should fit in a u32 integer"),
-                );
-
-        let &number_of_farmers_with_votes = self
-            .state
-            .active_farmers_in_last_blocks
-            .front()
-            .expect("already checked not empty");
-
-        let percentage_to_average =
-            f64::from(number_of_farmers_with_votes) / average_number_of_farmers_with_votes;
+        };
 
         // Check if the current number of farmers with votes is greater than the alert threshold.
-        if percentage_to_average < self.config.low_end_change_threshold {
+        if fraction_of_average < self.config.low_end_change_threshold {
             let _ = self
                 .config
                 .alert_tx
@@ -239,11 +237,11 @@ impl MemoryFarmingMonitor {
                         )
                         .expect("farmers should fit in a u32 integer"),
                     },
-                    block_info,
+                    *block_info,
                     mode,
                 ))
                 .await;
-        } else if percentage_to_average > self.config.high_end_change_threshold {
+        } else if fraction_of_average > self.config.high_end_change_threshold {
             let _ = self
                 .config
                 .alert_tx
@@ -256,7 +254,7 @@ impl MemoryFarmingMonitor {
                         )
                         .expect("farmers should fit in a u32 integer"),
                     },
-                    block_info,
+                    *block_info,
                     mode,
                 ))
                 .await;
@@ -297,12 +295,10 @@ mod tests {
         farming_monitor.update_number_of_farmers_with_votes();
 
         // Run checks on the number of farmers.
-        let has_passed_minimum_block_interval =
-            block_height.saturating_sub(farming_monitor.config.minimum_block_interval) > 0;
-        if has_passed_minimum_block_interval {
+        if farming_monitor.has_passed_minimum_block_interval() {
             farming_monitor
                 .check_farmer_count(
-                    BlockInfo {
+                    &BlockInfo {
                         block_height,
                         block_time: None,
                         block_hash: H256::default(),
@@ -321,11 +317,11 @@ mod tests {
         let alert_tx = tokio::sync::mpsc::channel(100).0;
         let config = FarmingMonitorConfig {
             alert_tx,
-            max_block_interval: DEFAULT_FARMING_MAX_BLOCK_INTERVAL,
+            max_block_interval: DEFAULT_FARMING_MAX_HISTORY_BLOCK_INTERVAL,
             low_end_change_threshold: DEFAULT_LOW_END_FARMING_ALERT_THRESHOLD,
             high_end_change_threshold: DEFAULT_HIGH_END_FARMING_ALERT_THRESHOLD,
             inactive_block_threshold: DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD,
-            minimum_block_interval: DEFAULT_FARMING_MINIMUM_BLOCK_INTERVAL,
+            minimum_block_interval: DEFAULT_FARMING_MIN_ALERT_BLOCK_INTERVAL,
         };
         let mut farming_monitor = MemoryFarmingMonitor::new(&config);
 
@@ -402,7 +398,7 @@ mod tests {
         };
         farming_monitor.update_number_of_farmers_with_votes();
         farming_monitor
-            .check_farmer_count(block_info, BlockCheckMode::Current)
+            .check_farmer_count(&block_info, BlockCheckMode::Current)
             .await;
 
         let alert = alert_rx.recv().await.expect("expected decrease alert");
@@ -459,7 +455,7 @@ mod tests {
 
         farming_monitor.update_number_of_farmers_with_votes();
         farming_monitor
-            .check_farmer_count(mock_block_info, BlockCheckMode::Current)
+            .check_farmer_count(&mock_block_info, BlockCheckMode::Current)
             .await;
 
         let alert = alert_rx.recv().await.expect("expected increase alert");
@@ -509,7 +505,7 @@ mod tests {
         farming_monitor.update_number_of_farmers_with_votes();
         farming_monitor
             .check_farmer_count(
-                BlockInfo {
+                &BlockInfo {
                     block_height: 1,
                     block_time: None,
                     block_hash: H256::default(),
