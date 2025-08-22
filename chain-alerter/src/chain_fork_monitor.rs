@@ -2,6 +2,7 @@
 
 use crate::alerts::{Alert, BlockCheckMode};
 use crate::subspace::{BlockInfo, BlockLink};
+use std::cmp::max;
 use std::collections::HashMap;
 use std::sync::Arc;
 use subxt::utils::H256;
@@ -10,6 +11,12 @@ use tracing::{debug, info, warn};
 
 /// The buffer size for the chain fork monitor.
 pub const CHAIN_FORK_BUFFER_SIZE: usize = 100;
+
+/// The minimum fork depth to alert on.
+pub const MIN_FORK_DEPTH: usize = 7;
+
+/// The minimum fork depth to log as info.
+pub const MIN_FORK_DEPTH_FOR_INFO_LOG: usize = 3;
 
 /// A chain fork or reorg event.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -47,6 +54,32 @@ pub enum ChainForkEvent {
         /// The number of blocks from the new best block to the reorg point.
         new_fork_depth: usize,
     },
+}
+
+impl ChainForkEvent {
+    /// Returns true if the event has a fork depth greater than the minimum fork depth for alerts.
+    pub fn needs_alert(&self) -> bool {
+        self.largest_fork_depth() >= MIN_FORK_DEPTH
+    }
+
+    /// Returns true if the event has a fork depth greater than the minimum fork depth for info
+    /// logs.
+    pub fn needs_info_log(&self) -> bool {
+        self.largest_fork_depth() >= MIN_FORK_DEPTH_FOR_INFO_LOG
+    }
+
+    /// Returns the largest fork depth in the event.
+    pub fn largest_fork_depth(&self) -> usize {
+        match self {
+            ChainForkEvent::NewFork { fork_depth, .. } => *fork_depth,
+            ChainForkEvent::ForkExtended { fork_depth, .. } => *fork_depth,
+            ChainForkEvent::Reorg {
+                new_fork_depth,
+                old_fork_depth,
+                ..
+            } => max(*new_fork_depth, *old_fork_depth),
+        }
+    }
 }
 
 // TODO: Forks are rare, so treat the chain as a tree of continuous block segments, rather than a
@@ -252,18 +285,24 @@ pub async fn check_for_chain_forks(
     while let Some((mode, block_seen)) = new_blocks_rx.recv().await {
         let event = state.add_block_link(&block_seen.block_info(), block_seen.is_best_block());
         if let Some(event) = event {
-            // TODO: check fork length or reorg thresholds here
-            info!(?event, "Chain fork or reorg event");
+            if event.needs_info_log() {
+                info!(?event, "Chain fork or reorg event");
+            } else {
+                debug!(?event, "Chain fork or reorg event");
+            }
 
-            // If we have restarted, the new alerter will replay missed blocks, so we can ignore any
-            // send errors to dropped channels. This also avoids panics during process shutdown.
-            let _ = alert_tx
-                .send(Alert::from_chain_fork_event(
-                    event,
-                    block_seen.block_info(),
-                    mode,
-                ))
-                .await;
+            if event.needs_alert() {
+                // If we have restarted, the new alerter will replay missed blocks, so we can ignore
+                // any send errors to dropped channels. This also avoids panics during process
+                // shutdown.
+                let _ = alert_tx
+                    .send(Alert::from_chain_fork_event(
+                        event,
+                        block_seen.block_info(),
+                        mode,
+                    ))
+                    .await;
+            }
         }
     }
 
