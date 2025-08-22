@@ -146,6 +146,18 @@ async fn run() -> anyhow::Result<()> {
         true,
     );
 
+    let best_blocks_fut = run_on_best_blocks_subscription(&chain_client, &alert_tx);
+
+    best_blocks_fut.await?;
+
+    Ok(())
+}
+
+/// Run best blocks subscription checks.
+async fn run_on_best_blocks_subscription(
+    chain_client: &SubspaceClient,
+    alert_tx: &mpsc::Sender<Alert>,
+) -> anyhow::Result<()> {
     // TODO: add a network name table and look up the network name by genesis hash
     let genesis_hash = chain_client.genesis_hash();
 
