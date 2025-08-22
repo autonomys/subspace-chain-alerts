@@ -159,6 +159,75 @@ impl BlockPosition {
             hash: block.hash(),
         }
     }
+
+    /// Returns the minimum possible block position for a block height.
+    /// Use this for range queries.
+    pub fn min_for_height_range(height: BlockNumber) -> Self {
+        BlockPosition {
+            height,
+            hash: H256::zero(),
+        }
+    }
+
+    /// Returns the maximum possible block position for a block height.
+    /// Use this for range queries.
+    pub fn max_for_height_range(height: BlockNumber) -> Self {
+        BlockPosition {
+            height,
+            hash: H256::repeat_byte(0xff),
+        }
+    }
+}
+
+/// Block link in the chain, including height, hash, and parent hash.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Ord, PartialOrd, Hash)]
+pub struct BlockLink {
+    /// The block's position.
+    pub position: BlockPosition,
+
+    /// The block's parent hash.
+    pub parent_hash: H256,
+}
+
+impl Display for BlockLink {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} <- {:?}", self.position, self.parent_hash)
+    }
+}
+
+impl BlockLink {
+    /// Create a new block link from a block position and parent hash.
+    pub fn new(position: BlockPosition, parent_hash: H256) -> Self {
+        BlockLink {
+            position,
+            parent_hash,
+        }
+    }
+
+    /// Create a new block link from a block info.
+    pub fn from_block_info(block_info: &BlockInfo) -> Self {
+        BlockLink::new(block_info.position, block_info.parent_hash)
+    }
+
+    /// Create a new block link from a block.
+    pub fn from_block(block: &Block<SubspaceConfig, SubspaceClient>) -> Self {
+        BlockLink::new(BlockPosition::from_block(block), block.header().parent_hash)
+    }
+
+    /// Returns the block hash.
+    pub fn hash(&self) -> H256 {
+        self.position.hash
+    }
+
+    /// Returns the block height.
+    pub fn height(&self) -> BlockNumber {
+        self.position.height
+    }
+
+    /// Returns the parent block position.
+    pub fn parent_position(&self) -> BlockPosition {
+        BlockPosition::new(self.position.height.saturating_sub(1), self.parent_hash)
+    }
 }
 
 /// Block info that can be formatted.
