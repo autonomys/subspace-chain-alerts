@@ -231,7 +231,7 @@ async fn run() -> anyhow::Result<()> {
             )
             .await;
 
-            run_on_block(
+            run_on_best_block(
                 BlockCheckMode::Current,
                 &block,
                 &block_info,
@@ -365,7 +365,7 @@ pub async fn replay_previous_blocks(
                 info!(?block_info, "Replayed missed block");
             }
 
-            run_on_block(
+            run_on_best_block(
                 BlockCheckMode::Replay,
                 &block,
                 &block_info,
@@ -387,7 +387,7 @@ pub async fn replay_previous_blocks(
 
 #[expect(clippy::too_many_arguments, reason = "too many arguments is fine here")]
 /// Run checks on a single block, against its previous block.
-async fn run_on_block(
+async fn run_on_best_block(
     mode: BlockCheckMode,
     block: &Block<SubspaceConfig, SubspaceClient>,
     block_info: &BlockInfo,
