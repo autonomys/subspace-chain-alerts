@@ -22,6 +22,14 @@ pub const MIN_FORK_DEPTH_FOR_INFO_LOG: usize = 3;
 /// The depth after the best tip to prune blocks from the chain fork state.
 pub const MAX_BLOCK_DEPTH: usize = 1000;
 
+/// The expected number of blocks in the state.
+/// This is an estimate, used for memory optimisation only.
+pub const EXPECTED_BLOCK_COUNT: usize = MAX_BLOCK_DEPTH * 5 / 4;
+
+/// The expected number of tips in the state.
+/// This is an estimate, used for memory optimisation only.
+pub const EXPECTED_TIP_COUNT: usize = EXPECTED_BLOCK_COUNT.saturating_sub(MAX_BLOCK_DEPTH);
+
 /// A chain fork or reorg event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChainForkEvent {
@@ -114,13 +122,19 @@ impl ChainForkState {
         let block_link = BlockLink::from_block_info(block_info);
         let block_link = Arc::new(block_link);
 
+        let mut blocks_by_hash = HashMap::with_capacity(EXPECTED_BLOCK_COUNT);
+        blocks_by_hash.insert(block_link.hash(), block_link.clone());
+
+        let mut tips_by_hash = HashMap::with_capacity(EXPECTED_TIP_COUNT);
+        tips_by_hash.insert(block_link.hash(), block_link.clone());
+
         ChainForkState {
-            blocks_by_hash: HashMap::from([(block_link.hash(), block_link.clone())]),
+            blocks_by_hash,
             blocks_by_parent: BTreeMap::from([(
                 block_link.parent_position(),
                 vec![block_link.clone()],
             )]),
-            tips_by_hash: HashMap::from([(block_link.hash(), block_link.clone())]),
+            tips_by_hash,
             best_block: block_link.clone(),
         }
     }
