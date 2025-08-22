@@ -141,7 +141,7 @@ async fn run() -> anyhow::Result<()> {
     // Spawn a background task to post alerts to Slack.
     // We don't need to wait for the task to finish, because it will panic on failure.
     let (alert_tx, alert_rx) = mpsc::channel(ALERT_BUFFER_SIZE);
-    let _alert_task = AsyncJoinOnDrop::new(
+    let _alert_task: AsyncJoinOnDrop<()> = AsyncJoinOnDrop::new(
         tokio::spawn(slack_poster(slack_client_info, alert_rx)),
         true,
     );
@@ -168,6 +168,9 @@ async fn run() -> anyhow::Result<()> {
         alert_tx.clone(),
     ));
 
+    // TODO: now that the farming monitor has a 1000 block history, it takes a long time to start
+    // alerting. At startup, re-load 1000 previous blocks into its history. Disable alerts using a
+    // new `BlockCheckMode::ContextOnly`.
     let mut farming_monitor = MemoryFarmingMonitor::new(&FarmingMonitorConfig {
         alert_tx: alert_tx.clone(),
         max_block_interval: DEFAULT_FARMING_MAX_HISTORY_BLOCK_INTERVAL,
