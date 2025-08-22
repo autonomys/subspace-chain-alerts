@@ -1,9 +1,10 @@
 //! Monitoring and alerting for chain forks.
 
 use crate::alerts::{Alert, BlockCheckMode};
-use crate::subspace::{BlockInfo, BlockLink};
+use crate::subspace::{BlockInfo, BlockLink, BlockPosition};
 use std::cmp::max;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::mem;
 use std::sync::Arc;
 use subxt::utils::H256;
 use tokio::sync::mpsc;
@@ -95,9 +96,10 @@ pub struct ChainForkState {
     /// This lets us walk the chain backwards using parent hashes.
     pub blocks_by_hash: HashMap<H256, Arc<BlockLink>>,
 
-    /// A list of block links by parent hash.
-    /// This lets us walk the chain forwards using block hashes.
-    pub blocks_by_parent_hash: HashMap<H256, Vec<Arc<BlockLink>>>,
+    /// A list of block links by parent height and hash.
+    /// This lets us walk the chain forwards using block heights/hashes.
+    /// The height is redundant, but it is used for efficient pruning.
+    pub blocks_by_parent: BTreeMap<BlockPosition, Vec<Arc<BlockLink>>>,
 
     /// The tips of each chain fork.
     pub tips_by_hash: HashMap<H256, Arc<BlockLink>>,
@@ -114,8 +116,8 @@ impl ChainForkState {
 
         ChainForkState {
             blocks_by_hash: HashMap::from([(block_link.hash(), block_link.clone())]),
-            blocks_by_parent_hash: HashMap::from([(
-                block_link.parent_hash,
+            blocks_by_parent: BTreeMap::from([(
+                block_link.parent_position(),
                 vec![block_link.clone()],
             )]),
             tips_by_hash: HashMap::from([(block_link.hash(), block_link.clone())]),
@@ -131,8 +133,8 @@ impl ChainForkState {
         loop {
             // Find the blocks with the same parent as this block.
             let sibling_blocks = self
-                .blocks_by_parent_hash
-                .get(&current_block.parent_hash)
+                .blocks_by_parent
+                .get(&current_block.parent_position())
                 .expect("always contains this block");
 
             if sibling_blocks.len() > 1 {
@@ -174,8 +176,8 @@ impl ChainForkState {
         // Add the block link to the chain.
         self.blocks_by_hash
             .insert(block_link.hash(), block_link.clone());
-        self.blocks_by_parent_hash
-            .entry(block_link.parent_hash)
+        self.blocks_by_parent
+            .entry(block_link.parent_position())
             .or_default()
             .push(block_link.clone());
 
@@ -233,7 +235,7 @@ impl ChainForkState {
     /// Prune blocks from the chain fork state.
     pub fn prune_blocks(&mut self) {
         // If we don't have enough parent blocks to start pruning, exit early.
-        if self.blocks_by_parent_hash.len() <= MAX_BLOCK_DEPTH {
+        if self.blocks_by_parent.len() <= MAX_BLOCK_DEPTH {
             return;
         }
 
@@ -246,34 +248,15 @@ impl ChainForkState {
             "Pruning blocks from the chain fork state",
         );
 
-        // Keep a list of old tips, because we might prune some.
-        let old_tips = self
-            .tips_by_hash
-            .values()
-            .cloned()
-            .collect::<Vec<Arc<BlockLink>>>();
+        // There's no split below method, so we split above, then swap.
+        let mut blocks_to_prune = self
+            .blocks_by_parent
+            .split_off(&BlockPosition::min_for_height_range(height_threshold));
+        mem::swap(&mut self.blocks_by_parent, &mut blocks_to_prune);
 
-        'next_tip: for mut block in old_tips.iter() {
-            if block.height() < height_threshold {
-                info!(fork_tip = ?block, ?height_threshold, "Pruning outdated fork");
-                continue;
-            }
-
-            while block.height() > height_threshold {
-                let Some(parent) = self.blocks_by_hash.get(&block.parent_hash) else {
-                    // We've reached the end of the chain without finding a block to prune, move on
-                    // to the next tip.
-                    continue 'next_tip;
-                };
-
-                // Move to the parent block.
-                block = parent;
-            }
-
-            // We're at the height threshold, so start pruning at the parent block.
-            let parent_hash = block.parent_hash;
-            while let Some(block) = self.blocks_by_hash.remove(&parent_hash) {
-                self.prune_block(&block);
+        for blocks in blocks_to_prune.values() {
+            for block in blocks {
+                self.prune_block(block);
             }
         }
     }
@@ -281,9 +264,11 @@ impl ChainForkState {
     /// Prune a single block from the chain fork state.
     pub fn prune_block(&mut self, block_link: &BlockLink) {
         self.blocks_by_hash.remove(&block_link.hash());
-        // If a block is being pruned, all its siblings will also be pruned.
-        self.blocks_by_parent_hash.remove(&block_link.parent_hash);
         self.tips_by_hash.remove(&block_link.hash());
+
+        // If a block is being pruned, all its siblings will also be pruned.
+        // This is currently redundant, but it's here for completeness.
+        self.blocks_by_parent.remove(&block_link.parent_position());
     }
 }
 
