@@ -18,6 +18,9 @@ pub const MIN_FORK_DEPTH: usize = 7;
 /// The minimum fork depth to log as info.
 pub const MIN_FORK_DEPTH_FOR_INFO_LOG: usize = 3;
 
+/// The depth after the best tip to prune blocks from the chain fork state.
+pub const MAX_BLOCK_DEPTH: usize = 1000;
+
 /// A chain fork or reorg event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChainForkEvent {
@@ -226,6 +229,62 @@ impl ChainForkState {
 
         event
     }
+
+    /// Prune blocks from the chain fork state.
+    pub fn prune_blocks(&mut self) {
+        // If we don't have enough parent blocks to start pruning, exit early.
+        if self.blocks_by_parent_hash.len() <= MAX_BLOCK_DEPTH {
+            return;
+        }
+
+        let best_block_height = self.best_block.height();
+        let height_threshold = best_block_height
+            .saturating_sub(u32::try_from(MAX_BLOCK_DEPTH).expect("constant is small"));
+        debug!(
+            ?best_block_height,
+            ?height_threshold,
+            "Pruning blocks from the chain fork state",
+        );
+
+        // Keep a list of old tips, because we might prune some.
+        let old_tips = self
+            .tips_by_hash
+            .values()
+            .cloned()
+            .collect::<Vec<Arc<BlockLink>>>();
+
+        'next_tip: for mut block in old_tips.iter() {
+            if block.height() < height_threshold {
+                info!(fork_tip = ?block, ?height_threshold, "Pruning outdated fork");
+                continue;
+            }
+
+            while block.height() > height_threshold {
+                let Some(parent) = self.blocks_by_hash.get(&block.parent_hash) else {
+                    // We've reached the end of the chain without finding a block to prune, move on
+                    // to the next tip.
+                    continue 'next_tip;
+                };
+
+                // Move to the parent block.
+                block = parent;
+            }
+
+            // We're at the height threshold, so start pruning at the parent block.
+            let parent_hash = block.parent_hash;
+            while let Some(block) = self.blocks_by_hash.remove(&parent_hash) {
+                self.prune_block(&block);
+            }
+        }
+    }
+
+    /// Prune a single block from the chain fork state.
+    pub fn prune_block(&mut self, block_link: &BlockLink) {
+        self.blocks_by_hash.remove(&block_link.hash());
+        // If a block is being pruned, all its siblings will also be pruned.
+        self.blocks_by_parent_hash.remove(&block_link.parent_hash);
+        self.tips_by_hash.remove(&block_link.hash());
+    }
 }
 
 /// The message sent when the alerter sees a block.
@@ -304,6 +363,8 @@ pub async fn check_for_chain_forks(
                     .await;
             }
         }
+
+        state.prune_blocks();
     }
 
     debug!("Channel disconnected, exiting");
