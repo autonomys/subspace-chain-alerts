@@ -262,8 +262,16 @@ impl ChainForkState {
             is_fork_extended = !is_best_block;
             self.tips_by_hash
                 .insert(block_link.hash(), block_link.clone());
-        } else if self.blocks_by_hash.contains_key(&block_link.parent_hash) {
-            // Otherwise, add a new tip, if it connects to the chain.
+        } else {
+            // Otherwise, add a new tip, whether or not it connects to the chain.
+            // (If a lot of blocks are missing, the new tip will be disconnected.)
+            if !self.blocks_by_hash.contains_key(&block_link.parent_hash) {
+                warn!(
+                    ?block_link,
+                    "Block is not connected to the chain, adding as a new fork tip anyway",
+                );
+            }
+
             is_new_fork = true;
             self.tips_by_hash
                 .insert(block_link.hash(), block_link.clone());
