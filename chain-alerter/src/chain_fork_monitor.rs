@@ -1,7 +1,7 @@
 //! Monitoring and alerting for chain forks.
 
 use crate::alerts::{Alert, BlockCheckMode};
-use crate::subspace::{BlockInfo, BlockLink, BlockPosition};
+use crate::subspace::{BlockInfo, BlockLink, BlockNumber, BlockPosition};
 use std::cmp::max;
 use std::collections::{BTreeMap, HashMap};
 use std::mem;
@@ -18,6 +18,9 @@ pub const MIN_FORK_DEPTH: usize = 7;
 
 /// The minimum fork depth to log as info.
 pub const MIN_FORK_DEPTH_FOR_INFO_LOG: usize = 3;
+
+/// The maximum number of blocks to replay when there are missed blocks.
+pub const MAX_BLOCKS_TO_REPLAY: BlockNumber = 100;
 
 /// The depth after the best tip to prune blocks from the chain fork state.
 pub const MAX_BLOCK_DEPTH: usize = 1000;
@@ -261,8 +264,6 @@ impl ChainForkState {
                 .insert(block_link.hash(), block_link.clone());
         } else if self.blocks_by_hash.contains_key(&block_link.parent_hash) {
             // Otherwise, add a new tip, if it connects to the chain.
-            // TODO: handle this properly, by retrieving and adding missing blocks, then adding them
-            // in order.
             is_new_fork = true;
             self.tips_by_hash
                 .insert(block_link.hash(), block_link.clone());

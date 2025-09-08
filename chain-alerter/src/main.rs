@@ -14,7 +14,9 @@ mod slot_time_monitor;
 mod subspace;
 
 use crate::alerts::{Alert, BlockCheckMode};
-use crate::chain_fork_monitor::{BlockSeen, CHAIN_FORK_BUFFER_SIZE, check_for_chain_forks};
+use crate::chain_fork_monitor::{
+    BlockSeen, CHAIN_FORK_BUFFER_SIZE, MAX_BLOCKS_TO_REPLAY, check_for_chain_forks,
+};
 use crate::farming_monitor::{
     DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD, DEFAULT_FARMING_MAX_HISTORY_BLOCK_INTERVAL,
     DEFAULT_FARMING_MIN_ALERT_BLOCK_INTERVAL, DEFAULT_HIGH_END_FARMING_ALERT_THRESHOLD,
@@ -26,9 +28,9 @@ use crate::slot_time_monitor::{
     DEFAULT_CHECK_INTERVAL, DEFAULT_SLOT_TIME_ALERT_THRESHOLD, SlotTimeMonitorConfig,
 };
 use crate::subspace::{
-    BlockInfo, BlockNumber, BlockPosition, Event, LOCAL_SUBSPACE_NODE_URL,
-    MAX_RECONNECTION_ATTEMPTS, MAX_RECONNECTION_DELAY, RawBlockHash, RawRpcClient, SubspaceClient,
-    SubspaceConfig, create_subspace_client, spawn_metadata_update_task,
+    BlockInfo, BlockNumber, Event, LOCAL_SUBSPACE_NODE_URL, MAX_RECONNECTION_ATTEMPTS,
+    MAX_RECONNECTION_DELAY, RawBlockHash, RawRpcClient, SubspaceClient, SubspaceConfig,
+    create_subspace_client, spawn_metadata_update_task,
 };
 use clap::{Parser, ValueHint};
 use slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor};
@@ -228,8 +230,8 @@ async fn run_on_all_blocks_subscription(
         // "All block" subscriptions do not automatically recover missed blocks after a
         // reconnection: <https://github.com/paritytech/subxt/issues/1568>
 
-        // TODO: this check is incorrect, it will replay more blocks than needed during reorgs, and
-        // less blocks than needed on new forks. Instead, use the fork monitor to detect gaps.
+        // TODO: this check is incorrect, it will replay more blocks than needed during reorgs and
+        // new forks. Instead, use the fork monitor to detect gaps.
         if let Some(prev_block_info) = prev_block_info
             && (block_info.height() != prev_block_info.height() + 1
                 || block_info.parent_hash != prev_block_info.hash())
@@ -473,12 +475,9 @@ pub async fn find_missing_blocks(
             block_info.hash(),
         );
 
-        // For now, just assume the fork is at the previous block.
+        // We don't know where the fork is.
         // TODO: use the chain fork detection from the chain fork monitor
-        (
-            BlockPosition::new(block_info.height() - 1, block_info.parent_hash),
-            block_info,
-        )
+        (None, block_info)
     } else {
         // A gap in the chain of blocks.
         warn!(
@@ -491,8 +490,20 @@ pub async fn find_missing_blocks(
         );
 
         // We know the exact gap, but it could be a fork, so keep the height as well.
-        (prev_block_info.position, block_info)
+        (Some(prev_block_info.position), block_info)
     };
+
+    // Stop at the gap start, or when we've reached the maximum number of blocks to replay.
+    // We subtract 1 so we include the gap start block, this lets us use `>` in the while loop,
+    // which works even if the height limit is at genesis.
+    let height_limit = if let Some(gap_start) = gap_start {
+        gap_start
+            .height
+            .max(gap_end.height().saturating_sub(MAX_BLOCKS_TO_REPLAY))
+    } else {
+        gap_end.height().saturating_sub(MAX_BLOCKS_TO_REPLAY)
+    }
+    .saturating_sub(1);
 
     // Walk the chain backwards, saving the block hashes.
     let mut missed_block_hashes = VecDeque::from([gap_end.hash()]);
@@ -502,8 +513,7 @@ pub async fn find_missing_blocks(
     // TODO:
     // - use the chain fork monitor to find the fork point, even if it is below the missed block
     //   height
-    // - limit how far back we go, very old alerts aren't worth checking for
-    while gap_start.height < missed_block_height {
+    while missed_block_height > height_limit {
         // We don't store the full missed block info, because they could take up a lot of memory.
         let missed_block = chain_client
             .blocks()
@@ -515,18 +525,18 @@ pub async fn find_missing_blocks(
         missed_block_height = missed_block.number() - 1;
     }
 
-    if Some(&gap_start.hash) != missed_block_hashes.front() {
+    if gap_start.map(|position| position.hash) != missed_block_hashes.front().cloned() {
         let second_fork_hash = missed_block_hashes
             .front()
             .expect("always contains the final hash");
 
         // The gap was a fork, we found a sibling/cousin of the gap start.
-        // TODO: delete this log once we have the chain fork monitor fully tested
+        // TODO: delete this log once the chain fork monitor has replaced other fork checking code
         info!(
-            "chain fork at {} confirmed: {} is a fork of {} -> {} ({})",
-            gap_start.hash,
+            ?height_limit,
+            "chain fork at {:?} confirmed: {} is another fork of {} ({})",
+            gap_start,
             second_fork_hash,
-            gap_start.height,
             gap_end.hash(),
             gap_end.height(),
         );
