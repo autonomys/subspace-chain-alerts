@@ -287,15 +287,16 @@ impl ChainForkState {
 }
 
 /// The message sent when the alerter sees a block.
+/// Used to detect reorgs and forks.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum BlockSeen {
     /// A new block has been seen, and we know it is the best block.
-    /// Used to detect reorgs and forks.
+    /// These blocks can come from the best or all blocks subscriptions.
     BestBlock(BlockInfo),
 
-    /// A new block has been seen, which might not be the best block.
+    /// A new block has been seen, which is not the best block.
     /// This block might be treated as the best block if it is received early enough.
-    /// Used to detect forks.
+    /// These blocks only come from the all blocks subscription.
     AnyBlock(BlockInfo),
 }
 

@@ -149,7 +149,7 @@ async fn run() -> anyhow::Result<()> {
         true,
     );
 
-    // Chain fork monitor is used to detect chain forks and reorgs from the best and any block
+    // Chain fork monitor is used to detect chain forks and reorgs from the best and all block
     // subscriptions.
     let (new_blocks_tx, new_blocks_rx) = mpsc::channel(CHAIN_FORK_BUFFER_SIZE);
     let _chain_fork_monitor_task: AsyncJoinOnDrop<()> = AsyncJoinOnDrop::new(
@@ -160,8 +160,8 @@ async fn run() -> anyhow::Result<()> {
     let best_blocks_fut =
         run_on_best_blocks_subscription(&chain_client, &alert_tx, new_blocks_tx.clone());
 
-    let any_blocks_fut =
-        run_on_any_blocks_subscription(&chain_client, &raw_rpc_client, new_blocks_tx.clone());
+    let all_blocks_fut =
+        run_on_all_blocks_subscription(&chain_client, &raw_rpc_client, new_blocks_tx.clone());
 
     select! {
         result = best_blocks_fut => {
@@ -171,11 +171,11 @@ async fn run() -> anyhow::Result<()> {
                 info!("best blocks subscription exited");
             }
         }
-        result = any_blocks_fut => {
+        result = all_blocks_fut => {
             if let Err(error) = result {
-                error!(%error, "any blocks subscription failed");
+                error!(%error, "all blocks subscription failed");
             } else {
-                info!("any blocks subscription exited");
+                info!("all blocks subscription exited");
             }
         }
     }
@@ -183,8 +183,8 @@ async fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Run any blocks subscription checks.
-async fn run_on_any_blocks_subscription(
+/// Run "all blocks" subscription checks.
+async fn run_on_all_blocks_subscription(
     chain_client: &SubspaceClient,
     raw_rpc_client: &RawRpcClient,
     new_blocks_tx: mpsc::Sender<(BlockCheckMode, BlockSeen)>,
@@ -192,7 +192,7 @@ async fn run_on_any_blocks_subscription(
     // TODO: add a network name table and look up the network name by genesis hash
     let genesis_hash = chain_client.genesis_hash();
 
-    // Subscribe to any blocks, including side forks and best blocks.
+    // Subscribe to all blocks, including side forks and best blocks.
     let mut blocks_sub = chain_client.blocks().subscribe_all().await?;
 
     while let Some(block) = blocks_sub.next().await {
@@ -206,7 +206,7 @@ async fn run_on_any_blocks_subscription(
             .is_multiple_of(BLOCK_UPDATE_LOGGING_INTERVAL)
         {
             // Let the user know we're still alive
-            info!(?block_info, "Processed any block");
+            info!(?block_info, "Processed block from all blocks subscription");
         }
 
         // TODO: Check for a gap in the subscribed blocks, and replay missed blocks.
@@ -316,7 +316,7 @@ async fn run_on_best_blocks_subscription(
             .is_multiple_of(BLOCK_UPDATE_LOGGING_INTERVAL)
         {
             // Let the user know we're still alive
-            info!(?block_info, "Processed best block");
+            info!(?block_info, "Processed block from best blocks subscription");
         }
 
         // Notify spawned tasks that a new block has arrived, and give them time to process that
