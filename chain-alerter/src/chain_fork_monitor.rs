@@ -36,8 +36,8 @@ pub const EXPECTED_TIP_COUNT: usize = EXPECTED_BLOCK_COUNT.saturating_sub(MAX_BL
 /// A chain fork or reorg event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChainForkEvent {
-    /// A new chain fork was seen.
-    NewFork {
+    /// A new chain fork was seen, which was not started by a best block.
+    NewSideFork {
         /// The tip of the fork.
         tip: Arc<BlockLink>,
 
@@ -46,7 +46,7 @@ pub enum ChainForkEvent {
     },
 
     /// A chain fork was extended by a non-best block.
-    ForkExtended {
+    SideForkExtended {
         /// The tip of the fork.
         tip: Arc<BlockLink>,
 
@@ -54,7 +54,8 @@ pub enum ChainForkEvent {
         fork_depth: usize,
     },
 
-    /// A reorg was seen, this takes priority over fork events.
+    /// A reorg was seen to a best block on a side chain.
+    /// This takes priority over fork events.
     Reorg {
         /// The new best block.
         new_best_block: Arc<BlockLink>,
@@ -67,6 +68,7 @@ pub enum ChainForkEvent {
         old_fork_depth: usize,
 
         /// The number of blocks from the new best block to the reorg point.
+        /// If this is 1, the reorg is to a new side chain fork.
         new_fork_depth: usize,
     },
 }
@@ -86,8 +88,8 @@ impl ChainForkEvent {
     /// Returns the largest fork depth in the event.
     pub fn largest_fork_depth(&self) -> usize {
         match self {
-            ChainForkEvent::NewFork { fork_depth, .. } => *fork_depth,
-            ChainForkEvent::ForkExtended { fork_depth, .. } => *fork_depth,
+            ChainForkEvent::NewSideFork { fork_depth, .. } => *fork_depth,
+            ChainForkEvent::SideForkExtended { fork_depth, .. } => *fork_depth,
             ChainForkEvent::Reorg {
                 new_fork_depth,
                 old_fork_depth,
@@ -183,6 +185,7 @@ impl ChainForkState {
     ///
     /// Automatically handles blocks above or below the best tip.
     /// Assumes that the chain is connected, and there are no missing blocks.
+    #[expect(dead_code, reason = "included for completeness")]
     pub fn is_on_best_fork(&self, block: &BlockLink) -> bool {
         self.is_on_same_fork(&self.best_tip, block)
     }
@@ -253,13 +256,13 @@ impl ChainForkState {
             .or_default()
             .push(block_link.clone());
 
-        let mut is_new_fork = false;
-        let mut is_fork_extended = false;
+        let mut is_new_side_fork = false;
+        let mut is_side_fork_extended = false;
 
-        // If the tips contains the parent hash, replace it with this new tip.
+        // If the tips contain an ancestor of this block, replace it with this new tip.
         if let Some(fork_tip) = self.find_fork_tip(&block_link) {
+            is_side_fork_extended = fork_tip != &self.best_tip;
             self.tips_by_hash.remove(&fork_tip.hash());
-            is_fork_extended = !is_best_block;
             self.tips_by_hash
                 .insert(block_link.hash(), block_link.clone());
         } else {
@@ -267,19 +270,27 @@ impl ChainForkState {
             // (If a lot of blocks are missing, the new tip will be disconnected.)
             if !self.blocks_by_hash.contains_key(&block_link.parent_hash) {
                 warn!(
+                    ?is_best_block,
                     ?block_link,
                     "Block is not connected to the chain, adding as a new fork tip anyway",
                 );
             }
 
-            is_new_fork = true;
+            is_new_side_fork = true;
+            trace!(
+                ?is_new_side_fork,
+                ?is_best_block,
+                ?block_link,
+                "Block is a new fork tip",
+            );
+
             self.tips_by_hash
                 .insert(block_link.hash(), block_link.clone());
         }
 
         // Reorgs are best blocks which aren't a descendant of the current best block.
-        // Our skipped block replay makes sure we don't get disconnected best blocks.
-        let is_reorg = is_best_block && !self.is_on_best_fork(&block_link);
+        // Our skipped block replay makes sure we don't get disconnected blocks.
+        let is_reorg = is_best_block && (is_side_fork_extended || is_new_side_fork);
 
         // TODO: If there is a reorg, all unchecked blocks on the new best fork are checked for
         // alerts.
@@ -290,15 +301,15 @@ impl ChainForkState {
                 old_fork_depth: self.fork_depth(&self.best_tip),
                 new_fork_depth: self.fork_depth(&block_link),
             })
-        } else if is_new_fork {
+        } else if is_new_side_fork {
             // TODO: check new and extended side forks above a threshold amount for stealing attacks
-            Some(ChainForkEvent::NewFork {
+            Some(ChainForkEvent::NewSideFork {
                 tip: block_link.clone(),
                 // New forks are always 1 block deep, assuming they connect to the chain at all.
                 fork_depth: 1,
             })
-        } else if is_fork_extended {
-            Some(ChainForkEvent::ForkExtended {
+        } else if is_side_fork_extended {
+            Some(ChainForkEvent::SideForkExtended {
                 tip: block_link.clone(),
                 fork_depth: self.fork_depth(&block_link),
             })
