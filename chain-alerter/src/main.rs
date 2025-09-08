@@ -138,7 +138,7 @@ async fn slack_poster(slack_client: SlackClientInfo, mut alert_rx: mpsc::Receive
 async fn run() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    let (slack_client_info, chain_client, raw_rpc_client, _metadata_update_task) =
+    let (slack_client_info, chain_client, raw_rpc_client, metadata_update_task) =
         setup(args).await?;
 
     // Spawn a background task to post alerts to Slack.
@@ -177,6 +177,9 @@ async fn run() -> anyhow::Result<()> {
             } else {
                 info!("all blocks subscription exited");
             }
+        }
+        _ = metadata_update_task => {
+            info!("runtime metadata update task finished");
         }
     }
 

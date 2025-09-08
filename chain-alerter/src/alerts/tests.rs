@@ -13,6 +13,7 @@ use crate::subspace::{Balance, BlockNumber, EventIndex, ExtrinsicIndex, RawBlock
 use anyhow::Ok;
 use std::assert_matches::assert_matches;
 use std::time::Duration;
+use subxt::ext::futures::FutureExt;
 use subxt::utils::H256;
 
 /// The extrinsic and event for a recent sudo call.
@@ -58,7 +59,7 @@ const LARGE_TRANSFER_BLOCKS: [(BlockNumber, RawBlockHash, ExtrinsicIndex, Balanc
 /// Check that the startup alert works on the latest block.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_startup_alert() -> anyhow::Result<()> {
-    let (subspace_client, _, alert_tx, mut alert_rx, _update_task) =
+    let (subspace_client, _, alert_tx, mut alert_rx, update_task) =
         test_setup(node_rpc_url()).await?;
 
     let (block_info, _, _) = fetch_block_info(&subspace_client, None, None).await?;
@@ -73,13 +74,18 @@ async fn test_startup_alert() -> anyhow::Result<()> {
     // Check block slot parsing works on real blocks.
     assert_matches!(alert.block_info.slot, Some(Slot(_)));
 
+    assert!(
+        update_task.now_or_never().is_none(),
+        "metadata update task exited unexpectedly"
+    );
+
     Ok(())
 }
 
 /// Check that the sudo call and event alerts work on a known sudo block.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_sudo_alerts() -> anyhow::Result<()> {
-    let (subspace_client, _, alert_tx, mut alert_rx, _update_task) =
+    let (subspace_client, _, alert_tx, mut alert_rx, update_task) =
         test_setup(node_rpc_url()).await?;
 
     let (block_info, extrinsics, events) =
@@ -129,13 +135,18 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
     // Check block slot parsing works on a known slot value.
     assert_eq!(alert.block_info.slot, Some(SUDO_BLOCK.4));
 
+    assert!(
+        update_task.now_or_never().is_none(),
+        "metadata update task exited unexpectedly"
+    );
+
     Ok(())
 }
 
 /// Check that the large balance transfer alert works on known transfer blocks.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
-    let (subspace_client, _, alert_tx, mut alert_rx, _update_task) =
+    let (subspace_client, _, alert_tx, mut alert_rx, update_task) =
         test_setup(node_rpc_url()).await?;
 
     for (block_number, block_hash, extrinsic_index, transfer_value, slot) in LARGE_TRANSFER_BLOCKS {
@@ -163,13 +174,18 @@ async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
         assert_eq!(alert.block_info.slot, Some(slot));
     }
 
+    assert!(
+        update_task.now_or_never().is_none(),
+        "metadata update task exited unexpectedly"
+    );
+
     Ok(())
 }
 
 /// Check that the slot time alert is not triggered when the time per slot is below the threshold.
 #[tokio::test(flavor = "multi_thread")]
 async fn no_expected_test_slot_time_alert() -> anyhow::Result<()> {
-    let (_, _, alert_tx, mut alert_rx, _) = test_setup(node_rpc_url()).await?;
+    let (_, _, alert_tx, mut alert_rx, update_task) = test_setup(node_rpc_url()).await?;
 
     let first_block = mock_block_info(1000, Slot(100));
     let second_block = mock_block_info(2000, Slot(200));
@@ -193,6 +209,11 @@ async fn no_expected_test_slot_time_alert() -> anyhow::Result<()> {
         .try_recv()
         .expect_err("alert received when none expected");
 
+    assert!(
+        update_task.now_or_never().is_none(),
+        "metadata update task exited unexpectedly"
+    );
+
     Ok(())
 }
 
@@ -200,7 +221,7 @@ async fn no_expected_test_slot_time_alert() -> anyhow::Result<()> {
 /// has elapsed enough time.
 #[tokio::test(flavor = "multi_thread")]
 async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
-    let (_, _, alert_tx, mut alert_rx, _) = test_setup(node_rpc_url()).await?;
+    let (_, _, alert_tx, mut alert_rx, update_task) = test_setup(node_rpc_url()).await?;
 
     let first_block = mock_block_info(1000, Slot(100));
     let second_block = mock_block_info(2000, Slot(200));
@@ -240,6 +261,11 @@ async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
         )
     );
 
+    assert!(
+        update_task.now_or_never().is_none(),
+        "metadata update task exited unexpectedly"
+    );
+
     Ok(())
 }
 
@@ -247,7 +273,7 @@ async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
 /// but has not elapsed enough time.
 #[tokio::test(flavor = "multi_thread")]
 async fn expected_test_slot_time_alert_but_not_yet() -> anyhow::Result<()> {
-    let (_, _, alert_tx, mut alert_rx, _) = test_setup(node_rpc_url()).await?;
+    let (_, _, alert_tx, mut alert_rx, update_task) = test_setup(node_rpc_url()).await?;
 
     let first_block = mock_block_info(1000, Slot(100));
     let second_block = mock_block_info(2000, Slot(200));
@@ -270,6 +296,11 @@ async fn expected_test_slot_time_alert_but_not_yet() -> anyhow::Result<()> {
     alert_rx
         .try_recv()
         .expect_err("alert received when none expected");
+
+    assert!(
+        update_task.now_or_never().is_none(),
+        "metadata update task exited unexpectedly"
+    );
 
     Ok(())
 }
