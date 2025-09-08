@@ -195,6 +195,9 @@ async fn run_on_all_blocks_subscription(
     // TODO: add a network name table and look up the network name by genesis hash
     let genesis_hash = chain_client.genesis_hash();
 
+    // Keep the previous block's info to detect gaps, side chains, and reorgs.
+    let mut prev_block_info: Option<BlockInfo> = None;
+
     // Subscribe to all blocks, including side forks and best blocks.
     let mut blocks_sub = chain_client.blocks().subscribe_all().await?;
 
@@ -204,62 +207,129 @@ async fn run_on_all_blocks_subscription(
         let extrinsics = block.extrinsics().await?;
         let block_info = BlockInfo::new(&block, &extrinsics, &genesis_hash);
 
+        let best_block_hash = node_best_block_hash(raw_rpc_client).await?;
+        let is_best_block = block_info.hash() == best_block_hash;
+        debug!(
+            %is_best_block,
+            ?best_block_hash,
+            ?block_info,
+            "checking if block is the current best block",
+        );
+
+        // Let the user know we're still alive.
         if block_info
             .height()
             .is_multiple_of(BLOCK_UPDATE_LOGGING_INTERVAL)
         {
-            // Let the user know we're still alive
-            info!(?block_info, "Processed block from all blocks subscription");
+            info!(%is_best_block, ?block_info, "Processed block from all blocks subscription");
         }
 
-        // TODO: Check for a gap in the subscribed blocks, and replay missed blocks.
-        // Any block subscriptions do not automatically recover missed blocks after a reconnection:
-        // <https://github.com/paritytech/subxt/issues/1568>
+        // Check for a gap in the subscribed blocks.
+        // "All block" subscriptions do not automatically recover missed blocks after a
+        // reconnection: <https://github.com/paritytech/subxt/issues/1568>
 
-        // Notify spawned tasks that a new block has arrived, and give them time to process that
-        // block.
+        // TODO: this check is incorrect, it will replay more blocks than needed during reorgs, and
+        // less blocks than needed on new forks. Instead, use the fork monitor to detect gaps.
+        if let Some(prev_block_info) = prev_block_info
+            && (block_info.height() != prev_block_info.height() + 1
+                || block_info.parent_hash != prev_block_info.hash())
+        {
+            // Go back in the chain, find missed blocks, and replay them into the fork monitor.
+            let missed_block_hashes =
+                find_missing_blocks(chain_client, &block_info, &prev_block_info).await?;
 
-        // Check if this is the best block.
-        let best_block_hash = raw_rpc_client
-            .request("chain_getBlockHash".to_string(), None)
-            .await?
-            .to_string();
-        // JSON string values are quoted inside the JSON, and start with "0x".
-        let Ok(best_block_hash) = serde_json::from_str::<String>(&best_block_hash) else {
-            anyhow::bail!("failed to parse best block hash: {best_block_hash}");
-        };
-        let best_block_hash = best_block_hash
-            .strip_prefix("0x")
-            .unwrap_or(&best_block_hash);
-        let best_block_hash: RawBlockHash = hex::decode(best_block_hash)?
-            .try_into()
-            .map_err(|e| anyhow::anyhow!("failed to parse best block hash: {}", hex::encode(e)))?;
-        let best_block_hash = H256::from(best_block_hash);
-
-        debug!(
-            ?best_block_hash,
-            block_hash = ?block_info.hash(),
-            "checking block hash to see if it is the best block",
-        );
-
-        if best_block_hash == block_info.hash() {
-            new_blocks_tx
-                .send((
-                    BlockCheckMode::Current,
-                    BlockSeen::from_best_block(block_info),
-                ))
-                .await?;
+            replay_previous_all_blocks(
+                missed_block_hashes,
+                is_best_block,
+                chain_client,
+                &new_blocks_tx,
+            )
+            .await?;
         } else {
+            // Notify the fork monitor that we've seen a new block.
+            let block_seen = if is_best_block {
+                BlockSeen::from_best_block(block_info)
+            } else {
+                BlockSeen::from_any_block(block_info)
+            };
             new_blocks_tx
-                .send((
-                    BlockCheckMode::Current,
-                    BlockSeen::from_any_block(block_info),
-                ))
+                .send((BlockCheckMode::Current, block_seen))
                 .await?;
         }
 
-        // Give spawned tasks an opportunity to run on that block.
+        prev_block_info = Some(block_info);
+
+        // Give tasks (that are spawned by other tasks) an opportunity to run on any new blocks.
         task::yield_now().await;
+    }
+
+    Ok(())
+}
+
+/// Get the hash of the best block from the node RPCs.
+pub async fn node_best_block_hash(raw_rpc_client: &RawRpcClient) -> anyhow::Result<H256> {
+    // Check if this is the best block.
+    let best_block_hash = raw_rpc_client
+        .request("chain_getBlockHash".to_string(), None)
+        .await?
+        .to_string();
+    // JSON string values are quoted inside the JSON, and start with "0x".
+    let Ok(best_block_hash) = serde_json::from_str::<String>(&best_block_hash) else {
+        anyhow::bail!("failed to parse best block hash: {best_block_hash}");
+    };
+    let best_block_hash = best_block_hash
+        .strip_prefix("0x")
+        .unwrap_or(&best_block_hash);
+    let best_block_hash: RawBlockHash = hex::decode(best_block_hash)?
+        .try_into()
+        .map_err(|e| anyhow::anyhow!("failed to parse best block hash: {}", hex::encode(e)))?;
+    let best_block_hash = H256::from(best_block_hash);
+
+    Ok(best_block_hash)
+}
+
+/// When we've missed some "all blocks" subscription blocks, send them to the fork monitor.
+pub async fn replay_previous_all_blocks(
+    missed_block_hashes: VecDeque<H256>,
+    is_best_block: bool,
+    chain_client: &SubspaceClient,
+    new_blocks_tx: &mpsc::Sender<(BlockCheckMode, BlockSeen)>,
+) -> anyhow::Result<()> {
+    // Now walk forwards, sending the blocks to the fork monitor.
+    let genesis_hash = chain_client.genesis_hash();
+
+    for missed_block_hash in missed_block_hashes {
+        let block = chain_client.blocks().at(missed_block_hash).await?;
+        let extrinsics = block.extrinsics().await?;
+        let block_info = BlockInfo::new(&block, &extrinsics, &genesis_hash);
+
+        // Replaying the start of the gap into the fork monitor is harmless, because it ignores
+        // duplicate blocks.
+
+        // Let the user know we're still alive.
+        if block_info
+            .height()
+            .is_multiple_of(BLOCK_UPDATE_LOGGING_INTERVAL)
+        {
+            info!(
+                %is_best_block,
+                ?block_info,
+                "Replayed missed block from all blocks subscription"
+            );
+        }
+
+        // Notify the fork monitor that we've seen a new block.
+        // If the tip block is the best block, we consider all of its ancestors to be best blocks.
+        let block_seen = if is_best_block {
+            BlockSeen::from_best_block(block_info)
+        } else {
+            BlockSeen::from_any_block(block_info)
+        };
+        new_blocks_tx
+            .send((BlockCheckMode::Replay, block_seen))
+            .await?;
+
+        // We don't spawn any tasks, so we don't need to yield here.
     }
 
     Ok(())
@@ -318,7 +388,7 @@ async fn run_on_best_blocks_subscription(
             .height()
             .is_multiple_of(BLOCK_UPDATE_LOGGING_INTERVAL)
         {
-            // Let the user know we're still alive
+            // Let the user know we're still alive.
             info!(?block_info, "Processed block from best blocks subscription");
         }
 
@@ -332,13 +402,16 @@ async fn run_on_best_blocks_subscription(
         // Best block subscriptions do not automatically recover missed blocks after a reconnection:
         // <https://github.com/paritytech/subxt/issues/1568>
         if let Some(prev_block_info) = prev_block_info
-            && block_info.height() != prev_block_info.height() + 1
+            && (block_info.height() != prev_block_info.height() + 1
+                || block_info.parent_hash != prev_block_info.hash())
         {
             // Go back in the chain and check missed blocks for alerts.
-            replay_previous_blocks(
+            let missed_block_hashes =
+                find_missing_blocks(chain_client, &block_info, &prev_block_info).await?;
+
+            replay_previous_best_blocks(
+                missed_block_hashes,
                 chain_client,
-                &block_info,
-                &prev_block_info,
                 &mut slot_time_monitor,
                 &mut farming_monitor,
                 &new_blocks_tx,
@@ -384,17 +457,11 @@ async fn run_on_best_blocks_subscription(
 /// When we've missed some blocks, re-check them, but without spawning block stall checks.
 /// (The blocks have already happened, so we can only alert on stall resumes.)
 #[expect(clippy::missing_panics_doc, reason = "can't actually panic")]
-pub async fn replay_previous_blocks(
+pub async fn find_missing_blocks(
     chain_client: &SubspaceClient,
     block_info: &BlockInfo,
     prev_block_info: &BlockInfo,
-    slot_time_monitor: &mut MemorySlotTimeMonitor,
-    farming_monitor: &mut MemoryFarmingMonitor,
-    new_blocks_tx: &mpsc::Sender<(BlockCheckMode, BlockSeen)>,
-    alert_tx: &mpsc::Sender<Alert>,
-) -> anyhow::Result<()> {
-    let genesis_hash = block_info.genesis_hash;
-
+) -> anyhow::Result<VecDeque<H256>> {
     // TODO: delete these logs once we have the chain fork monitor fully tested
     let (gap_start, gap_end) = if block_info.height() <= prev_block_info.height() {
         // Multiple blocks at the same height, a chain fork.
@@ -407,7 +474,7 @@ pub async fn replay_previous_blocks(
         );
 
         // For now, just assume the fork is at the previous block.
-        // TODO: add proper chain fork detection and alerts
+        // TODO: use the chain fork detection from the chain fork monitor
         (
             BlockPosition::new(block_info.height() - 1, block_info.parent_hash),
             block_info,
@@ -432,7 +499,10 @@ pub async fn replay_previous_blocks(
     let mut missed_block_height = gap_end.height();
 
     // When we reach the gap start height, insert that block hash, then stop.
-    // TODO: limit how far back we go, very old alerts aren't worth checking for
+    // TODO:
+    // - use the chain fork monitor to find the fork point, even if it is below the missed block
+    //   height
+    // - limit how far back we go, very old alerts aren't worth checking for
     while gap_start.height < missed_block_height {
         // We don't store the full missed block info, because they could take up a lot of memory.
         let missed_block = chain_client
@@ -462,9 +532,23 @@ pub async fn replay_previous_blocks(
         );
     }
 
+    Ok(missed_block_hashes)
+}
+
+/// When we've missed some best blocks, re-check them, but without spawning block stall checks.
+/// (The blocks have already happened, so we can only alert on stall resumes.)
+pub async fn replay_previous_best_blocks(
+    missed_block_hashes: VecDeque<H256>,
+    chain_client: &SubspaceClient,
+    slot_time_monitor: &mut MemorySlotTimeMonitor,
+    farming_monitor: &mut MemoryFarmingMonitor,
+    new_blocks_tx: &mpsc::Sender<(BlockCheckMode, BlockSeen)>,
+    alert_tx: &mpsc::Sender<Alert>,
+) -> anyhow::Result<()> {
     // Now walk forwards, checking for alerts.
     // We skip block stall checks, because we know these blocks already have children.
     // (But we still do stall resume checks.)
+    let genesis_hash = chain_client.genesis_hash();
     let mut prev_block_info: Option<BlockInfo> = None;
 
     for missed_block_hash in missed_block_hashes {
@@ -475,12 +559,15 @@ pub async fn replay_previous_blocks(
         // We already checked the start of the gap, so skip checking it again.
         // (We're just using it for the previous block info.)
         if prev_block_info.is_some() {
+            // Let the user know we're still alive.
             if block_info
                 .height()
                 .is_multiple_of(BLOCK_UPDATE_LOGGING_INTERVAL)
             {
-                // Let the user know we're still alive
-                info!(?block_info, "Replayed missed block");
+                info!(
+                    ?block_info,
+                    "Replayed missed block from best blocks subscription"
+                );
             }
 
             run_on_best_block(
@@ -504,7 +591,10 @@ pub async fn replay_previous_blocks(
     Ok(())
 }
 
-#[expect(clippy::too_many_arguments, reason = "too many arguments is fine here")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "TODO: move some of these arguments into a struct"
+)]
 /// Run checks on a single block, against its previous block.
 async fn run_on_best_block(
     mode: BlockCheckMode,
@@ -518,6 +608,7 @@ async fn run_on_best_block(
     alert_tx: &mpsc::Sender<Alert>,
 ) -> anyhow::Result<()> {
     // Notify the fork monitor that we've seen a new block.
+    // All missed blocks are ancestors of a best block, so we consider them to be best blocks.
     new_blocks_tx
         .send((mode, BlockSeen::from_best_block(*block_info)))
         .await?;
