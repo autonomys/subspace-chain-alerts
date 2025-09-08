@@ -52,6 +52,7 @@ Important event alerts for Subspace blockchains.
 
 4. Build and run
    - `cargo run -- --name "My Test Bot" --icon "warning" --node-rpc-url wss://rpc.mainnet.subspace.foundation/ws`
+     - public node URLs are [listed in subspace.rs](https://github.com/autonomys/subspace-chain-alerts/blob/ac33ed7d200a1fdc3b92c1919f7b9cfacfba37c6/chain-alerter/src/subspace.rs#L43-L49)
    - On first observed block, you should see a Slack message in `#chain-alerts-test` summarizing connection and block info.
    - All arguments are optional. The default node is localhost, and the default icon is the instance external IP address country flag.
    - `RUST_LOG` can be used to filter logs, see:
@@ -60,8 +61,10 @@ Important event alerts for Subspace blockchains.
 ## Project structure
 
 - Crate `chain-alerter`
+  - `chain_fork_monitor.rs`: reassembles received blocks into a coherent set of forks
   - `alerts.rs`: checks for alerts in each block and extrinsic
-  - `slot_time_monitor.rs`: slot production rate monitoring for slot alerts
+    - `farming_monitor.rs`: unique farmer vote count monitoring
+    - `slot_time_monitor.rs`: slot production rate monitoring for slot alerts
   - `subspace.rs`: Uses `subxt` and `scale-value` for chain interaction
   - `slack.rs`: Uses `slack-morphism` to send messages to Slack
   - `main.rs`: main process logic and run loop
