@@ -8,7 +8,7 @@ use std::mem;
 use std::sync::Arc;
 use subxt::utils::H256;
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 /// The buffer size for the chain fork monitor.
 pub const CHAIN_FORK_BUFFER_SIZE: usize = 100;
@@ -241,7 +241,11 @@ impl ChainForkState {
         is_best_block: bool,
     ) -> Option<ChainForkEvent> {
         if self.blocks_by_hash.contains_key(&block_info.hash()) {
-            // Block is already in the chain.
+            trace!(
+                ?is_best_block,
+                ?block_info,
+                "Block is already in the chain fork state",
+            );
             return None;
         }
 
@@ -262,6 +266,15 @@ impl ChainForkState {
         // If the tips contain an ancestor of this block, replace it with this new tip.
         if let Some(fork_tip) = self.find_fork_tip(&block_link) {
             is_side_fork_extended = fork_tip != &self.best_tip;
+            trace!(
+                ?is_side_fork_extended,
+                ?is_best_block,
+                ?block_link,
+                ?fork_tip,
+                ?self.best_tip,
+                "Block is on an existing fork",
+            );
+
             self.tips_by_hash.remove(&fork_tip.hash());
             self.tips_by_hash
                 .insert(block_link.hash(), block_link.clone());
@@ -413,7 +426,7 @@ pub async fn check_for_chain_forks(
     alert_tx: mpsc::Sender<Alert>,
 ) {
     let Some((_first_mode, first_block)) = new_blocks_rx.recv().await else {
-        debug!("Channel disconnected before first block, exiting");
+        info!("Channel disconnected before first block, exiting");
         return;
     };
 
