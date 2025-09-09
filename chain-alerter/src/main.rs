@@ -15,7 +15,7 @@ mod subspace;
 
 use crate::alerts::{Alert, BlockCheckMode};
 use crate::chain_fork_monitor::{
-    BlockSeen, CHAIN_FORK_BUFFER_SIZE, MAX_BLOCKS_TO_REPLAY, check_for_chain_forks,
+    BlockSeen, CHAIN_FORK_BUFFER_SIZE, MAX_BLOCK_DEPTH, MAX_BLOCKS_TO_REPLAY, check_for_chain_forks,
 };
 use crate::farming_monitor::{
     DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD, DEFAULT_FARMING_MAX_HISTORY_BLOCK_INTERVAL,
@@ -226,21 +226,31 @@ async fn run_on_all_blocks_subscription(
             info!(%is_best_block, ?block_info, "Processed block from all blocks subscription");
         }
 
-        // Check for a gap in the subscribed blocks.
-        // "All block" subscriptions do not automatically recover missed blocks after a
-        // reconnection: <https://github.com/paritytech/subxt/issues/1568>
-
-        // TODO: this check is incorrect, it will replay more blocks than needed during reorgs and
-        // new forks. Instead, use the fork monitor to detect gaps.
-        if let Some(prev_block_info) = prev_block_info
+        if prev_block_info.is_none() {
+            // Load chain fork monitor context at startup.
+            load_initial_context_blocks_for_fork_monitor(chain_client, &block_info, &new_blocks_tx)
+                .await?;
+        } else if let Some(prev_block_info) = prev_block_info
             && (block_info.height() != prev_block_info.height() + 1
                 || block_info.parent_hash != prev_block_info.hash())
         {
-            // Go back in the chain, find missed blocks, and replay them into the fork monitor.
-            let missed_block_hashes =
-                find_missing_blocks(chain_client, &block_info, &prev_block_info).await?;
+            // TODO: the check above is incorrect, it will replay more blocks than needed during
+            // reorgs and new forks. Instead, use the fork monitor to detect gaps.
 
-            replay_previous_all_blocks(
+            // Check for a gap in the subscribed blocks.
+            // "All block" subscriptions do not automatically recover missed blocks after a
+            // reconnection: <https://github.com/paritytech/subxt/issues/1568>
+
+            // Go back in the chain, find missed blocks, and replay them into the fork monitor.
+            let missed_block_hashes = find_missing_blocks(
+                chain_client,
+                &block_info,
+                &Some(prev_block_info),
+                MAX_BLOCKS_TO_REPLAY,
+            )
+            .await?;
+
+            replay_previous_blocks_to_fork_monitor(
                 missed_block_hashes,
                 is_best_block,
                 chain_client,
@@ -290,8 +300,39 @@ pub async fn node_best_block_hash(raw_rpc_client: &RawRpcClient) -> anyhow::Resu
     Ok(best_block_hash)
 }
 
-/// When we've missed some "all blocks" subscription blocks, send them to the fork monitor.
-pub async fn replay_previous_all_blocks(
+/// At startup, load the initial context blocks for the fork monitor.
+#[expect(clippy::missing_panics_doc, reason = "can't actually panic")]
+pub async fn load_initial_context_blocks_for_fork_monitor(
+    chain_client: &SubspaceClient,
+    block_info: &BlockInfo,
+    new_blocks_tx: &mpsc::Sender<(BlockCheckMode, BlockSeen)>,
+) -> anyhow::Result<()> {
+    // We have to load the entire context, to avoid spurious new fork alerts on old ancestor
+    // blocks.
+    let missed_block_hashes = find_missing_blocks(
+        chain_client,
+        block_info,
+        &None,
+        MAX_BLOCK_DEPTH.try_into().expect("constant is small"),
+    )
+    .await?;
+
+    replay_previous_blocks_to_fork_monitor(
+        missed_block_hashes,
+        // All initial context blocks are treated as best blocks.
+        true,
+        chain_client,
+        new_blocks_tx,
+    )
+    .await?;
+
+    Ok(())
+}
+
+/// Send missed or context blocks to the fork monitor.
+/// Used when we've missed some "all blocks" subscription blocks, or at startup for context for both
+/// subscriptions.
+pub async fn replay_previous_blocks_to_fork_monitor(
     missed_block_hashes: VecDeque<H256>,
     is_best_block: bool,
     chain_client: &SubspaceClient,
@@ -400,16 +441,27 @@ async fn run_on_best_blocks_subscription(
         latest_block_tx.send_replace(Some(block_info));
         task::yield_now().await;
 
-        // Check for a gap in the subscribed blocks.
-        // Best block subscriptions do not automatically recover missed blocks after a reconnection:
-        // <https://github.com/paritytech/subxt/issues/1568>
-        if let Some(prev_block_info) = prev_block_info
+        if prev_block_info.is_none() {
+            // Load chain fork monitor context at startup.
+            // TODO: also replay MAX_BLOCKS_TO_REPLAY blocks to check for missed alerts
+            load_initial_context_blocks_for_fork_monitor(chain_client, &block_info, &new_blocks_tx)
+                .await?;
+        } else if let Some(prev_block_info) = prev_block_info
             && (block_info.height() != prev_block_info.height() + 1
                 || block_info.parent_hash != prev_block_info.hash())
         {
+            // Check for a gap in the subscribed blocks.
+            // Best block subscriptions do not automatically recover missed blocks after a
+            // reconnection: <https://github.com/paritytech/subxt/issues/1568>
+
             // Go back in the chain and check missed blocks for alerts.
-            let missed_block_hashes =
-                find_missing_blocks(chain_client, &block_info, &prev_block_info).await?;
+            let missed_block_hashes = find_missing_blocks(
+                chain_client,
+                &block_info,
+                &Some(prev_block_info),
+                MAX_BLOCKS_TO_REPLAY,
+            )
+            .await?;
 
             replay_previous_best_blocks(
                 missed_block_hashes,
@@ -456,41 +508,56 @@ async fn run_on_best_blocks_subscription(
     Ok(())
 }
 
-/// When we've missed some blocks, re-check them, but without spawning block stall checks.
-/// (The blocks have already happened, so we can only alert on stall resumes.)
+/// Returns missed block hashes, starting at `block_info`, and going back through its ancestors to
+/// `prev_block_info`. The number of blocks to find is limited by `max_blocks_to_find`.
 #[expect(clippy::missing_panics_doc, reason = "can't actually panic")]
 pub async fn find_missing_blocks(
     chain_client: &SubspaceClient,
     block_info: &BlockInfo,
-    prev_block_info: &BlockInfo,
+    prev_block_info: &Option<BlockInfo>,
+    max_blocks_to_find: u32,
 ) -> anyhow::Result<VecDeque<H256>> {
     // TODO: delete these logs once we have the chain fork monitor fully tested
-    let (gap_start, gap_end) = if block_info.height() <= prev_block_info.height() {
-        // Multiple blocks at the same height, a chain fork.
-        info!(
-            "chain fork detected: {} ({}) -> {} ({}), checking skipped blocks",
-            prev_block_info.height(),
-            prev_block_info.hash(),
-            block_info.height(),
-            block_info.hash(),
-        );
+    let (gap_start, gap_end) = if let Some(prev_block_info) = prev_block_info {
+        if block_info.height() <= prev_block_info.height() {
+            // Multiple blocks at the same height, a chain fork.
+            info!(
+                ?max_blocks_to_find,
+                "chain fork detected: {} ({}) -> {} ({}), checking skipped blocks",
+                prev_block_info.height(),
+                prev_block_info.hash(),
+                block_info.height(),
+                block_info.hash(),
+            );
 
-        // We don't know where the fork is.
-        // TODO: use the chain fork detection from the chain fork monitor
-        (None, block_info)
+            // We don't know where the fork is.
+            // TODO: use the chain fork detection from the chain fork monitor
+            (None, block_info)
+        } else {
+            // A gap in the chain of blocks.
+            warn!(
+                ?max_blocks_to_find,
+                "{} block gap detected: {} ({}) -> {} ({}), checking skipped blocks",
+                block_info.height() - prev_block_info.height() - 1,
+                prev_block_info.height(),
+                prev_block_info.hash(),
+                block_info.height(),
+                block_info.hash(),
+            );
+
+            // We know the exact gap, but it could be a fork, so keep the height as well.
+            (Some(prev_block_info.position), block_info)
+        }
     } else {
-        // A gap in the chain of blocks.
-        warn!(
-            "{} block gap detected: {} ({}) -> {} ({}), checking skipped blocks",
-            block_info.height() - prev_block_info.height() - 1,
-            prev_block_info.height(),
-            prev_block_info.hash(),
+        // No previous block, this is the initial context for the fork monitor.
+        info!(
+            ?max_blocks_to_find,
+            "loading initial context blocks for the fork monitor, backwards from: {} ({})",
             block_info.height(),
             block_info.hash(),
         );
 
-        // We know the exact gap, but it could be a fork, so keep the height as well.
-        (Some(prev_block_info.position), block_info)
+        (None, block_info)
     };
 
     // Stop at the gap start, or when we've reached the maximum number of blocks to replay.
@@ -499,9 +566,9 @@ pub async fn find_missing_blocks(
     let height_limit = if let Some(gap_start) = gap_start {
         gap_start
             .height
-            .max(gap_end.height().saturating_sub(MAX_BLOCKS_TO_REPLAY))
+            .max(gap_end.height().saturating_sub(max_blocks_to_find))
     } else {
-        gap_end.height().saturating_sub(MAX_BLOCKS_TO_REPLAY)
+        gap_end.height().saturating_sub(max_blocks_to_find)
     }
     .saturating_sub(1);
 
@@ -533,6 +600,7 @@ pub async fn find_missing_blocks(
         // The gap was a fork, we found a sibling/cousin of the gap start.
         // TODO: delete this log once the chain fork monitor has replaced other fork checking code
         info!(
+            ?max_blocks_to_find,
             ?height_limit,
             "chain fork at {:?} confirmed: {} is another fork of {} ({})",
             gap_start,
