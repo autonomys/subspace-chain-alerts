@@ -234,7 +234,8 @@ impl ChainForkState {
         }
     }
 
-    /// Add a new block link to the chain segments.
+    /// Add a new block link to the chain fork state.
+    /// Blocks are skipped if they are duplicates, or below the minimum allowed chain state height.
     pub fn add_block_link(
         &mut self,
         block_info: &BlockInfo,
@@ -244,9 +245,20 @@ impl ChainForkState {
             trace!(
                 ?is_best_block,
                 ?block_info,
-                "Block is already in the chain fork state",
+                "Block is already in the chain fork state, ignoring",
             );
             return None;
+        } else {
+            let min_allowed_height = self.min_allowed_height();
+            if block_info.height() < min_allowed_height {
+                trace!(
+                    ?min_allowed_height,
+                    ?is_best_block,
+                    ?block_info,
+                    "Block is below the minimum allowed height, ignoring",
+                );
+                return None;
+            }
         }
 
         let block_link = BlockLink::from_block_info(block_info);
@@ -338,6 +350,13 @@ impl ChainForkState {
         event
     }
 
+    /// Returns the minimum permitted height in the chain fork state.
+    pub fn min_allowed_height(&self) -> BlockNumber {
+        self.best_tip
+            .height()
+            .saturating_sub(u32::try_from(MAX_BLOCK_DEPTH).expect("constant is small"))
+    }
+
     /// Prune blocks from the chain fork state.
     pub fn prune_blocks(&mut self) {
         // If we don't have enough parent blocks to start pruning, exit early.
@@ -346,8 +365,7 @@ impl ChainForkState {
         }
 
         let best_block_height = self.best_tip.height();
-        let height_threshold = best_block_height
-            .saturating_sub(u32::try_from(MAX_BLOCK_DEPTH).expect("constant is small"));
+        let height_threshold = self.min_allowed_height();
         debug!(
             ?best_block_height,
             ?height_threshold,
@@ -368,7 +386,7 @@ impl ChainForkState {
     }
 
     /// Prune a single block from the chain fork state.
-    pub fn prune_block(&mut self, block_link: &BlockLink) {
+    fn prune_block(&mut self, block_link: &BlockLink) {
         self.blocks_by_hash.remove(&block_link.hash());
         self.tips_by_hash.remove(&block_link.hash());
 
