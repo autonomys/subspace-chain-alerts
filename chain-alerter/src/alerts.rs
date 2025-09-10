@@ -78,9 +78,11 @@ impl Alert {
     ) -> Self {
         let alert_kind = match event {
             // The new block is always the same as block_info, so we ignore it.
-            ChainForkEvent::NewFork { tip: _, fork_depth } => AlertKind::NewFork { fork_depth },
-            ChainForkEvent::ForkExtended { tip: _, fork_depth } => {
-                AlertKind::ForkExtended { fork_depth }
+            ChainForkEvent::NewSideFork { tip: _, fork_depth } => {
+                AlertKind::NewSideFork { fork_depth }
+            }
+            ChainForkEvent::SideForkExtended { tip: _, fork_depth } => {
+                AlertKind::SideForkExtended { fork_depth }
             }
             ChainForkEvent::Reorg {
                 new_best_block: _,
@@ -123,21 +125,22 @@ pub enum AlertKind {
         prev_block_info: BlockInfo,
     },
 
-    /// A new chain fork was seen.
+    /// A new chain fork was seen, which was not started by a best block.
     /// The tip of the fork is `Alert.block_info`.
-    NewFork {
+    NewSideFork {
         /// The number of blocks from the fork tip to the fork point.
         fork_depth: usize,
     },
 
     /// A chain fork was extended by a non-best block.
     /// The tip of the fork is `Alert.block_info`.
-    ForkExtended {
+    SideForkExtended {
         /// The number of blocks from the fork tip to the fork point.
         fork_depth: usize,
     },
 
-    /// A reorg was seen, this takes priority over fork events.
+    /// A reorg was seen to a best block on a side chain.
+    /// This takes priority over fork events.
     /// The new best block is `Alert.block_info`.
     Reorg {
         /// The old best block.
@@ -257,18 +260,18 @@ impl Display for AlertKind {
                 )
             }
 
-            AlertKind::NewFork { fork_depth } => {
+            AlertKind::NewSideFork { fork_depth } => {
                 write!(
                     f,
-                    "**New chain fork detected**\n\
+                    "**New side chain fork detected**\n\
                     Fork depth: {fork_depth}",
                 )
             }
 
-            AlertKind::ForkExtended { fork_depth } => {
+            AlertKind::SideForkExtended { fork_depth } => {
                 write!(
                     f,
-                    "**Chain fork extended**\n\
+                    "**Side chain fork extended**\n\
                     Fork depth: {fork_depth}",
                 )
             }
@@ -398,8 +401,8 @@ impl AlertKind {
             // method when adding new variants.
             AlertKind::Startup
             | AlertKind::BlockProductionStall { .. }
-            | AlertKind::NewFork { .. }
-            | AlertKind::ForkExtended { .. }
+            | AlertKind::NewSideFork { .. }
+            | AlertKind::SideForkExtended { .. }
             | AlertKind::Reorg { .. }
             | AlertKind::ForceBalanceTransfer { .. }
             | AlertKind::LargeBalanceTransfer { .. }
@@ -424,8 +427,8 @@ impl AlertKind {
             AlertKind::Reorg { old_best_block, .. } => Some(*old_best_block),
             AlertKind::Startup
             | AlertKind::BlockProductionStall { .. }
-            | AlertKind::NewFork { .. }
-            | AlertKind::ForkExtended { .. }
+            | AlertKind::NewSideFork { .. }
+            | AlertKind::SideForkExtended { .. }
             | AlertKind::ForceBalanceTransfer { .. }
             | AlertKind::LargeBalanceTransfer { .. }
             | AlertKind::SudoCall { .. }
@@ -449,8 +452,8 @@ impl AlertKind {
             | AlertKind::FarmersIncreasedSuddenly { .. }
             | AlertKind::BlockProductionStall { .. }
             | AlertKind::BlockProductionResumed { .. }
-            | AlertKind::NewFork { .. }
-            | AlertKind::ForkExtended { .. }
+            | AlertKind::NewSideFork { .. }
+            | AlertKind::SideForkExtended { .. }
             | AlertKind::Reorg { .. }
             | AlertKind::SudoEvent { .. }
             | AlertKind::OperatorSlashed { .. }
@@ -469,8 +472,8 @@ impl AlertKind {
             | AlertKind::FarmersIncreasedSuddenly { .. }
             | AlertKind::BlockProductionStall { .. }
             | AlertKind::BlockProductionResumed { .. }
-            | AlertKind::NewFork { .. }
-            | AlertKind::ForkExtended { .. }
+            | AlertKind::NewSideFork { .. }
+            | AlertKind::SideForkExtended { .. }
             | AlertKind::Reorg { .. }
             | AlertKind::SudoCall { .. }
             | AlertKind::SudoEvent { .. }
@@ -488,8 +491,8 @@ impl AlertKind {
             AlertKind::Startup
             | AlertKind::BlockProductionStall { .. }
             | AlertKind::BlockProductionResumed { .. }
-            | AlertKind::NewFork { .. }
-            | AlertKind::ForkExtended { .. }
+            | AlertKind::NewSideFork { .. }
+            | AlertKind::SideForkExtended { .. }
             | AlertKind::Reorg { .. }
             | AlertKind::ForceBalanceTransfer { .. }
             | AlertKind::LargeBalanceTransfer { .. }

@@ -1,14 +1,14 @@
 //! Monitoring and alerting for chain forks.
 
 use crate::alerts::{Alert, BlockCheckMode};
-use crate::subspace::{BlockInfo, BlockLink, BlockPosition};
+use crate::subspace::{BlockInfo, BlockLink, BlockNumber, BlockPosition};
 use std::cmp::max;
 use std::collections::{BTreeMap, HashMap};
 use std::mem;
 use std::sync::Arc;
 use subxt::utils::H256;
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 /// The buffer size for the chain fork monitor.
 pub const CHAIN_FORK_BUFFER_SIZE: usize = 100;
@@ -18,6 +18,9 @@ pub const MIN_FORK_DEPTH: usize = 7;
 
 /// The minimum fork depth to log as info.
 pub const MIN_FORK_DEPTH_FOR_INFO_LOG: usize = 3;
+
+/// The maximum number of blocks to replay when there are missed blocks.
+pub const MAX_BLOCKS_TO_REPLAY: BlockNumber = 100;
 
 /// The depth after the best tip to prune blocks from the chain fork state.
 pub const MAX_BLOCK_DEPTH: usize = 1000;
@@ -33,8 +36,8 @@ pub const EXPECTED_TIP_COUNT: usize = EXPECTED_BLOCK_COUNT.saturating_sub(MAX_BL
 /// A chain fork or reorg event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChainForkEvent {
-    /// A new chain fork was seen.
-    NewFork {
+    /// A new chain fork was seen, which was not started by a best block.
+    NewSideFork {
         /// The tip of the fork.
         tip: Arc<BlockLink>,
 
@@ -43,7 +46,7 @@ pub enum ChainForkEvent {
     },
 
     /// A chain fork was extended by a non-best block.
-    ForkExtended {
+    SideForkExtended {
         /// The tip of the fork.
         tip: Arc<BlockLink>,
 
@@ -51,7 +54,8 @@ pub enum ChainForkEvent {
         fork_depth: usize,
     },
 
-    /// A reorg was seen, this takes priority over fork events.
+    /// A reorg was seen to a best block on a side chain.
+    /// This takes priority over fork events.
     Reorg {
         /// The new best block.
         new_best_block: Arc<BlockLink>,
@@ -64,6 +68,7 @@ pub enum ChainForkEvent {
         old_fork_depth: usize,
 
         /// The number of blocks from the new best block to the reorg point.
+        /// If this is 1, the reorg is to a new side chain fork.
         new_fork_depth: usize,
     },
 }
@@ -83,8 +88,8 @@ impl ChainForkEvent {
     /// Returns the largest fork depth in the event.
     pub fn largest_fork_depth(&self) -> usize {
         match self {
-            ChainForkEvent::NewFork { fork_depth, .. } => *fork_depth,
-            ChainForkEvent::ForkExtended { fork_depth, .. } => *fork_depth,
+            ChainForkEvent::NewSideFork { fork_depth, .. } => *fork_depth,
+            ChainForkEvent::SideForkExtended { fork_depth, .. } => *fork_depth,
             ChainForkEvent::Reorg {
                 new_fork_depth,
                 old_fork_depth,
@@ -112,8 +117,11 @@ pub struct ChainForkState {
     /// The tips of each chain fork.
     pub tips_by_hash: HashMap<H256, Arc<BlockLink>>,
 
-    /// The best block link, used to detect reorgs.
-    pub best_block: Arc<BlockLink>,
+    /// The most recent best block, used to detect reorgs.
+    /// If there are missed blocks, the first child of the best tip is assumed to be the new best
+    /// block.
+    // TODO: this could become a H256 index into tips_by_hash
+    pub best_tip: Arc<BlockLink>,
 }
 
 impl ChainForkState {
@@ -135,8 +143,61 @@ impl ChainForkState {
                 vec![block_link.clone()],
             )]),
             tips_by_hash,
-            best_block: block_link.clone(),
+            best_tip: block_link,
         }
+    }
+
+    /// Returns true if the given block is on the same chain fork as the supplied fork tip.
+    ///
+    /// Automatically handles blocks above or below the fork tip.
+    /// Assumes that the chain is connected, and there are no missing blocks.
+    pub fn is_on_same_fork(&self, fork_tip: &BlockLink, block: &BlockLink) -> bool {
+        // Starting at the higher block, walk the chain backwards until we find the target block.
+        let (mut current_block, target_block) = if block.height() > fork_tip.height() {
+            (block, fork_tip)
+        } else {
+            (fork_tip, block)
+        };
+
+        let target_hash = target_block.hash();
+        let target_height = target_block.height();
+
+        loop {
+            if current_block.hash() == target_hash {
+                return true;
+            }
+
+            if current_block.height() <= target_height {
+                // We're below the best tip, so this block is not on the best fork.
+                return false;
+            }
+
+            if let Some(parent_block) = self.blocks_by_hash.get(&current_block.parent_hash) {
+                current_block = parent_block;
+            } else {
+                // We've reached the end of the chain, so this block is not on the best fork.
+                return false;
+            }
+        }
+    }
+
+    /// Returns true if the given block is on the same chain fork as the best tip.
+    ///
+    /// Automatically handles blocks above or below the best tip.
+    /// Assumes that the chain is connected, and there are no missing blocks.
+    #[expect(dead_code, reason = "included for completeness")]
+    pub fn is_on_best_fork(&self, block: &BlockLink) -> bool {
+        self.is_on_same_fork(&self.best_tip, block)
+    }
+
+    /// Returns the fork tip a given block is on, if it exists.
+    ///
+    /// Automatically handles blocks above or below the tips.
+    /// Assumes that the chain is connected, and there are no missing blocks.
+    pub fn find_fork_tip(&self, block: &BlockLink) -> Option<&Arc<BlockLink>> {
+        self.tips_by_hash
+            .values()
+            .find(|&tip| self.is_on_same_fork(tip, block))
     }
 
     /// Calculate the depth of a fork.
@@ -173,15 +234,31 @@ impl ChainForkState {
         }
     }
 
-    /// Add a new block link to the chain segments.
+    /// Add a new block link to the chain fork state.
+    /// Blocks are skipped if they are duplicates, or below the minimum allowed chain state height.
     pub fn add_block_link(
         &mut self,
         block_info: &BlockInfo,
         is_best_block: bool,
     ) -> Option<ChainForkEvent> {
         if self.blocks_by_hash.contains_key(&block_info.hash()) {
-            // Block is already in the chain.
+            trace!(
+                ?is_best_block,
+                ?block_info,
+                "Block is already in the chain fork state, ignoring",
+            );
             return None;
+        } else {
+            let min_allowed_height = self.min_allowed_height();
+            if block_info.height() < min_allowed_height {
+                trace!(
+                    ?min_allowed_height,
+                    ?is_best_block,
+                    ?block_info,
+                    "Block is below the minimum allowed height, ignoring",
+                );
+                return None;
+            }
         }
 
         let block_link = BlockLink::from_block_info(block_info);
@@ -195,42 +272,69 @@ impl ChainForkState {
             .or_default()
             .push(block_link.clone());
 
-        let mut is_new_fork = false;
-        let mut is_fork_extended = false;
+        let mut is_new_side_fork = false;
+        let mut is_side_fork_extended = false;
 
-        // If the tips contains the parent hash, replace it with this new tip.
-        if self.tips_by_hash.remove(&block_link.parent_hash).is_some() {
-            is_fork_extended = !is_best_block;
+        // If the tips contain an ancestor of this block, replace it with this new tip.
+        if let Some(fork_tip) = self.find_fork_tip(&block_link) {
+            is_side_fork_extended = fork_tip != &self.best_tip;
+            trace!(
+                ?is_side_fork_extended,
+                ?is_best_block,
+                ?block_link,
+                ?fork_tip,
+                ?self.best_tip,
+                "Block is on an existing fork",
+            );
+
+            self.tips_by_hash.remove(&fork_tip.hash());
             self.tips_by_hash
                 .insert(block_link.hash(), block_link.clone());
-        } else if self.blocks_by_hash.contains_key(&block_link.parent_hash) {
-            // Otherwise, add a new tip, if it connects to the chain.
-            // TODO: handle this properly, by adding a list of disconnected blocks to the state, and
-            // replaying them through this method when their connecting block is received.
-            is_new_fork = true;
+        } else {
+            // Otherwise, add a new tip, whether or not it connects to the chain.
+            // (If a lot of blocks are missing, the new tip will be disconnected.)
+            if !self.blocks_by_hash.contains_key(&block_link.parent_hash) {
+                warn!(
+                    ?is_best_block,
+                    ?block_link,
+                    "Block is not connected to the chain, adding as a new fork tip anyway",
+                );
+            }
+
+            is_new_side_fork = true;
+            trace!(
+                ?is_new_side_fork,
+                ?is_best_block,
+                ?block_link,
+                "Block is a new fork tip",
+            );
+
             self.tips_by_hash
                 .insert(block_link.hash(), block_link.clone());
         }
 
-        // Reorgs are best blocks which aren't a child of the current best block.
-        // Our skipped block replay makes sure we don't get disconnected best blocks.
-        let is_reorg = is_best_block && block_link.parent_hash != self.best_block.hash();
+        // Reorgs are best blocks which aren't a descendant of the current best block.
+        // Our skipped block replay makes sure we don't get disconnected blocks.
+        let is_reorg = is_best_block && (is_side_fork_extended || is_new_side_fork);
 
+        // TODO: If there is a reorg, all unchecked blocks on the new best fork are checked for
+        // alerts.
         let event = if is_reorg {
             Some(ChainForkEvent::Reorg {
                 new_best_block: block_link.clone(),
-                old_best_block: self.best_block.clone(),
-                old_fork_depth: self.fork_depth(&self.best_block),
+                old_best_block: self.best_tip.clone(),
+                old_fork_depth: self.fork_depth(&self.best_tip),
                 new_fork_depth: self.fork_depth(&block_link),
             })
-        } else if is_new_fork {
-            Some(ChainForkEvent::NewFork {
+        } else if is_new_side_fork {
+            // TODO: check new and extended side forks above a threshold amount for stealing attacks
+            Some(ChainForkEvent::NewSideFork {
                 tip: block_link.clone(),
                 // New forks are always 1 block deep, assuming they connect to the chain at all.
                 fork_depth: 1,
             })
-        } else if is_fork_extended {
-            Some(ChainForkEvent::ForkExtended {
+        } else if is_side_fork_extended {
+            Some(ChainForkEvent::SideForkExtended {
                 tip: block_link.clone(),
                 fork_depth: self.fork_depth(&block_link),
             })
@@ -240,10 +344,17 @@ impl ChainForkState {
 
         // Update the best block if needed.
         if is_best_block {
-            self.best_block = block_link.clone();
+            self.best_tip = block_link.clone();
         }
 
         event
+    }
+
+    /// Returns the minimum permitted height in the chain fork state.
+    pub fn min_allowed_height(&self) -> BlockNumber {
+        self.best_tip
+            .height()
+            .saturating_sub(u32::try_from(MAX_BLOCK_DEPTH).expect("constant is small"))
     }
 
     /// Prune blocks from the chain fork state.
@@ -253,9 +364,8 @@ impl ChainForkState {
             return;
         }
 
-        let best_block_height = self.best_block.height();
-        let height_threshold = best_block_height
-            .saturating_sub(u32::try_from(MAX_BLOCK_DEPTH).expect("constant is small"));
+        let best_block_height = self.best_tip.height();
+        let height_threshold = self.min_allowed_height();
         debug!(
             ?best_block_height,
             ?height_threshold,
@@ -276,7 +386,7 @@ impl ChainForkState {
     }
 
     /// Prune a single block from the chain fork state.
-    pub fn prune_block(&mut self, block_link: &BlockLink) {
+    fn prune_block(&mut self, block_link: &BlockLink) {
         self.blocks_by_hash.remove(&block_link.hash());
         self.tips_by_hash.remove(&block_link.hash());
 
@@ -287,15 +397,16 @@ impl ChainForkState {
 }
 
 /// The message sent when the alerter sees a block.
+/// Used to detect reorgs and forks.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum BlockSeen {
     /// A new block has been seen, and we know it is the best block.
-    /// Used to detect reorgs and forks.
+    /// These blocks can come from the best or all blocks subscriptions.
     BestBlock(BlockInfo),
 
-    /// A new block has been seen, which might not be the best block.
+    /// A new block has been seen, which is not the best block.
     /// This block might be treated as the best block if it is received early enough.
-    /// Used to detect forks.
+    /// These blocks only come from the all blocks subscription.
     AnyBlock(BlockInfo),
 }
 
@@ -333,7 +444,7 @@ pub async fn check_for_chain_forks(
     alert_tx: mpsc::Sender<Alert>,
 ) {
     let Some((_first_mode, first_block)) = new_blocks_rx.recv().await else {
-        debug!("Channel disconnected before first block, exiting");
+        info!("Channel disconnected before first block, exiting");
         return;
     };
 

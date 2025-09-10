@@ -19,7 +19,7 @@ use subxt::events::{EventDetails, Phase};
 use subxt::ext::subxt_rpcs::client::ReconnectingRpcClient;
 use subxt::utils::H256;
 use subxt::{OnlineClient, SubstrateConfig};
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 /// One Subspace Credit.
 /// Copied from subspace-runtime-primitives.
@@ -117,12 +117,11 @@ pub async fn spawn_metadata_update_task(chain_client: &SubspaceClient) -> AsyncJ
     let update_task = chain_client.updater();
 
     AsyncJoinOnDrop::new(
-        // Update failures are fatal and require a restart.
+        // If a metadata update fails, we want to end the task and re-run setup.
         tokio::spawn(async move {
-            update_task
-                .perform_runtime_updates()
-                .await
-                .expect("runtime metadata update failed")
+            if let Err(e) = update_task.perform_runtime_updates().await {
+                error!("runtime metadata update failed: {}", e);
+            }
         }),
         true,
     )

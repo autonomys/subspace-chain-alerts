@@ -9,9 +9,42 @@ Important event alerts for Subspace blockchains.
 
 ## What it does currently
 
-- Connects to a local Subspace node over WebSocket (`ws://127.0.0.1:9944`).
+- Connects to a Subspace node over WebSocket (`ws://127.0.0.1:9944`).
+- Subscribes to notifications for best blocks (and all blocks for fork detection).
 - Keeps runtime metadata up to date via a background updater.
+- Detects block gaps and forks, filling in missing blocks as needed.
+- After filling in gaps and rationalising forks, runs alert detection on the best fork (or all forks).
 - Posts applicable alerts to a Slack channel.
+
+### How fork detection works
+
+Blocks can be received in any order, and block notifications can be skipped, particularly during bulk syncing.
+When a block is received from the best or all/any blocks subscription:
+
+1. it is checked to see if it is the best block ("all blocks" only)
+2. the fork monitor connects it to the existing chain, fetching missing parent blocks if needed
+  a. if there are too many missing blocks, it is treated as a disconnected fork
+3. new and missing blocks on the best fork are checked for alerts
+  <!-- TODO: a. some alerts also check side forks -->
+
+### Core block operations
+
+A new block can:
+
+- start a new chain (the first block always starts a new chain)
+- extend an existing chain tip
+- fork from a block behind a chain tip
+
+A reorg happens when:
+
+- a best block forks behind any chain tip
+- a best block extends a chain tip, and the previous best block was on a different fork
+  - if blocks are skipped, the previous best block can be an ancestor of the new best block, but not its parent
+
+### Which blocks are checked for alerts?
+
+All blocks on a best fork are checked for alerts, including blocks missed by subscriptions.
+<!-- TODO: If there is a reorg, all unchecked blocks on the new best fork are checked for alerts. -->
 
 ## Security notes
 
@@ -52,6 +85,7 @@ Important event alerts for Subspace blockchains.
 
 4. Build and run
    - `cargo run -- --name "My Test Bot" --icon "warning" --node-rpc-url wss://rpc.mainnet.subspace.foundation/ws`
+     - public node URLs are [listed in subspace.rs](https://github.com/autonomys/subspace-chain-alerts/blob/ac33ed7d200a1fdc3b92c1919f7b9cfacfba37c6/chain-alerter/src/subspace.rs#L43-L49)
    - On first observed block, you should see a Slack message in `#chain-alerts-test` summarizing connection and block info.
    - All arguments are optional. The default node is localhost, and the default icon is the instance external IP address country flag.
    - `RUST_LOG` can be used to filter logs, see:
@@ -60,8 +94,10 @@ Important event alerts for Subspace blockchains.
 ## Project structure
 
 - Crate `chain-alerter`
+  - `chain_fork_monitor.rs`: reassembles received blocks into a coherent set of forks
   - `alerts.rs`: checks for alerts in each block and extrinsic
-  - `slot_time_monitor.rs`: slot production rate monitoring for slot alerts
+    - `farming_monitor.rs`: unique farmer vote count monitoring
+    - `slot_time_monitor.rs`: slot production rate monitoring for slot alerts
   - `subspace.rs`: Uses `subxt` and `scale-value` for chain interaction
   - `slack.rs`: Uses `slack-morphism` to send messages to Slack
   - `main.rs`: main process logic and run loop
