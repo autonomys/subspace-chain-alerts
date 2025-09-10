@@ -30,7 +30,7 @@ use crate::slot_time_monitor::{
 use crate::subspace::{
     BlockInfo, BlockNumber, Event, LOCAL_SUBSPACE_NODE_URL, MAX_RECONNECTION_ATTEMPTS,
     MAX_RECONNECTION_DELAY, RawBlockHash, RawRpcClient, SubspaceClient, SubspaceConfig,
-    create_subspace_client, spawn_metadata_update_task,
+    create_subspace_client,
 };
 use clap::{Parser, ValueHint};
 use slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor};
@@ -44,7 +44,7 @@ use subxt::utils::H256;
 use tokio::sync::{mpsc, watch};
 use tokio::time::sleep;
 use tokio::{pin, select, task};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 /// The number of blocks between info-level block number logs.
 /// TODO: make this configurable
@@ -74,8 +74,9 @@ struct Args {
     node_rpc_url: String,
 }
 
-/// Set up the chain alerter process.
-/// The metadata update task is aborted when the returned handle is dropped.
+/// Initialize once-off setup for the chain alerter.
+/// Returns the Slack client info, the Subspace client, the raw RPC client, and a task handle for
+/// the metadata update task. The task is aborted when the returned handle is dropped.
 ///
 /// Any returned errors are fatal and require a restart.
 ///
@@ -83,12 +84,12 @@ struct Args {
 ///
 /// TODO: make this return the same struct as `subspace::tests::test_setup()`
 async fn setup(
-    args: Args,
+    args: &Args,
 ) -> anyhow::Result<(
     SlackClientInfo,
     SubspaceClient,
     RawRpcClient,
-    AsyncJoinOnDrop<()>,
+    AsyncJoinOnDrop<anyhow::Result<()>>,
 )> {
     // Avoid a crypto provider conflict: jsonrpsee activates ring, and hyper-rustls activates
     // aws-lc, but there can only be one per process. We use the library with more formal
@@ -107,31 +108,37 @@ async fn setup(
 
     // Connect to Slack and get basic info.
     let slack_client_info = SlackClientInfo::new(
-        args.name,
-        args.icon,
+        &args.name,
+        args.icon.clone(),
         &args.node_rpc_url,
         SLACK_OAUTH_SECRET_PATH,
     )
     .await?;
 
-    // Create a client that subscribes to the configured Substrate node.
-    let (chain_client, raw_rpc_client) = create_subspace_client(&args.node_rpc_url).await?;
+    let (chain_client, raw_rpc_client, metadata_update_task) =
+        create_subspace_client(&args.node_rpc_url).await?;
 
-    let update_task = spawn_metadata_update_task(&chain_client).await;
-
-    Ok((slack_client_info, chain_client, raw_rpc_client, update_task))
+    Ok((
+        slack_client_info,
+        chain_client,
+        raw_rpc_client,
+        metadata_update_task,
+    ))
 }
 
 /// Receives alerts on a channel and posts them to Slack.
 /// This task might pause if the Slack API rate limit is exceeded.
-async fn slack_poster(slack_client: SlackClientInfo, mut alert_rx: mpsc::Receiver<Alert>) {
+async fn slack_poster(
+    slack_client: SlackClientInfo,
+    mut alert_rx: mpsc::Receiver<Alert>,
+) -> anyhow::Result<()> {
     while let Some(alert) = alert_rx.recv().await {
         // We have a large number of retries in the Slack poster, so it is unlikely to fail.
-        slack_client
-            .post_message(alert)
-            .await
-            .expect("Slack message failures require a restart");
+        let response = slack_client.post_message(alert).await?;
+        trace!(?response, "posted alert to Slack");
     }
+
+    Ok(())
 }
 
 /// Run the chain alerter process.
@@ -141,12 +148,12 @@ async fn run() -> anyhow::Result<()> {
     let args = Args::parse();
 
     let (slack_client_info, chain_client, raw_rpc_client, metadata_update_task) =
-        setup(args).await?;
+        setup(&args).await?;
 
     // Spawn a background task to post alerts to Slack.
     // We don't need to wait for the task to finish, because it will panic on failure.
     let (alert_tx, alert_rx) = mpsc::channel(ALERT_BUFFER_SIZE);
-    let _alert_task: AsyncJoinOnDrop<()> = AsyncJoinOnDrop::new(
+    let slack_alert_task: AsyncJoinOnDrop<anyhow::Result<()>> = AsyncJoinOnDrop::new(
         tokio::spawn(slack_poster(slack_client_info, alert_rx)),
         true,
     );
@@ -154,34 +161,92 @@ async fn run() -> anyhow::Result<()> {
     // Chain fork monitor is used to detect chain forks and reorgs from the best and all block
     // subscriptions.
     let (new_blocks_tx, new_blocks_rx) = mpsc::channel(CHAIN_FORK_BUFFER_SIZE);
-    let _chain_fork_monitor_task: AsyncJoinOnDrop<()> = AsyncJoinOnDrop::new(
+    let chain_fork_monitor_task: AsyncJoinOnDrop<()> = AsyncJoinOnDrop::new(
         tokio::spawn(check_for_chain_forks(new_blocks_rx, alert_tx.clone())),
         true,
     );
 
-    let best_blocks_fut =
-        run_on_best_blocks_subscription(&chain_client, &alert_tx, new_blocks_tx.clone());
+    let best_chain_client = chain_client.clone();
+    let best_blocks_fut = AsyncJoinOnDrop::new(
+        tokio::spawn(run_on_best_blocks_subscription(
+            best_chain_client,
+            alert_tx,
+            new_blocks_tx.clone(),
+        )),
+        true,
+    );
 
-    let all_blocks_fut =
-        run_on_all_blocks_subscription(&chain_client, &raw_rpc_client, new_blocks_tx.clone());
+    let all_blocks_fut = AsyncJoinOnDrop::new(
+        tokio::spawn(run_on_all_blocks_subscription(
+            chain_client,
+            raw_rpc_client,
+            new_blocks_tx.clone(),
+        )),
+        true,
+    );
 
     select! {
         result = best_blocks_fut => {
-            if let Err(error) = result {
-                error!(%error, "best blocks subscription failed");
-            } else {
-                info!("best blocks subscription exited");
+            match result {
+                Ok(Ok(())) => {
+                    info!("best blocks subscription exited");
+                }
+                Ok(Err(error)) => {
+                    error!(%error, "best blocks subscription failed");
+                }
+                Err(error) => {
+                    error!(%error, "best blocks subscription panicked or was cancelled");
+                }
             }
         }
         result = all_blocks_fut => {
-            if let Err(error) = result {
-                error!(%error, "all blocks subscription failed");
-            } else {
-                info!("all blocks subscription exited");
+            match result {
+                Ok(Ok(())) => {
+                    info!("all blocks subscription exited");
+                }
+                Ok(Err(error)) => {
+                    error!(%error, "all blocks subscription failed");
+                }
+                Err(error) => {
+                    error!(%error, "all blocks subscription panicked or was cancelled");
+                }
             }
         }
-        _ = metadata_update_task => {
-            info!("runtime metadata update task finished");
+        result = metadata_update_task => {
+            match result {
+                Ok(Ok(())) => {
+                    info!("runtime metadata update task finished");
+                }
+                Ok(Err(error)) => {
+                    error!(%error, "runtime metadata update task failed");
+                }
+                Err(error) => {
+                    error!(%error, "runtime metadata update task panicked or was cancelled");
+                }
+            }
+        }
+        result = slack_alert_task => {
+            match result {
+                Ok(Ok(())) => {
+                    info!("slack alert task finished");
+                }
+                Ok(Err(error)) => {
+                    error!(%error, "slack alert task failed");
+                }
+                Err(error) => {
+                    error!(%error, "slack alert task panicked or was cancelled");
+                }
+            }
+        }
+        result = chain_fork_monitor_task => {
+            match result {
+                Ok(()) => {
+                    info!("chain fork monitor task finished");
+                }
+                Err(error) => {
+                    error!(%error, "chain fork monitor task panicked or was cancelled");
+                }
+            }
         }
     }
 
@@ -190,8 +255,8 @@ async fn run() -> anyhow::Result<()> {
 
 /// Run "all blocks" subscription checks.
 async fn run_on_all_blocks_subscription(
-    chain_client: &SubspaceClient,
-    raw_rpc_client: &RawRpcClient,
+    chain_client: SubspaceClient,
+    raw_rpc_client: RawRpcClient,
     new_blocks_tx: mpsc::Sender<(BlockCheckMode, BlockSeen)>,
 ) -> anyhow::Result<()> {
     // TODO: add a network name table and look up the network name by genesis hash
@@ -209,7 +274,7 @@ async fn run_on_all_blocks_subscription(
         let extrinsics = block.extrinsics().await?;
         let block_info = BlockInfo::new(&block, &extrinsics, &genesis_hash);
 
-        let best_block_hash = node_best_block_hash(raw_rpc_client).await?;
+        let best_block_hash = node_best_block_hash(&raw_rpc_client).await?;
         let is_best_block = block_info.hash() == best_block_hash;
         debug!(
             %is_best_block,
@@ -228,8 +293,12 @@ async fn run_on_all_blocks_subscription(
 
         if prev_block_info.is_none() {
             // Load chain fork monitor context at startup.
-            load_initial_context_blocks_for_fork_monitor(chain_client, &block_info, &new_blocks_tx)
-                .await?;
+            load_initial_context_blocks_for_fork_monitor(
+                &chain_client,
+                &block_info,
+                &new_blocks_tx,
+            )
+            .await?;
         } else if let Some(prev_block_info) = prev_block_info
             && (block_info.height() != prev_block_info.height() + 1
                 || block_info.parent_hash != prev_block_info.hash())
@@ -243,7 +312,7 @@ async fn run_on_all_blocks_subscription(
 
             // Go back in the chain, find missed blocks, and replay them into the fork monitor.
             let missed_block_hashes = find_missing_blocks(
-                chain_client,
+                &chain_client,
                 &block_info,
                 &Some(prev_block_info),
                 MAX_BLOCKS_TO_REPLAY,
@@ -253,7 +322,7 @@ async fn run_on_all_blocks_subscription(
             replay_previous_blocks_to_fork_monitor(
                 missed_block_hashes,
                 is_best_block,
-                chain_client,
+                &chain_client,
                 &new_blocks_tx,
             )
             .await?;
@@ -382,8 +451,8 @@ pub async fn replay_previous_blocks_to_fork_monitor(
 
 /// Run best blocks subscription checks.
 async fn run_on_best_blocks_subscription(
-    chain_client: &SubspaceClient,
-    alert_tx: &mpsc::Sender<Alert>,
+    chain_client: SubspaceClient,
+    alert_tx: mpsc::Sender<Alert>,
     new_blocks_tx: mpsc::Sender<(BlockCheckMode, BlockSeen)>,
 ) -> anyhow::Result<()> {
     // TODO: add a network name table and look up the network name by genesis hash
@@ -427,7 +496,7 @@ async fn run_on_best_blocks_subscription(
         let block_info = BlockInfo::new(&block, &extrinsics, &genesis_hash);
 
         if first_block {
-            alerts::startup_alert(BlockCheckMode::Current, alert_tx, &block_info).await?;
+            alerts::startup_alert(BlockCheckMode::Current, &alert_tx, &block_info).await?;
             first_block = false;
         } else if block_info
             .height()
@@ -446,8 +515,12 @@ async fn run_on_best_blocks_subscription(
         if prev_block_info.is_none() {
             // Load chain fork monitor context at startup.
             // TODO: also replay MAX_BLOCKS_TO_REPLAY blocks to check for missed alerts
-            load_initial_context_blocks_for_fork_monitor(chain_client, &block_info, &new_blocks_tx)
-                .await?;
+            load_initial_context_blocks_for_fork_monitor(
+                &chain_client,
+                &block_info,
+                &new_blocks_tx,
+            )
+            .await?;
         } else if let Some(prev_block_info) = prev_block_info
             && (block_info.height() != prev_block_info.height() + 1
                 || block_info.parent_hash != prev_block_info.hash())
@@ -458,7 +531,7 @@ async fn run_on_best_blocks_subscription(
 
             // Go back in the chain and check missed blocks for alerts.
             let missed_block_hashes = find_missing_blocks(
-                chain_client,
+                &chain_client,
                 &block_info,
                 &Some(prev_block_info),
                 MAX_BLOCKS_TO_REPLAY,
@@ -467,11 +540,11 @@ async fn run_on_best_blocks_subscription(
 
             replay_previous_best_blocks(
                 missed_block_hashes,
-                chain_client,
+                &chain_client,
                 &mut slot_time_monitor,
                 &mut farming_monitor,
                 &new_blocks_tx,
-                alert_tx,
+                &alert_tx,
             )
             .await?;
         } else {
@@ -496,7 +569,7 @@ async fn run_on_best_blocks_subscription(
                 &mut slot_time_monitor,
                 &mut farming_monitor,
                 &new_blocks_tx,
-                alert_tx,
+                &alert_tx,
             )
             .await?;
         }

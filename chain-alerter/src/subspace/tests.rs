@@ -5,7 +5,7 @@ use crate::alerts::Alert;
 use crate::subspace::{
     BlockInfo, BlockNumber, Event, EventIndex, EventInfo, ExtrinsicIndex, ExtrinsicInfo,
     FOUNDATION_SUBSPACE_NODE_URL, RawRpcClient, SubspaceClient, SubspaceConfig,
-    create_subspace_client, spawn_metadata_update_task,
+    create_subspace_client,
 };
 use std::env;
 use subspace_process::{AsyncJoinOnDrop, init_logger};
@@ -38,7 +38,7 @@ pub async fn test_setup(
     RawRpcClient,
     mpsc::Sender<Alert>,
     mpsc::Receiver<Alert>,
-    AsyncJoinOnDrop<()>,
+    AsyncJoinOnDrop<anyhow::Result<()>>,
 )> {
     init_logger();
 
@@ -47,9 +47,8 @@ pub async fn test_setup(
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     // Create a client that subscribes to the configured Substrate node.
-    let (chain_client, raw_rpc_client) = create_subspace_client(node_rpc_url.as_ref()).await?;
-
-    let update_task = spawn_metadata_update_task(&chain_client).await;
+    let (chain_client, raw_rpc_client, update_task) =
+        create_subspace_client(node_rpc_url.as_ref()).await?;
 
     // Create a channel to receive alerts.
     let (alert_tx, alert_rx) = mpsc::channel(ALERT_BUFFER_SIZE);

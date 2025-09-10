@@ -19,7 +19,7 @@ use subxt::events::{EventDetails, Phase};
 use subxt::ext::subxt_rpcs::client::ReconnectingRpcClient;
 use subxt::utils::H256;
 use subxt::{OnlineClient, SubstrateConfig};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 /// One Subspace Credit.
 /// Copied from subspace-runtime-primitives.
@@ -84,9 +84,20 @@ pub type EventIndex = u32;
 pub type Event = EventDetails<SubspaceConfig>;
 
 /// Create a new reconnecting Subspace client.
+/// Returns the subxt client, the raw RPC client, and a task handle for the subxt metadata update
+/// task.
+///
+/// The metadata update task is aborted when the returned handle is dropped.
 pub async fn create_subspace_client(
     node_url: impl AsRef<str>,
-) -> Result<(SubspaceClient, RawRpcClient), anyhow::Error> {
+) -> Result<
+    (
+        SubspaceClient,
+        RawRpcClient,
+        AsyncJoinOnDrop<anyhow::Result<()>>,
+    ),
+    anyhow::Error,
+> {
     info!("connecting to Subspace node at {}", node_url.as_ref());
 
     // Create a new client with with a reconnecting RPC client.
@@ -107,21 +118,24 @@ pub async fn create_subspace_client(
 
     let client = SubspaceClient::from_rpc_client(rpc.clone()).await?;
 
-    Ok((client, rpc))
+    let update_task = spawn_metadata_update_task(&client).await;
+
+    Ok((client, rpc, update_task))
 }
 
 /// Spawn a background task to keep the runtime metadata up to date.
 /// The task is aborted when the returned handle is dropped.
-pub async fn spawn_metadata_update_task(chain_client: &SubspaceClient) -> AsyncJoinOnDrop<()> {
+pub async fn spawn_metadata_update_task(
+    chain_client: &SubspaceClient,
+) -> AsyncJoinOnDrop<anyhow::Result<()>> {
     info!("spawning runtime metadata update task...");
     let update_task = chain_client.updater();
 
     AsyncJoinOnDrop::new(
         // If a metadata update fails, we want to end the task and re-run setup.
         tokio::spawn(async move {
-            if let Err(e) = update_task.perform_runtime_updates().await {
-                error!("runtime metadata update failed: {}", e);
-            }
+            update_task.perform_runtime_updates().await?;
+            Ok(())
         }),
         true,
     )
