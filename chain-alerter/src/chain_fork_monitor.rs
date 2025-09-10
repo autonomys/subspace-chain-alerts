@@ -366,7 +366,7 @@ impl ChainForkState {
 
         let best_block_height = self.best_tip.height();
         let height_threshold = self.min_allowed_height();
-        debug!(
+        trace!(
             ?best_block_height,
             ?height_threshold,
             "Pruning blocks from the chain fork state",

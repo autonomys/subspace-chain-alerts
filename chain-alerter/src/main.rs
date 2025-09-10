@@ -340,6 +340,7 @@ pub async fn replay_previous_blocks_to_fork_monitor(
 ) -> anyhow::Result<()> {
     // Now walk forwards, sending the blocks to the fork monitor.
     let genesis_hash = chain_client.genesis_hash();
+    let missed_blocks = missed_block_hashes.len();
 
     for missed_block_hash in missed_block_hashes {
         let block = chain_client.blocks().at(missed_block_hash).await?;
@@ -354,10 +355,11 @@ pub async fn replay_previous_blocks_to_fork_monitor(
             .height()
             .is_multiple_of(BLOCK_UPDATE_LOGGING_INTERVAL)
         {
-            info!(
+            debug!(
                 %is_best_block,
+                %missed_blocks,
                 ?block_info,
-                "Replayed missed block from all blocks subscription"
+                "Replaying missed or context blocks",
             );
         }
 
@@ -521,7 +523,7 @@ pub async fn find_missing_blocks(
     let (gap_start, gap_end) = if let Some(prev_block_info) = prev_block_info {
         if block_info.height() <= prev_block_info.height() {
             // Multiple blocks at the same height, a chain fork.
-            info!(
+            debug!(
                 ?max_blocks_to_find,
                 "chain fork detected: {} ({}) -> {} ({}), checking skipped blocks",
                 prev_block_info.height(),
@@ -535,7 +537,7 @@ pub async fn find_missing_blocks(
             (None, block_info)
         } else {
             // A gap in the chain of blocks.
-            warn!(
+            debug!(
                 ?max_blocks_to_find,
                 "{} block gap detected: {} ({}) -> {} ({}), checking skipped blocks",
                 block_info.height() - prev_block_info.height() - 1,
@@ -599,7 +601,7 @@ pub async fn find_missing_blocks(
 
         // The gap was a fork, we found a sibling/cousin of the gap start.
         // TODO: delete this log once the chain fork monitor has replaced other fork checking code
-        info!(
+        debug!(
             ?max_blocks_to_find,
             ?height_limit,
             "chain fork at {:?} confirmed: {} is another fork of {} ({})",
@@ -642,9 +644,9 @@ pub async fn replay_previous_best_blocks(
                 .height()
                 .is_multiple_of(BLOCK_UPDATE_LOGGING_INTERVAL)
             {
-                info!(
+                debug!(
                     ?block_info,
-                    "Replayed missed block from best blocks subscription"
+                    "Replayed missed block from best blocks subscription",
                 );
             }
 

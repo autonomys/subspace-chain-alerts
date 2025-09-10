@@ -300,7 +300,7 @@ impl SlackClientInfo {
 
         info!(
             ?alert,
-            channel_id =?self.channel_id,
+            channel_id = ?self.channel_id,
             "posting message to '{TEST_CHANNEL_NAME}'",
         );
 
