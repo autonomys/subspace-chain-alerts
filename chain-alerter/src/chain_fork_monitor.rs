@@ -2,6 +2,7 @@
 
 use crate::alerts::{Alert, BlockCheckMode};
 use crate::subspace::{BlockInfo, BlockLink, BlockNumber, BlockPosition};
+use static_assertions::const_assert;
 use std::cmp::max;
 use std::collections::{BTreeMap, HashMap};
 use std::mem;
@@ -10,8 +11,10 @@ use subxt::utils::H256;
 use tokio::sync::mpsc;
 use tracing::{debug, info, trace, warn};
 
-/// The buffer size for the chain fork monitor.
-pub const CHAIN_FORK_BUFFER_SIZE: usize = 100;
+/// The channel buffer size for the chain fork monitor.
+/// When the buffer is full, the block subscription tasks will wait until the monitor has processed
+/// some blocks.
+pub const CHAIN_FORK_BUFFER_SIZE: usize = 50;
 
 /// The minimum fork depth to alert on.
 pub const MIN_FORK_DEPTH: usize = 7;
@@ -19,19 +22,25 @@ pub const MIN_FORK_DEPTH: usize = 7;
 /// The minimum fork depth to log as info.
 pub const MIN_FORK_DEPTH_FOR_INFO_LOG: usize = 3;
 
+// Alerting without logging doesn't make sense.
+const_assert!(MIN_FORK_DEPTH >= MIN_FORK_DEPTH_FOR_INFO_LOG);
+
 /// The maximum number of blocks to replay when there are missed blocks.
 pub const MAX_BLOCKS_TO_REPLAY: BlockNumber = 100;
 
 /// The depth after the best tip to prune blocks from the chain fork state.
-pub const MAX_BLOCK_DEPTH: usize = 1000;
+/// This many blocks are also loaded at startup for the initial chain fork monitor context.
+///
+/// Must be larger than `MAX_BLOCKS_TO_REPLAY` to avoid spurious side forks.
+pub const MAX_BLOCK_DEPTH: usize = (MAX_BLOCKS_TO_REPLAY as usize).saturating_add(900);
 
 /// The expected number of blocks in the state.
 /// This is an estimate, used for memory optimisation only.
-pub const EXPECTED_BLOCK_COUNT: usize = MAX_BLOCK_DEPTH * 5 / 4;
+pub const ESTIMATED_BLOCK_COUNT: usize = MAX_BLOCK_DEPTH * 5 / 4;
 
 /// The expected number of tips in the state.
 /// This is an estimate, used for memory optimisation only.
-pub const EXPECTED_TIP_COUNT: usize = EXPECTED_BLOCK_COUNT.saturating_sub(MAX_BLOCK_DEPTH);
+pub const ESTIMATED_TIP_COUNT: usize = ESTIMATED_BLOCK_COUNT.saturating_sub(MAX_BLOCK_DEPTH);
 
 /// A chain fork or reorg event.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -130,10 +139,10 @@ impl ChainForkState {
         let block_link = BlockLink::from_block_info(block_info);
         let block_link = Arc::new(block_link);
 
-        let mut blocks_by_hash = HashMap::with_capacity(EXPECTED_BLOCK_COUNT);
+        let mut blocks_by_hash = HashMap::with_capacity(ESTIMATED_BLOCK_COUNT);
         blocks_by_hash.insert(block_link.hash(), block_link.clone());
 
-        let mut tips_by_hash = HashMap::with_capacity(EXPECTED_TIP_COUNT);
+        let mut tips_by_hash = HashMap::with_capacity(ESTIMATED_TIP_COUNT);
         tips_by_hash.insert(block_link.hash(), block_link.clone());
 
         ChainForkState {

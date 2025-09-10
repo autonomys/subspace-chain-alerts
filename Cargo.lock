@@ -3642,6 +3642,7 @@ dependencies = [
  "scale-value",
  "serde_json",
  "slack-morphism",
+ "static_assertions",
  "subspace-process",
  "subxt",
  "tokio",
