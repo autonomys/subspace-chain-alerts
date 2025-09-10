@@ -15,7 +15,8 @@ mod subspace;
 
 use crate::alerts::{Alert, BlockCheckMode};
 use crate::chain_fork_monitor::{
-    BlockSeen, CHAIN_FORK_BUFFER_SIZE, MAX_BLOCK_DEPTH, MAX_BLOCKS_TO_REPLAY, check_for_chain_forks,
+    BlocksSeen, BlocksSeenMessage, CHAIN_FORK_BUFFER_SIZE, MAX_BLOCK_DEPTH, MAX_BLOCKS_TO_REPLAY,
+    check_for_chain_forks,
 };
 use crate::farming_monitor::{
     DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD, DEFAULT_FARMING_MAX_HISTORY_BLOCK_INTERVAL,
@@ -257,7 +258,7 @@ async fn run() -> anyhow::Result<()> {
 async fn run_on_all_blocks_subscription(
     chain_client: SubspaceClient,
     raw_rpc_client: RawRpcClient,
-    new_blocks_tx: mpsc::Sender<(BlockCheckMode, BlockSeen)>,
+    new_blocks_tx: mpsc::Sender<BlocksSeenMessage>,
 ) -> anyhow::Result<()> {
     // TODO: add a network name table and look up the network name by genesis hash
     let genesis_hash = chain_client.genesis_hash();
@@ -329,9 +330,9 @@ async fn run_on_all_blocks_subscription(
         } else {
             // Notify the fork monitor that we've seen a new block.
             let block_seen = if is_best_block {
-                BlockSeen::from_best_block(block_info)
+                BlocksSeen::from_best_block(block_info)
             } else {
-                BlockSeen::from_any_block(block_info)
+                BlocksSeen::from_any_block(block_info)
             };
             new_blocks_tx
                 .send((BlockCheckMode::Current, block_seen))
@@ -374,7 +375,7 @@ pub async fn node_best_block_hash(raw_rpc_client: &RawRpcClient) -> anyhow::Resu
 pub async fn load_initial_context_blocks_for_fork_monitor(
     chain_client: &SubspaceClient,
     block_info: &BlockInfo,
-    new_blocks_tx: &mpsc::Sender<(BlockCheckMode, BlockSeen)>,
+    new_blocks_tx: &mpsc::Sender<BlocksSeenMessage>,
 ) -> anyhow::Result<()> {
     // We have to load the entire context, to avoid spurious new fork alerts on old ancestor
     // blocks.
@@ -405,7 +406,7 @@ pub async fn replay_previous_blocks_to_fork_monitor(
     missed_block_hashes: VecDeque<H256>,
     is_best_block: bool,
     chain_client: &SubspaceClient,
-    new_blocks_tx: &mpsc::Sender<(BlockCheckMode, BlockSeen)>,
+    new_blocks_tx: &mpsc::Sender<BlocksSeenMessage>,
 ) -> anyhow::Result<()> {
     // Now walk forwards, sending the blocks to the fork monitor.
     let genesis_hash = chain_client.genesis_hash();
@@ -435,9 +436,9 @@ pub async fn replay_previous_blocks_to_fork_monitor(
         // Notify the fork monitor that we've seen a new block.
         // If the tip block is the best block, we consider all of its ancestors to be best blocks.
         let block_seen = if is_best_block {
-            BlockSeen::from_best_block(block_info)
+            BlocksSeen::from_best_block(block_info)
         } else {
-            BlockSeen::from_any_block(block_info)
+            BlocksSeen::from_any_block(block_info)
         };
         new_blocks_tx
             .send((BlockCheckMode::Replay, block_seen))
@@ -453,7 +454,7 @@ pub async fn replay_previous_blocks_to_fork_monitor(
 async fn run_on_best_blocks_subscription(
     chain_client: SubspaceClient,
     alert_tx: mpsc::Sender<Alert>,
-    new_blocks_tx: mpsc::Sender<(BlockCheckMode, BlockSeen)>,
+    new_blocks_tx: mpsc::Sender<BlocksSeenMessage>,
 ) -> anyhow::Result<()> {
     // TODO: add a network name table and look up the network name by genesis hash
     let genesis_hash = chain_client.genesis_hash();
@@ -695,7 +696,7 @@ pub async fn replay_previous_best_blocks(
     chain_client: &SubspaceClient,
     slot_time_monitor: &mut MemorySlotTimeMonitor,
     farming_monitor: &mut MemoryFarmingMonitor,
-    new_blocks_tx: &mpsc::Sender<(BlockCheckMode, BlockSeen)>,
+    new_blocks_tx: &mpsc::Sender<BlocksSeenMessage>,
     alert_tx: &mpsc::Sender<Alert>,
 ) -> anyhow::Result<()> {
     // Now walk forwards, checking for alerts.
@@ -757,13 +758,13 @@ async fn run_on_best_block(
     prev_block_info: &Option<BlockInfo>,
     slot_time_monitor: &mut MemorySlotTimeMonitor,
     farming_monitor: &mut MemoryFarmingMonitor,
-    new_blocks_tx: &mpsc::Sender<(BlockCheckMode, BlockSeen)>,
+    new_blocks_tx: &mpsc::Sender<BlocksSeenMessage>,
     alert_tx: &mpsc::Sender<Alert>,
 ) -> anyhow::Result<()> {
     // Notify the fork monitor that we've seen a new block.
     // All missed blocks are ancestors of a best block, so we consider them to be best blocks.
     new_blocks_tx
-        .send((mode, BlockSeen::from_best_block(*block_info)))
+        .send((mode, BlocksSeen::from_best_block(*block_info)))
         .await?;
 
     let events = block.events().await?;

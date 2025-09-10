@@ -42,6 +42,12 @@ pub const ESTIMATED_BLOCK_COUNT: usize = MAX_BLOCK_DEPTH * 5 / 4;
 /// This is an estimate, used for memory optimisation only.
 pub const ESTIMATED_TIP_COUNT: usize = ESTIMATED_BLOCK_COUNT.saturating_sub(MAX_BLOCK_DEPTH);
 
+/// The message sent when the node subscriptions see some blocks.
+/// Used to detect reorgs and forks.
+///
+/// TODO: make this into a struct
+pub type BlocksSeenMessage = (BlockCheckMode, BlocksSeen);
+
 /// A chain fork or reorg event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChainForkEvent {
@@ -405,10 +411,10 @@ impl ChainForkState {
     }
 }
 
-/// The message sent when the alerter sees a block.
+/// The message sent when the node subscriptions see some blocks.
 /// Used to detect reorgs and forks.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum BlockSeen {
+pub enum BlocksSeen {
     /// A new block has been seen, and we know it is the best block.
     /// These blocks can come from the best or all blocks subscriptions.
     BestBlock(BlockInfo),
@@ -419,28 +425,28 @@ pub enum BlockSeen {
     AnyBlock(BlockInfo),
 }
 
-impl BlockSeen {
+impl BlocksSeen {
     /// Create a new `BestBlock` received message from a block link.
     pub fn from_best_block(block_info: BlockInfo) -> Self {
-        BlockSeen::BestBlock(block_info)
+        Self::BestBlock(block_info)
     }
 
     /// Create a new `AnyBlock` received message from a block link.
     pub fn from_any_block(block_info: BlockInfo) -> Self {
-        BlockSeen::AnyBlock(block_info)
+        Self::AnyBlock(block_info)
     }
 
     /// Returns the block link for this message.
     pub fn block_info(&self) -> BlockInfo {
         match self {
-            BlockSeen::BestBlock(block_info) => *block_info,
-            BlockSeen::AnyBlock(block_info) => *block_info,
+            Self::BestBlock(block_info) => *block_info,
+            Self::AnyBlock(block_info) => *block_info,
         }
     }
 
     /// Returns true if this is the best block.
     pub fn is_best_block(&self) -> bool {
-        matches!(self, BlockSeen::BestBlock(_))
+        matches!(self, Self::BestBlock(_))
     }
 }
 
@@ -449,7 +455,7 @@ impl BlockSeen {
 /// - at startup, load ~100 recent blocks without alerting, to avoid disconnected forks
 /// - write tests for this, or for ChainForkState
 pub async fn check_for_chain_forks(
-    mut new_blocks_rx: mpsc::Receiver<(BlockCheckMode, BlockSeen)>,
+    mut new_blocks_rx: mpsc::Receiver<BlocksSeenMessage>,
     alert_tx: mpsc::Sender<Alert>,
 ) {
     let Some((_first_mode, first_block)) = new_blocks_rx.recv().await else {
