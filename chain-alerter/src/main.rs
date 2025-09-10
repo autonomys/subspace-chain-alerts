@@ -37,6 +37,7 @@ use clap::{Parser, ValueHint};
 use slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor};
 use std::collections::VecDeque;
 use std::panic;
+use std::sync::Arc;
 use std::time::Duration;
 use subspace_process::{AsyncJoinOnDrop, init_logger, set_exit_on_panic, shutdown_signal};
 use subxt::blocks::{Block, Extrinsics};
@@ -162,8 +163,13 @@ async fn run() -> anyhow::Result<()> {
     // Chain fork monitor is used to detect chain forks and reorgs from the best and all block
     // subscriptions.
     let (new_blocks_tx, new_blocks_rx) = mpsc::channel(CHAIN_FORK_BUFFER_SIZE);
-    let chain_fork_monitor_task: AsyncJoinOnDrop<()> = AsyncJoinOnDrop::new(
-        tokio::spawn(check_for_chain_forks(new_blocks_rx, alert_tx.clone())),
+    let chain_forks_client = chain_client.clone();
+    let chain_fork_monitor_task: AsyncJoinOnDrop<anyhow::Result<()>> = AsyncJoinOnDrop::new(
+        tokio::spawn(check_for_chain_forks(
+            chain_forks_client,
+            new_blocks_rx,
+            alert_tx.clone(),
+        )),
         true,
     );
 
@@ -241,8 +247,11 @@ async fn run() -> anyhow::Result<()> {
         }
         result = chain_fork_monitor_task => {
             match result {
-                Ok(()) => {
+                Ok(Ok(())) => {
                     info!("chain fork monitor task finished");
+                }
+                Ok(Err(error)) => {
+                    error!(%error, "chain fork monitor task failed");
                 }
                 Err(error) => {
                     error!(%error, "chain fork monitor task panicked or was cancelled");
@@ -302,7 +311,7 @@ async fn run_on_all_blocks_subscription(
             .await?;
         } else if let Some(prev_block_info) = prev_block_info
             && (block_info.height() != prev_block_info.height() + 1
-                || block_info.parent_hash != prev_block_info.hash())
+                || block_info.parent_hash() != prev_block_info.hash())
         {
             // TODO: the check above is incorrect, it will replay more blocks than needed during
             // reorgs and new forks. Instead, use the fork monitor to detect gaps.
@@ -330,9 +339,9 @@ async fn run_on_all_blocks_subscription(
         } else {
             // Notify the fork monitor that we've seen a new block.
             let block_seen = if is_best_block {
-                BlocksSeen::from_best_block(block_info)
+                BlocksSeen::from_best_block(Arc::new(block_info.link))
             } else {
-                BlocksSeen::from_any_block(block_info)
+                BlocksSeen::from_any_block(Arc::new(block_info.link))
             };
             new_blocks_tx
                 .send((BlockCheckMode::Current, block_seen))
@@ -436,9 +445,9 @@ pub async fn replay_previous_blocks_to_fork_monitor(
         // Notify the fork monitor that we've seen a new block.
         // If the tip block is the best block, we consider all of its ancestors to be best blocks.
         let block_seen = if is_best_block {
-            BlocksSeen::from_best_block(block_info)
+            BlocksSeen::from_best_block(Arc::new(block_info.link))
         } else {
-            BlocksSeen::from_any_block(block_info)
+            BlocksSeen::from_any_block(Arc::new(block_info.link))
         };
         new_blocks_tx
             .send((BlockCheckMode::Replay, block_seen))
@@ -479,8 +488,8 @@ async fn run_on_best_blocks_subscription(
     ));
 
     // TODO: now that the farming monitor has a 1000 block history, it takes a long time to start
-    // alerting. At startup, re-load 1000 previous blocks into its history. Disable alerts using a
-    // new `BlockCheckMode::ContextOnly`.
+    // alerting. At startup, re-load DEFAULT_FARMING_MIN_ALERT_BLOCK_INTERVAL previous blocks into
+    // its history. Disable alerts using a new `BlockCheckMode::ContextOnly`.
     let mut farming_monitor = MemoryFarmingMonitor::new(&FarmingMonitorConfig {
         alert_tx: alert_tx.clone(),
         max_block_interval: DEFAULT_FARMING_MAX_HISTORY_BLOCK_INTERVAL,
@@ -524,7 +533,7 @@ async fn run_on_best_blocks_subscription(
             .await?;
         } else if let Some(prev_block_info) = prev_block_info
             && (block_info.height() != prev_block_info.height() + 1
-                || block_info.parent_hash != prev_block_info.hash())
+                || block_info.parent_hash() != prev_block_info.hash())
         {
             // Check for a gap in the subscribed blocks.
             // Best block subscriptions do not automatically recover missed blocks after a
@@ -622,7 +631,7 @@ pub async fn find_missing_blocks(
             );
 
             // We know the exact gap, but it could be a fork, so keep the height as well.
-            (Some(prev_block_info.position), block_info)
+            (Some(prev_block_info.position()), block_info)
         }
     } else {
         // No previous block, this is the initial context for the fork monitor.
@@ -764,7 +773,7 @@ async fn run_on_best_block(
     // Notify the fork monitor that we've seen a new block.
     // All missed blocks are ancestors of a best block, so we consider them to be best blocks.
     new_blocks_tx
-        .send((mode, BlocksSeen::from_best_block(*block_info)))
+        .send((mode, BlocksSeen::from_best_block(Arc::new(block_info.link))))
         .await?;
 
     let events = block.events().await?;
@@ -820,7 +829,7 @@ async fn main() -> anyhow::Result<()> {
             }
 
             // TODO:
-            // - store the most recent block and pass it to run()
+            // - store the most recent block and pass it to run(), so we restart at the right place
             // - create the RPC client outside this method and re-use it (but this might be more error-prone)
             result = run() => {
                 if let Err(error) = result {
