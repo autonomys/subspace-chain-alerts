@@ -28,11 +28,14 @@ const_assert!(MIN_FORK_DEPTH >= MIN_FORK_DEPTH_FOR_INFO_LOG);
 /// The maximum number of blocks to replay when there are missed blocks.
 pub const MAX_BLOCKS_TO_REPLAY: BlockNumber = 100;
 
-/// The depth after the best tip to prune blocks from the chain fork state.
-/// This many blocks are also loaded at startup for the initial chain fork monitor context.
-///
+/// The additional depth to avoid spurious side forks.
+/// Must be non-zero, should be significantly larger than `MAX_BLOCKS_TO_REPLAY`.
+const SPURIOUS_SIDE_FORK_AVOIDANCE_DEPTH: usize = 900;
+
+/// The maximum number of blocks to keep in the chain fork state.
 /// Must be larger than `MAX_BLOCKS_TO_REPLAY` to avoid spurious side forks.
-pub const MAX_BLOCK_DEPTH: usize = (MAX_BLOCKS_TO_REPLAY as usize).saturating_add(900);
+pub const MAX_BLOCK_DEPTH: usize =
+    (MAX_BLOCKS_TO_REPLAY as usize).saturating_add(SPURIOUS_SIDE_FORK_AVOIDANCE_DEPTH);
 
 /// The expected number of blocks in the state.
 /// This is an estimate, used for memory optimisation only.
