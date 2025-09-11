@@ -266,7 +266,7 @@ impl MemoryFarmingMonitor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::subspace::BlockPosition;
+    use crate::subspace::{BlockLink, BlockPosition};
     use subxt::utils::H256;
     use tokio::sync::mpsc;
 
@@ -302,10 +302,12 @@ mod tests {
             farming_monitor
                 .check_farmer_count(
                     &BlockInfo {
-                        position: BlockPosition::new(block_height, H256::zero()),
+                        link: BlockLink::new(
+                            BlockPosition::new(block_height, H256::zero()),
+                            H256::zero(),
+                        ),
                         time: None,
                         slot: None,
-                        parent_hash: H256::zero(),
                         genesis_hash: H256::zero(),
                     },
                     BlockCheckMode::Current,
@@ -391,10 +393,9 @@ mod tests {
         }
 
         let block_info = BlockInfo {
-            position: BlockPosition::new(1, H256::zero()),
+            link: BlockLink::new(BlockPosition::new(1, H256::zero()), H256::zero()),
             time: None,
             slot: None,
-            parent_hash: H256::zero(),
             genesis_hash: H256::zero(),
         };
         farming_monitor.update_number_of_farmers_with_votes();
@@ -446,10 +447,9 @@ mod tests {
         }
 
         let mock_block_info = BlockInfo {
-            position: BlockPosition::new(1, H256::zero()),
+            link: BlockLink::new(BlockPosition::new(1, H256::zero()), H256::zero()),
             time: None,
             slot: None,
-            parent_hash: H256::zero(),
             genesis_hash: H256::zero(),
         };
 
@@ -506,11 +506,10 @@ mod tests {
         farming_monitor
             .check_farmer_count(
                 &BlockInfo {
-                    position: BlockPosition::new(1, H256::zero()),
+                    link: BlockLink::new(BlockPosition::new(1, H256::zero()), H256::zero()),
                     time: None,
                     slot: None,
                     genesis_hash: H256::zero(),
-                    parent_hash: H256::zero(),
                 },
                 BlockCheckMode::Current,
             )

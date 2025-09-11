@@ -74,9 +74,10 @@ async fn test_startup_alert() -> anyhow::Result<()> {
     // Check block slot parsing works on real blocks.
     assert_matches!(alert.block_info.slot, Some(Slot(_)));
 
+    let result = update_task.now_or_never();
     assert!(
-        update_task.now_or_never().is_none(),
-        "metadata update task exited unexpectedly"
+        result.is_none(),
+        "metadata update task exited unexpectedly with: {result:?}"
     );
 
     Ok(())
@@ -135,9 +136,10 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
     // Check block slot parsing works on a known slot value.
     assert_eq!(alert.block_info.slot, Some(SUDO_BLOCK.4));
 
+    let result = update_task.now_or_never();
     assert!(
-        update_task.now_or_never().is_none(),
-        "metadata update task exited unexpectedly"
+        result.is_none(),
+        "metadata update task exited unexpectedly with: {result:?}"
     );
 
     Ok(())
@@ -174,9 +176,10 @@ async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
         assert_eq!(alert.block_info.slot, Some(slot));
     }
 
+    let result = update_task.now_or_never();
     assert!(
-        update_task.now_or_never().is_none(),
-        "metadata update task exited unexpectedly"
+        result.is_none(),
+        "metadata update task exited unexpectedly with: {result:?}"
     );
 
     Ok(())
@@ -209,9 +212,10 @@ async fn no_expected_test_slot_time_alert() -> anyhow::Result<()> {
         .try_recv()
         .expect_err("alert received when none expected");
 
+    let result = update_task.now_or_never();
     assert!(
-        update_task.now_or_never().is_none(),
-        "metadata update task exited unexpectedly"
+        result.is_none(),
+        "metadata update task exited unexpectedly with: {result:?}"
     );
 
     Ok(())
@@ -261,9 +265,10 @@ async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
         )
     );
 
+    let result = update_task.now_or_never();
     assert!(
-        update_task.now_or_never().is_none(),
-        "metadata update task exited unexpectedly"
+        result.is_none(),
+        "metadata update task exited unexpectedly with: {result:?}"
     );
 
     Ok(())
@@ -297,9 +302,10 @@ async fn expected_test_slot_time_alert_but_not_yet() -> anyhow::Result<()> {
         .try_recv()
         .expect_err("alert received when none expected");
 
+    let result = update_task.now_or_never();
     assert!(
-        update_task.now_or_never().is_none(),
-        "metadata update task exited unexpectedly"
+        result.is_none(),
+        "metadata update task exited unexpectedly with: {result:?}"
     );
 
     Ok(())

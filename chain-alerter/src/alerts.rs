@@ -423,7 +423,7 @@ impl AlertKind {
         match self {
             AlertKind::BlockProductionResumed {
                 prev_block_info, ..
-            } => Some(prev_block_info.position),
+            } => Some(prev_block_info.position()),
             AlertKind::Reorg { old_best_block, .. } => Some(*old_best_block),
             AlertKind::Startup
             | AlertKind::BlockProductionStall { .. }

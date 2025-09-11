@@ -19,7 +19,7 @@ use subxt::events::{EventDetails, Phase};
 use subxt::ext::subxt_rpcs::client::ReconnectingRpcClient;
 use subxt::utils::H256;
 use subxt::{OnlineClient, SubstrateConfig};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 /// One Subspace Credit.
 /// Copied from subspace-runtime-primitives.
@@ -84,9 +84,20 @@ pub type EventIndex = u32;
 pub type Event = EventDetails<SubspaceConfig>;
 
 /// Create a new reconnecting Subspace client.
+/// Returns the subxt client, the raw RPC client, and a task handle for the subxt metadata update
+/// task.
+///
+/// The metadata update task is aborted when the returned handle is dropped.
 pub async fn create_subspace_client(
     node_url: impl AsRef<str>,
-) -> Result<(SubspaceClient, RawRpcClient), anyhow::Error> {
+) -> Result<
+    (
+        SubspaceClient,
+        RawRpcClient,
+        AsyncJoinOnDrop<anyhow::Result<()>>,
+    ),
+    anyhow::Error,
+> {
     info!("connecting to Subspace node at {}", node_url.as_ref());
 
     // Create a new client with with a reconnecting RPC client.
@@ -107,21 +118,24 @@ pub async fn create_subspace_client(
 
     let client = SubspaceClient::from_rpc_client(rpc.clone()).await?;
 
-    Ok((client, rpc))
+    let update_task = spawn_metadata_update_task(&client).await;
+
+    Ok((client, rpc, update_task))
 }
 
 /// Spawn a background task to keep the runtime metadata up to date.
 /// The task is aborted when the returned handle is dropped.
-pub async fn spawn_metadata_update_task(chain_client: &SubspaceClient) -> AsyncJoinOnDrop<()> {
+pub async fn spawn_metadata_update_task(
+    chain_client: &SubspaceClient,
+) -> AsyncJoinOnDrop<anyhow::Result<()>> {
     info!("spawning runtime metadata update task...");
     let update_task = chain_client.updater();
 
     AsyncJoinOnDrop::new(
         // If a metadata update fails, we want to end the task and re-run setup.
         tokio::spawn(async move {
-            if let Err(e) = update_task.perform_runtime_updates().await {
-                error!("runtime metadata update failed: {}", e);
-            }
+            update_task.perform_runtime_updates().await?;
+            Ok(())
         }),
         true,
     )
@@ -197,7 +211,7 @@ impl Display for BlockLink {
 impl BlockLink {
     /// Create a new block link from a block position and parent hash.
     pub fn new(position: BlockPosition, parent_hash: H256) -> Self {
-        BlockLink {
+        Self {
             position,
             parent_hash,
         }
@@ -205,12 +219,12 @@ impl BlockLink {
 
     /// Create a new block link from a block info.
     pub fn from_block_info(block_info: &BlockInfo) -> Self {
-        BlockLink::new(block_info.position, block_info.parent_hash)
+        block_info.link
     }
 
     /// Create a new block link from a block.
     pub fn from_block(block: &Block<SubspaceConfig, SubspaceClient>) -> Self {
-        BlockLink::new(BlockPosition::from_block(block), block.header().parent_hash)
+        Self::new(BlockPosition::from_block(block), block.header().parent_hash)
     }
 
     /// Returns the block hash.
@@ -232,17 +246,14 @@ impl BlockLink {
 /// Block info that can be formatted.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Ord, PartialOrd)]
 pub struct BlockInfo {
-    /// The block height and hash.
-    pub position: BlockPosition,
+    /// The block height, hash, and parent hash.
+    pub link: BlockLink,
 
     /// The time extrinsic in the block, if it exists.
     pub time: Option<BlockTime>,
 
     /// The block slot.
     pub slot: Option<Slot>,
-
-    /// The parent block hash.
-    pub parent_hash: H256,
 
     /// The genesis block hash for this network.
     pub genesis_hash: H256,
@@ -251,11 +262,14 @@ pub struct BlockInfo {
 impl Display for BlockInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self {
-            position: BlockPosition { height, hash },
+            link:
+                BlockLink {
+                    position: BlockPosition { height, hash },
+                    // Skip the parent hash because it's too verbose in alerts.
+                    parent_hash: _,
+                },
             time,
             slot,
-            // Skip the parent hash because it's too verbose in alerts.
-            parent_hash: _,
             genesis_hash,
         } = self;
 
@@ -289,22 +303,31 @@ impl BlockInfo {
         genesis_hash: &H256,
     ) -> BlockInfo {
         BlockInfo {
-            position: BlockPosition::from_block(block),
+            link: BlockLink::from_block(block),
             time: BlockTime::new(extrinsics),
             slot: Slot::new(block),
-            parent_hash: block.header().parent_hash,
             genesis_hash: *genesis_hash,
         }
     }
 
     /// Returns the block height.
     pub fn height(&self) -> BlockNumber {
-        self.position.height
+        self.link.height()
     }
 
     /// Returns the block hash.
     pub fn hash(&self) -> H256 {
-        self.position.hash
+        self.link.hash()
+    }
+
+    /// Returns the block position.
+    pub fn position(&self) -> BlockPosition {
+        self.link.position
+    }
+
+    /// Returns the parent block hash.
+    pub fn parent_hash(&self) -> H256 {
+        self.link.parent_hash
     }
 }
 

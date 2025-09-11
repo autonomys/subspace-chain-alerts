@@ -15,7 +15,8 @@ mod subspace;
 
 use crate::alerts::{Alert, BlockCheckMode};
 use crate::chain_fork_monitor::{
-    BlockSeen, CHAIN_FORK_BUFFER_SIZE, MAX_BLOCK_DEPTH, MAX_BLOCKS_TO_REPLAY, check_for_chain_forks,
+    BlocksSeen, BlocksSeenMessage, CHAIN_FORK_BUFFER_SIZE, MAX_BLOCK_DEPTH, MAX_BLOCKS_TO_REPLAY,
+    check_for_chain_forks,
 };
 use crate::farming_monitor::{
     DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD, DEFAULT_FARMING_MAX_HISTORY_BLOCK_INTERVAL,
@@ -28,14 +29,15 @@ use crate::slot_time_monitor::{
     DEFAULT_CHECK_INTERVAL, DEFAULT_SLOT_TIME_ALERT_THRESHOLD, SlotTimeMonitorConfig,
 };
 use crate::subspace::{
-    BlockInfo, BlockNumber, Event, LOCAL_SUBSPACE_NODE_URL, MAX_RECONNECTION_ATTEMPTS,
+    BlockInfo, BlockLink, BlockNumber, Event, LOCAL_SUBSPACE_NODE_URL, MAX_RECONNECTION_ATTEMPTS,
     MAX_RECONNECTION_DELAY, RawBlockHash, RawRpcClient, SubspaceClient, SubspaceConfig,
-    create_subspace_client, spawn_metadata_update_task,
+    create_subspace_client,
 };
 use clap::{Parser, ValueHint};
 use slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor};
-use std::collections::VecDeque;
+use std::collections::BTreeSet;
 use std::panic;
+use std::sync::Arc;
 use std::time::Duration;
 use subspace_process::{AsyncJoinOnDrop, init_logger, set_exit_on_panic, shutdown_signal};
 use subxt::blocks::{Block, Extrinsics};
@@ -44,7 +46,7 @@ use subxt::utils::H256;
 use tokio::sync::{mpsc, watch};
 use tokio::time::sleep;
 use tokio::{pin, select, task};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 /// The number of blocks between info-level block number logs.
 /// TODO: make this configurable
@@ -74,8 +76,9 @@ struct Args {
     node_rpc_url: String,
 }
 
-/// Set up the chain alerter process.
-/// The metadata update task is aborted when the returned handle is dropped.
+/// Initialize once-off setup for the chain alerter.
+/// Returns the Slack client info, the Subspace client, the raw RPC client, and a task handle for
+/// the metadata update task. The task is aborted when the returned handle is dropped.
 ///
 /// Any returned errors are fatal and require a restart.
 ///
@@ -83,12 +86,12 @@ struct Args {
 ///
 /// TODO: make this return the same struct as `subspace::tests::test_setup()`
 async fn setup(
-    args: Args,
+    args: &Args,
 ) -> anyhow::Result<(
     SlackClientInfo,
     SubspaceClient,
     RawRpcClient,
-    AsyncJoinOnDrop<()>,
+    AsyncJoinOnDrop<anyhow::Result<()>>,
 )> {
     // Avoid a crypto provider conflict: jsonrpsee activates ring, and hyper-rustls activates
     // aws-lc, but there can only be one per process. We use the library with more formal
@@ -107,31 +110,37 @@ async fn setup(
 
     // Connect to Slack and get basic info.
     let slack_client_info = SlackClientInfo::new(
-        args.name,
-        args.icon,
+        &args.name,
+        args.icon.clone(),
         &args.node_rpc_url,
         SLACK_OAUTH_SECRET_PATH,
     )
     .await?;
 
-    // Create a client that subscribes to the configured Substrate node.
-    let (chain_client, raw_rpc_client) = create_subspace_client(&args.node_rpc_url).await?;
+    let (chain_client, raw_rpc_client, metadata_update_task) =
+        create_subspace_client(&args.node_rpc_url).await?;
 
-    let update_task = spawn_metadata_update_task(&chain_client).await;
-
-    Ok((slack_client_info, chain_client, raw_rpc_client, update_task))
+    Ok((
+        slack_client_info,
+        chain_client,
+        raw_rpc_client,
+        metadata_update_task,
+    ))
 }
 
 /// Receives alerts on a channel and posts them to Slack.
 /// This task might pause if the Slack API rate limit is exceeded.
-async fn slack_poster(slack_client: SlackClientInfo, mut alert_rx: mpsc::Receiver<Alert>) {
+async fn slack_poster(
+    slack_client: SlackClientInfo,
+    mut alert_rx: mpsc::Receiver<Alert>,
+) -> anyhow::Result<()> {
     while let Some(alert) = alert_rx.recv().await {
         // We have a large number of retries in the Slack poster, so it is unlikely to fail.
-        slack_client
-            .post_message(alert)
-            .await
-            .expect("Slack message failures require a restart");
+        let response = slack_client.post_message(alert).await?;
+        trace!(?response, "posted alert to Slack");
     }
+
+    Ok(())
 }
 
 /// Run the chain alerter process.
@@ -141,12 +150,12 @@ async fn run() -> anyhow::Result<()> {
     let args = Args::parse();
 
     let (slack_client_info, chain_client, raw_rpc_client, metadata_update_task) =
-        setup(args).await?;
+        setup(&args).await?;
 
     // Spawn a background task to post alerts to Slack.
     // We don't need to wait for the task to finish, because it will panic on failure.
     let (alert_tx, alert_rx) = mpsc::channel(ALERT_BUFFER_SIZE);
-    let _alert_task: AsyncJoinOnDrop<()> = AsyncJoinOnDrop::new(
+    let slack_alert_task: AsyncJoinOnDrop<anyhow::Result<()>> = AsyncJoinOnDrop::new(
         tokio::spawn(slack_poster(slack_client_info, alert_rx)),
         true,
     );
@@ -154,34 +163,100 @@ async fn run() -> anyhow::Result<()> {
     // Chain fork monitor is used to detect chain forks and reorgs from the best and all block
     // subscriptions.
     let (new_blocks_tx, new_blocks_rx) = mpsc::channel(CHAIN_FORK_BUFFER_SIZE);
-    let _chain_fork_monitor_task: AsyncJoinOnDrop<()> = AsyncJoinOnDrop::new(
-        tokio::spawn(check_for_chain_forks(new_blocks_rx, alert_tx.clone())),
+    let chain_forks_client = chain_client.clone();
+    let chain_fork_monitor_task: AsyncJoinOnDrop<anyhow::Result<()>> = AsyncJoinOnDrop::new(
+        tokio::spawn(check_for_chain_forks(
+            chain_forks_client,
+            new_blocks_rx,
+            alert_tx.clone(),
+        )),
         true,
     );
 
-    let best_blocks_fut =
-        run_on_best_blocks_subscription(&chain_client, &alert_tx, new_blocks_tx.clone());
+    let best_chain_client = chain_client.clone();
+    let best_blocks_fut = AsyncJoinOnDrop::new(
+        tokio::spawn(run_on_best_blocks_subscription(
+            best_chain_client,
+            alert_tx,
+            new_blocks_tx.clone(),
+        )),
+        true,
+    );
 
-    let all_blocks_fut =
-        run_on_all_blocks_subscription(&chain_client, &raw_rpc_client, new_blocks_tx.clone());
+    let all_blocks_fut = AsyncJoinOnDrop::new(
+        tokio::spawn(run_on_all_blocks_subscription(
+            chain_client,
+            raw_rpc_client,
+            new_blocks_tx.clone(),
+        )),
+        true,
+    );
 
     select! {
         result = best_blocks_fut => {
-            if let Err(error) = result {
-                error!(%error, "best blocks subscription failed");
-            } else {
-                info!("best blocks subscription exited");
+            match result {
+                Ok(Ok(())) => {
+                    info!("best blocks subscription exited");
+                }
+                Ok(Err(error)) => {
+                    error!(%error, "best blocks subscription failed");
+                }
+                Err(error) => {
+                    error!(%error, "best blocks subscription panicked or was cancelled");
+                }
             }
         }
         result = all_blocks_fut => {
-            if let Err(error) = result {
-                error!(%error, "all blocks subscription failed");
-            } else {
-                info!("all blocks subscription exited");
+            match result {
+                Ok(Ok(())) => {
+                    info!("all blocks subscription exited");
+                }
+                Ok(Err(error)) => {
+                    error!(%error, "all blocks subscription failed");
+                }
+                Err(error) => {
+                    error!(%error, "all blocks subscription panicked or was cancelled");
+                }
             }
         }
-        _ = metadata_update_task => {
-            info!("runtime metadata update task finished");
+        result = metadata_update_task => {
+            match result {
+                Ok(Ok(())) => {
+                    info!("runtime metadata update task finished");
+                }
+                Ok(Err(error)) => {
+                    error!(%error, "runtime metadata update task failed");
+                }
+                Err(error) => {
+                    error!(%error, "runtime metadata update task panicked or was cancelled");
+                }
+            }
+        }
+        result = slack_alert_task => {
+            match result {
+                Ok(Ok(())) => {
+                    info!("slack alert task finished");
+                }
+                Ok(Err(error)) => {
+                    error!(%error, "slack alert task failed");
+                }
+                Err(error) => {
+                    error!(%error, "slack alert task panicked or was cancelled");
+                }
+            }
+        }
+        result = chain_fork_monitor_task => {
+            match result {
+                Ok(Ok(())) => {
+                    info!("chain fork monitor task finished");
+                }
+                Ok(Err(error)) => {
+                    error!(%error, "chain fork monitor task failed");
+                }
+                Err(error) => {
+                    error!(%error, "chain fork monitor task panicked or was cancelled");
+                }
+            }
         }
     }
 
@@ -190,9 +265,9 @@ async fn run() -> anyhow::Result<()> {
 
 /// Run "all blocks" subscription checks.
 async fn run_on_all_blocks_subscription(
-    chain_client: &SubspaceClient,
-    raw_rpc_client: &RawRpcClient,
-    new_blocks_tx: mpsc::Sender<(BlockCheckMode, BlockSeen)>,
+    chain_client: SubspaceClient,
+    raw_rpc_client: RawRpcClient,
+    new_blocks_tx: mpsc::Sender<BlocksSeenMessage>,
 ) -> anyhow::Result<()> {
     // TODO: add a network name table and look up the network name by genesis hash
     let genesis_hash = chain_client.genesis_hash();
@@ -209,7 +284,7 @@ async fn run_on_all_blocks_subscription(
         let extrinsics = block.extrinsics().await?;
         let block_info = BlockInfo::new(&block, &extrinsics, &genesis_hash);
 
-        let best_block_hash = node_best_block_hash(raw_rpc_client).await?;
+        let best_block_hash = node_best_block_hash(&raw_rpc_client).await?;
         let is_best_block = block_info.hash() == best_block_hash;
         debug!(
             %is_best_block,
@@ -228,11 +303,15 @@ async fn run_on_all_blocks_subscription(
 
         if prev_block_info.is_none() {
             // Load chain fork monitor context at startup.
-            load_initial_context_blocks_for_fork_monitor(chain_client, &block_info, &new_blocks_tx)
-                .await?;
+            load_initial_context_blocks_for_fork_monitor(
+                &chain_client,
+                &block_info,
+                &new_blocks_tx,
+            )
+            .await?;
         } else if let Some(prev_block_info) = prev_block_info
             && (block_info.height() != prev_block_info.height() + 1
-                || block_info.parent_hash != prev_block_info.hash())
+                || block_info.parent_hash() != prev_block_info.hash())
         {
             // TODO: the check above is incorrect, it will replay more blocks than needed during
             // reorgs and new forks. Instead, use the fork monitor to detect gaps.
@@ -242,27 +321,22 @@ async fn run_on_all_blocks_subscription(
             // reconnection: <https://github.com/paritytech/subxt/issues/1568>
 
             // Go back in the chain, find missed blocks, and replay them into the fork monitor.
-            let missed_block_hashes = find_missing_blocks(
-                chain_client,
+            let missed_blocks = find_missing_blocks(
+                &chain_client,
                 &block_info,
                 &Some(prev_block_info),
                 MAX_BLOCKS_TO_REPLAY,
             )
             .await?;
 
-            replay_previous_blocks_to_fork_monitor(
-                missed_block_hashes,
-                is_best_block,
-                chain_client,
-                &new_blocks_tx,
-            )
-            .await?;
+            replay_previous_blocks_to_fork_monitor(missed_blocks, is_best_block, &new_blocks_tx)
+                .await?;
         } else {
             // Notify the fork monitor that we've seen a new block.
             let block_seen = if is_best_block {
-                BlockSeen::from_best_block(block_info)
+                BlocksSeen::from_best_block(Arc::new(block_info.link))
             } else {
-                BlockSeen::from_any_block(block_info)
+                BlocksSeen::from_any_block(Arc::new(block_info.link))
             };
             new_blocks_tx
                 .send((BlockCheckMode::Current, block_seen))
@@ -305,11 +379,11 @@ pub async fn node_best_block_hash(raw_rpc_client: &RawRpcClient) -> anyhow::Resu
 pub async fn load_initial_context_blocks_for_fork_monitor(
     chain_client: &SubspaceClient,
     block_info: &BlockInfo,
-    new_blocks_tx: &mpsc::Sender<(BlockCheckMode, BlockSeen)>,
+    new_blocks_tx: &mpsc::Sender<BlocksSeenMessage>,
 ) -> anyhow::Result<()> {
     // We have to load the entire context, to avoid spurious new fork alerts on old ancestor
     // blocks.
-    let missed_block_hashes = find_missing_blocks(
+    let context_blocks = find_missing_blocks(
         chain_client,
         block_info,
         &None,
@@ -318,10 +392,9 @@ pub async fn load_initial_context_blocks_for_fork_monitor(
     .await?;
 
     replay_previous_blocks_to_fork_monitor(
-        missed_block_hashes,
+        context_blocks,
         // All initial context blocks are treated as best blocks.
         true,
-        chain_client,
         new_blocks_tx,
     )
     .await?;
@@ -333,56 +406,53 @@ pub async fn load_initial_context_blocks_for_fork_monitor(
 /// Used when we've missed some "all blocks" subscription blocks, or at startup for context for both
 /// subscriptions.
 pub async fn replay_previous_blocks_to_fork_monitor(
-    missed_block_hashes: VecDeque<H256>,
+    missed_blocks: BTreeSet<Arc<BlockLink>>,
     is_best_block: bool,
-    chain_client: &SubspaceClient,
-    new_blocks_tx: &mpsc::Sender<(BlockCheckMode, BlockSeen)>,
+    new_blocks_tx: &mpsc::Sender<BlocksSeenMessage>,
 ) -> anyhow::Result<()> {
-    // Now walk forwards, sending the blocks to the fork monitor.
-    let genesis_hash = chain_client.genesis_hash();
+    // Let the user know we're still alive.
+    debug!(
+        %is_best_block,
+        missed_block_count = %missed_blocks.len(),
+        first = ?missed_blocks.first(),
+        last = ?missed_blocks.last(),
+        "Replaying missed or context blocks",
+    );
 
-    for missed_block_hash in missed_block_hashes {
-        let block = chain_client.blocks().at(missed_block_hash).await?;
-        let extrinsics = block.extrinsics().await?;
-        let block_info = BlockInfo::new(&block, &extrinsics, &genesis_hash);
+    // Now send the blocks to the fork monitor.
+    // Replaying the start of the gap into the fork monitor is harmless, because it ignores
+    // duplicate blocks. (And some gap starts are actually on a separate fork.)
 
-        // Replaying the start of the gap into the fork monitor is harmless, because it ignores
-        // duplicate blocks.
+    // Notify the fork monitor that we've seen some new blocks.
+    // If the tip block is the best block, we consider all of its ancestors to be best blocks.
+    let blocks_seen = if is_best_block {
+        BlocksSeen::from_best_blocks(missed_blocks)
+    } else {
+        BlocksSeen::from_any_blocks(missed_blocks)
+    };
 
-        // Let the user know we're still alive.
-        if block_info
-            .height()
-            .is_multiple_of(BLOCK_UPDATE_LOGGING_INTERVAL)
-        {
-            info!(
-                %is_best_block,
-                ?block_info,
-                "Replayed missed block from all blocks subscription"
-            );
-        }
+    let Some(blocks_seen) = blocks_seen else {
+        warn!(
+            %is_best_block,
+            "No missed or context blocks to send to the fork monitor",
+        );
+        return Ok(());
+    };
 
-        // Notify the fork monitor that we've seen a new block.
-        // If the tip block is the best block, we consider all of its ancestors to be best blocks.
-        let block_seen = if is_best_block {
-            BlockSeen::from_best_block(block_info)
-        } else {
-            BlockSeen::from_any_block(block_info)
-        };
-        new_blocks_tx
-            .send((BlockCheckMode::Replay, block_seen))
-            .await?;
+    new_blocks_tx
+        .send((BlockCheckMode::Replay, blocks_seen))
+        .await?;
 
-        // We don't spawn any tasks, so we don't need to yield here.
-    }
+    // We don't spawn any tasks, so we don't need to yield here.
 
     Ok(())
 }
 
 /// Run best blocks subscription checks.
 async fn run_on_best_blocks_subscription(
-    chain_client: &SubspaceClient,
-    alert_tx: &mpsc::Sender<Alert>,
-    new_blocks_tx: mpsc::Sender<(BlockCheckMode, BlockSeen)>,
+    chain_client: SubspaceClient,
+    alert_tx: mpsc::Sender<Alert>,
+    new_blocks_tx: mpsc::Sender<BlocksSeenMessage>,
 ) -> anyhow::Result<()> {
     // TODO: add a network name table and look up the network name by genesis hash
     let genesis_hash = chain_client.genesis_hash();
@@ -407,8 +477,8 @@ async fn run_on_best_blocks_subscription(
     ));
 
     // TODO: now that the farming monitor has a 1000 block history, it takes a long time to start
-    // alerting. At startup, re-load 1000 previous blocks into its history. Disable alerts using a
-    // new `BlockCheckMode::ContextOnly`.
+    // alerting. At startup, re-load DEFAULT_FARMING_MIN_ALERT_BLOCK_INTERVAL previous blocks into
+    // its history. Disable alerts using a new `BlockCheckMode::ContextOnly`.
     let mut farming_monitor = MemoryFarmingMonitor::new(&FarmingMonitorConfig {
         alert_tx: alert_tx.clone(),
         max_block_interval: DEFAULT_FARMING_MAX_HISTORY_BLOCK_INTERVAL,
@@ -425,7 +495,7 @@ async fn run_on_best_blocks_subscription(
         let block_info = BlockInfo::new(&block, &extrinsics, &genesis_hash);
 
         if first_block {
-            alerts::startup_alert(BlockCheckMode::Current, alert_tx, &block_info).await?;
+            alerts::startup_alert(BlockCheckMode::Current, &alert_tx, &block_info).await?;
             first_block = false;
         } else if block_info
             .height()
@@ -444,19 +514,23 @@ async fn run_on_best_blocks_subscription(
         if prev_block_info.is_none() {
             // Load chain fork monitor context at startup.
             // TODO: also replay MAX_BLOCKS_TO_REPLAY blocks to check for missed alerts
-            load_initial_context_blocks_for_fork_monitor(chain_client, &block_info, &new_blocks_tx)
-                .await?;
+            load_initial_context_blocks_for_fork_monitor(
+                &chain_client,
+                &block_info,
+                &new_blocks_tx,
+            )
+            .await?;
         } else if let Some(prev_block_info) = prev_block_info
             && (block_info.height() != prev_block_info.height() + 1
-                || block_info.parent_hash != prev_block_info.hash())
+                || block_info.parent_hash() != prev_block_info.hash())
         {
             // Check for a gap in the subscribed blocks.
             // Best block subscriptions do not automatically recover missed blocks after a
             // reconnection: <https://github.com/paritytech/subxt/issues/1568>
 
             // Go back in the chain and check missed blocks for alerts.
-            let missed_block_hashes = find_missing_blocks(
-                chain_client,
+            let missed_blocks = find_missing_blocks(
+                &chain_client,
                 &block_info,
                 &Some(prev_block_info),
                 MAX_BLOCKS_TO_REPLAY,
@@ -464,12 +538,12 @@ async fn run_on_best_blocks_subscription(
             .await?;
 
             replay_previous_best_blocks(
-                missed_block_hashes,
-                chain_client,
+                missed_blocks,
+                &chain_client,
                 &mut slot_time_monitor,
                 &mut farming_monitor,
                 &new_blocks_tx,
-                alert_tx,
+                &alert_tx,
             )
             .await?;
         } else {
@@ -494,7 +568,7 @@ async fn run_on_best_blocks_subscription(
                 &mut slot_time_monitor,
                 &mut farming_monitor,
                 &new_blocks_tx,
-                alert_tx,
+                &alert_tx,
             )
             .await?;
         }
@@ -516,12 +590,12 @@ pub async fn find_missing_blocks(
     block_info: &BlockInfo,
     prev_block_info: &Option<BlockInfo>,
     max_blocks_to_find: u32,
-) -> anyhow::Result<VecDeque<H256>> {
+) -> anyhow::Result<BTreeSet<Arc<BlockLink>>> {
     // TODO: delete these logs once we have the chain fork monitor fully tested
     let (gap_start, gap_end) = if let Some(prev_block_info) = prev_block_info {
         if block_info.height() <= prev_block_info.height() {
             // Multiple blocks at the same height, a chain fork.
-            info!(
+            debug!(
                 ?max_blocks_to_find,
                 "chain fork detected: {} ({}) -> {} ({}), checking skipped blocks",
                 prev_block_info.height(),
@@ -535,7 +609,7 @@ pub async fn find_missing_blocks(
             (None, block_info)
         } else {
             // A gap in the chain of blocks.
-            warn!(
+            debug!(
                 ?max_blocks_to_find,
                 "{} block gap detected: {} ({}) -> {} ({}), checking skipped blocks",
                 block_info.height() - prev_block_info.height() - 1,
@@ -546,7 +620,7 @@ pub async fn find_missing_blocks(
             );
 
             // We know the exact gap, but it could be a fork, so keep the height as well.
-            (Some(prev_block_info.position), block_info)
+            (Some(prev_block_info.position()), block_info)
         }
     } else {
         // No previous block, this is the initial context for the fork monitor.
@@ -573,7 +647,7 @@ pub async fn find_missing_blocks(
     .saturating_sub(1);
 
     // Walk the chain backwards, saving the block hashes.
-    let mut missed_block_hashes = VecDeque::from([gap_end.hash()]);
+    let mut missed_blocks = BTreeSet::from([Arc::new(gap_end.link)]);
     let mut missed_block_height = gap_end.height();
 
     // When we reach the gap start height, insert that block hash, then stop.
@@ -584,43 +658,44 @@ pub async fn find_missing_blocks(
         // We don't store the full missed block info, because they could take up a lot of memory.
         let missed_block = chain_client
             .blocks()
-            .at(*missed_block_hashes
-                .front()
-                .expect("always contains the final hash"))
+            .at(missed_blocks
+                .first()
+                .expect("always contains the final link")
+                .parent_hash)
             .await?;
-        missed_block_hashes.push_front(missed_block.header().parent_hash);
-        missed_block_height = missed_block.number() - 1;
+        missed_blocks.insert(Arc::new(BlockLink::from_block(&missed_block)));
+        missed_block_height = missed_block.number();
     }
 
-    if gap_start.map(|position| position.hash) != missed_block_hashes.front().cloned() {
-        let second_fork_hash = missed_block_hashes
-            .front()
+    if gap_start.map(|position| position.hash) != missed_blocks.first().map(|link| link.hash()) {
+        let second_fork = missed_blocks
+            .first()
             .expect("always contains the final hash");
 
         // The gap was a fork, we found a sibling/cousin of the gap start.
         // TODO: delete this log once the chain fork monitor has replaced other fork checking code
-        info!(
+        debug!(
             ?max_blocks_to_find,
             ?height_limit,
             "chain fork at {:?} confirmed: {} is another fork of {} ({})",
             gap_start,
-            second_fork_hash,
+            second_fork,
             gap_end.hash(),
             gap_end.height(),
         );
     }
 
-    Ok(missed_block_hashes)
+    Ok(missed_blocks)
 }
 
 /// When we've missed some best blocks, re-check them, but without spawning block stall checks.
 /// (The blocks have already happened, so we can only alert on stall resumes.)
 pub async fn replay_previous_best_blocks(
-    missed_block_hashes: VecDeque<H256>,
+    missed_blocks: BTreeSet<Arc<BlockLink>>,
     chain_client: &SubspaceClient,
     slot_time_monitor: &mut MemorySlotTimeMonitor,
     farming_monitor: &mut MemoryFarmingMonitor,
-    new_blocks_tx: &mpsc::Sender<(BlockCheckMode, BlockSeen)>,
+    new_blocks_tx: &mpsc::Sender<BlocksSeenMessage>,
     alert_tx: &mpsc::Sender<Alert>,
 ) -> anyhow::Result<()> {
     // Now walk forwards, checking for alerts.
@@ -629,8 +704,8 @@ pub async fn replay_previous_best_blocks(
     let genesis_hash = chain_client.genesis_hash();
     let mut prev_block_info: Option<BlockInfo> = None;
 
-    for missed_block_hash in missed_block_hashes {
-        let block = chain_client.blocks().at(missed_block_hash).await?;
+    for missed_block in missed_blocks {
+        let block = chain_client.blocks().at(missed_block.hash()).await?;
         let extrinsics = block.extrinsics().await?;
         let block_info = BlockInfo::new(&block, &extrinsics, &genesis_hash);
 
@@ -642,9 +717,9 @@ pub async fn replay_previous_best_blocks(
                 .height()
                 .is_multiple_of(BLOCK_UPDATE_LOGGING_INTERVAL)
             {
-                info!(
+                debug!(
                     ?block_info,
-                    "Replayed missed block from best blocks subscription"
+                    "Replayed missed block from best blocks subscription",
                 );
             }
 
@@ -682,13 +757,13 @@ async fn run_on_best_block(
     prev_block_info: &Option<BlockInfo>,
     slot_time_monitor: &mut MemorySlotTimeMonitor,
     farming_monitor: &mut MemoryFarmingMonitor,
-    new_blocks_tx: &mpsc::Sender<(BlockCheckMode, BlockSeen)>,
+    new_blocks_tx: &mpsc::Sender<BlocksSeenMessage>,
     alert_tx: &mpsc::Sender<Alert>,
 ) -> anyhow::Result<()> {
     // Notify the fork monitor that we've seen a new block.
     // All missed blocks are ancestors of a best block, so we consider them to be best blocks.
     new_blocks_tx
-        .send((mode, BlockSeen::from_best_block(*block_info)))
+        .send((mode, BlocksSeen::from_best_block(Arc::new(block_info.link))))
         .await?;
 
     let events = block.events().await?;
@@ -744,7 +819,7 @@ async fn main() -> anyhow::Result<()> {
             }
 
             // TODO:
-            // - store the most recent block and pass it to run()
+            // - store the most recent block and pass it to run(), so we restart at the right place
             // - create the RPC client outside this method and re-use it (but this might be more error-prone)
             result = run() => {
                 if let Err(error) = result {

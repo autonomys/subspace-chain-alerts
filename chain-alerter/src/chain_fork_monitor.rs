@@ -1,37 +1,59 @@
 //! Monitoring and alerting for chain forks.
 
 use crate::alerts::{Alert, BlockCheckMode};
-use crate::subspace::{BlockInfo, BlockLink, BlockNumber, BlockPosition};
+use crate::subspace::{BlockInfo, BlockLink, BlockNumber, BlockPosition, SubspaceClient};
+use static_assertions::const_assert;
 use std::cmp::max;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::mem;
 use std::sync::Arc;
 use subxt::utils::H256;
 use tokio::sync::mpsc;
 use tracing::{debug, info, trace, warn};
 
-/// The buffer size for the chain fork monitor.
-pub const CHAIN_FORK_BUFFER_SIZE: usize = 100;
+/// The channel buffer size for the chain fork monitor.
+/// When the buffer is full, the block subscription tasks will wait until the monitor has processed
+/// some blocks.
+pub const CHAIN_FORK_BUFFER_SIZE: usize = 50;
 
 /// The minimum fork depth to alert on.
+/// TODO: make this configurable
 pub const MIN_FORK_DEPTH: usize = 7;
 
 /// The minimum fork depth to log as info.
 pub const MIN_FORK_DEPTH_FOR_INFO_LOG: usize = 3;
 
+// Alerting without logging doesn't make sense.
+const_assert!(MIN_FORK_DEPTH >= MIN_FORK_DEPTH_FOR_INFO_LOG);
+
 /// The maximum number of blocks to replay when there are missed blocks.
+/// TODO: make this configurable
 pub const MAX_BLOCKS_TO_REPLAY: BlockNumber = 100;
 
-/// The depth after the best tip to prune blocks from the chain fork state.
-pub const MAX_BLOCK_DEPTH: usize = 1000;
+/// The additional depth to avoid spurious side forks.
+/// Must be non-zero, should be significantly larger than `MAX_BLOCKS_TO_REPLAY`.
+/// TODO: maybe make this configurable, but we'd need to test the minimum number required to avoid
+/// the bug
+const SPURIOUS_SIDE_FORK_AVOIDANCE_DEPTH: usize = 900;
+
+/// The maximum number of blocks to keep in the chain fork state.
+/// Must be larger than `MAX_BLOCKS_TO_REPLAY` to avoid spurious side forks.
+pub const MAX_BLOCK_DEPTH: usize =
+    (MAX_BLOCKS_TO_REPLAY as usize).saturating_add(SPURIOUS_SIDE_FORK_AVOIDANCE_DEPTH);
 
 /// The expected number of blocks in the state.
 /// This is an estimate, used for memory optimisation only.
-pub const EXPECTED_BLOCK_COUNT: usize = MAX_BLOCK_DEPTH * 5 / 4;
+pub const ESTIMATED_BLOCK_COUNT: usize = MAX_BLOCK_DEPTH * 5 / 4;
 
 /// The expected number of tips in the state.
 /// This is an estimate, used for memory optimisation only.
-pub const EXPECTED_TIP_COUNT: usize = EXPECTED_BLOCK_COUNT.saturating_sub(MAX_BLOCK_DEPTH);
+pub const ESTIMATED_TIP_COUNT: usize = ESTIMATED_BLOCK_COUNT.saturating_sub(MAX_BLOCK_DEPTH);
+
+/// The message sent when the node subscriptions see some blocks.
+/// Used to detect reorgs and forks.
+///
+/// TODO: make this into a struct
+pub type BlocksSeenMessage = (BlockCheckMode, BlocksSeen);
 
 /// A chain fork or reorg event.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -126,14 +148,11 @@ pub struct ChainForkState {
 
 impl ChainForkState {
     /// Create a new chain fork state from the first block link we've seen.
-    pub fn from_first_block(block_info: &BlockInfo) -> Self {
-        let block_link = BlockLink::from_block_info(block_info);
-        let block_link = Arc::new(block_link);
-
-        let mut blocks_by_hash = HashMap::with_capacity(EXPECTED_BLOCK_COUNT);
+    pub fn from_first_block(block_link: Arc<BlockLink>) -> Self {
+        let mut blocks_by_hash = HashMap::with_capacity(ESTIMATED_BLOCK_COUNT);
         blocks_by_hash.insert(block_link.hash(), block_link.clone());
 
-        let mut tips_by_hash = HashMap::with_capacity(EXPECTED_TIP_COUNT);
+        let mut tips_by_hash = HashMap::with_capacity(ESTIMATED_TIP_COUNT);
         tips_by_hash.insert(block_link.hash(), block_link.clone());
 
         ChainForkState {
@@ -238,31 +257,28 @@ impl ChainForkState {
     /// Blocks are skipped if they are duplicates, or below the minimum allowed chain state height.
     pub fn add_block_link(
         &mut self,
-        block_info: &BlockInfo,
+        block_link: Arc<BlockLink>,
         is_best_block: bool,
     ) -> Option<ChainForkEvent> {
-        if self.blocks_by_hash.contains_key(&block_info.hash()) {
+        if self.blocks_by_hash.contains_key(&block_link.hash()) {
             trace!(
                 ?is_best_block,
-                ?block_info,
+                ?block_link,
                 "Block is already in the chain fork state, ignoring",
             );
             return None;
         } else {
             let min_allowed_height = self.min_allowed_height();
-            if block_info.height() < min_allowed_height {
+            if block_link.height() < min_allowed_height {
                 trace!(
                     ?min_allowed_height,
                     ?is_best_block,
-                    ?block_info,
+                    ?block_link,
                     "Block is below the minimum allowed height, ignoring",
                 );
                 return None;
             }
         }
-
-        let block_link = BlockLink::from_block_info(block_info);
-        let block_link = Arc::new(block_link);
 
         // Add the block link to the chain.
         self.blocks_by_hash
@@ -344,7 +360,7 @@ impl ChainForkState {
 
         // Update the best block if needed.
         if is_best_block {
-            self.best_tip = block_link.clone();
+            self.best_tip = block_link;
         }
 
         event
@@ -366,7 +382,7 @@ impl ChainForkState {
 
         let best_block_height = self.best_tip.height();
         let height_threshold = self.min_allowed_height();
-        debug!(
+        trace!(
             ?best_block_height,
             ?height_threshold,
             "Pruning blocks from the chain fork state",
@@ -396,63 +412,82 @@ impl ChainForkState {
     }
 }
 
-/// The message sent when the alerter sees a block.
+/// The message sent when the node subscriptions see some blocks.
 /// Used to detect reorgs and forks.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum BlockSeen {
-    /// A new block has been seen, and we know it is the best block.
+///
+/// Guaranteed to contain at least one block by construction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BlocksSeen {
+    /// Some new blocks have been seen, and we know they are best blocks (part of a fork containing
+    /// the best block).
+    ///
     /// These blocks can come from the best or all blocks subscriptions.
-    BestBlock(BlockInfo),
+    BestBlocks(BTreeSet<Arc<BlockLink>>),
 
-    /// A new block has been seen, which is not the best block.
-    /// This block might be treated as the best block if it is received early enough.
+    /// Some new blocks have been seen, which are not best blocks.
+    /// These blocks might be treated as the best block if they are received early enough.
+    ///
     /// These blocks only come from the all blocks subscription.
-    AnyBlock(BlockInfo),
+    AnyBlocks(BTreeSet<Arc<BlockLink>>),
 }
 
-impl BlockSeen {
-    /// Create a new `BestBlock` received message from a block link.
-    pub fn from_best_block(block_info: BlockInfo) -> Self {
-        BlockSeen::BestBlock(block_info)
+impl BlocksSeen {
+    /// Create a new `BestBlock` received message for a single block.
+    pub fn from_best_block(block_link: Arc<BlockLink>) -> Self {
+        Self::BestBlocks(BTreeSet::from([block_link]))
     }
 
-    /// Create a new `AnyBlock` received message from a block link.
-    pub fn from_any_block(block_info: BlockInfo) -> Self {
-        BlockSeen::AnyBlock(block_info)
+    /// Create a new `AnyBlock` received message for a single block.
+    pub fn from_any_block(block_link: Arc<BlockLink>) -> Self {
+        Self::AnyBlocks(BTreeSet::from([block_link]))
     }
 
-    /// Returns the block link for this message.
-    pub fn block_info(&self) -> BlockInfo {
-        match self {
-            BlockSeen::BestBlock(block_info) => *block_info,
-            BlockSeen::AnyBlock(block_info) => *block_info,
+    /// Create a new `BestBlock` received message for multiple blocks.
+    pub fn from_best_blocks(block_links: BTreeSet<Arc<BlockLink>>) -> Option<Self> {
+        if block_links.is_empty() {
+            None
+        } else {
+            Some(Self::BestBlocks(block_links))
         }
     }
 
-    /// Returns true if this is the best block.
-    pub fn is_best_block(&self) -> bool {
-        matches!(self, BlockSeen::BestBlock(_))
+    /// Create a new `AnyBlock` received message for multiple blocks.
+    pub fn from_any_blocks(block_links: BTreeSet<Arc<BlockLink>>) -> Option<Self> {
+        if block_links.is_empty() {
+            None
+        } else {
+            Some(Self::AnyBlocks(block_links))
+        }
+    }
+
+    /// Returns the block links for this message.
+    pub fn into_block_links(self) -> BTreeSet<Arc<BlockLink>> {
+        match self {
+            Self::BestBlocks(block_links) => block_links,
+            Self::AnyBlocks(block_links) => block_links,
+        }
+    }
+
+    /// Returns true if these are best blocks.
+    pub fn are_best_blocks(&self) -> bool {
+        matches!(self, Self::BestBlocks(_))
     }
 }
 
-/// A task that monitors chain forks and reorgs, using blocks from multiple sources.
-/// TODO:
-/// - at startup, load ~100 recent blocks without alerting, to avoid disconnected forks
-/// - write tests for this, or for ChainForkState
-pub async fn check_for_chain_forks(
-    mut new_blocks_rx: mpsc::Receiver<(BlockCheckMode, BlockSeen)>,
-    alert_tx: mpsc::Sender<Alert>,
-) {
-    let Some((_first_mode, first_block)) = new_blocks_rx.recv().await else {
-        info!("Channel disconnected before first block, exiting");
-        return;
-    };
+/// Add a set of blocks to the chain fork state, sending alerts as needed.
+pub async fn add_blocks_to_chain_fork_state(
+    chain_client: &SubspaceClient,
+    state: &mut ChainForkState,
+    mode: BlockCheckMode,
+    are_best_blocks: bool,
+    mut blocks_seen: BTreeSet<Arc<BlockLink>>,
+    alert_tx: &mpsc::Sender<Alert>,
+) -> anyhow::Result<()> {
+    let genesis_hash = chain_client.genesis_hash();
 
-    // The first block is always a new tip, so we ignore that event.
-    let mut state = ChainForkState::from_first_block(&first_block.block_info());
-
-    while let Some((mode, block_seen)) = new_blocks_rx.recv().await {
-        let event = state.add_block_link(&block_seen.block_info(), block_seen.is_best_block());
+    while let Some(block_link) = blocks_seen.pop_first() {
+        let block_hash = block_link.hash();
+        let event = state.add_block_link(block_link, are_best_blocks);
         if let Some(event) = event {
             if event.needs_info_log() {
                 info!(?event, "Chain fork or reorg event");
@@ -461,21 +496,76 @@ pub async fn check_for_chain_forks(
             }
 
             if event.needs_alert() {
+                // Get the block info for the chain fork event.
+                // Delaying fetching this info saves a lot of work during initial block context and
+                // replays.
+                let block = chain_client.blocks().at(block_hash).await?;
+                // These errors represent a connection failure or similar, and require a restart.
+                let extrinsics = block.extrinsics().await?;
+                let block_info = BlockInfo::new(&block, &extrinsics, &genesis_hash);
+
                 // If we have restarted, the new alerter will replay missed blocks, so we can ignore
                 // any send errors to dropped channels. This also avoids panics during process
                 // shutdown.
                 let _ = alert_tx
-                    .send(Alert::from_chain_fork_event(
-                        event,
-                        block_seen.block_info(),
-                        mode,
-                    ))
+                    .send(Alert::from_chain_fork_event(event, block_info, mode))
                     .await;
             }
         }
+    }
+
+    Ok(())
+}
+
+/// A task that monitors chain forks and reorgs, using blocks from multiple sources.
+/// TODO:
+/// - write tests for this, or for ChainForkState
+pub async fn check_for_chain_forks(
+    chain_client: SubspaceClient,
+    mut new_blocks_rx: mpsc::Receiver<BlocksSeenMessage>,
+    alert_tx: mpsc::Sender<Alert>,
+) -> anyhow::Result<()> {
+    let Some((first_mode, first_blocks)) = new_blocks_rx.recv().await else {
+        info!("Channel disconnected before first block, exiting");
+        return Ok(());
+    };
+
+    let are_best_blocks = first_blocks.are_best_blocks();
+    let mut first_blocks = first_blocks.into_block_links();
+    let first_block = first_blocks
+        .pop_first()
+        .expect("guaranteed to contain at least one block");
+
+    // The first block is always a new tip, so we ignore that event.
+    let mut state = ChainForkState::from_first_block(first_block);
+
+    // The context blocks shouldn't have any alerts, because we've gone back using a single chain.
+    add_blocks_to_chain_fork_state(
+        &chain_client,
+        &mut state,
+        first_mode,
+        are_best_blocks,
+        first_blocks,
+        &alert_tx,
+    )
+    .await?;
+    state.prune_blocks();
+
+    while let Some((mode, blocks_seen)) = new_blocks_rx.recv().await {
+        add_blocks_to_chain_fork_state(
+            &chain_client,
+            &mut state,
+            mode,
+            blocks_seen.are_best_blocks(),
+            blocks_seen.into_block_links(),
+            &alert_tx,
+        )
+        .await?;
 
         state.prune_blocks();
     }
 
     debug!("Channel disconnected, exiting");
+
+    Ok(())
 }
