@@ -17,6 +17,7 @@ use tracing::{debug, info, trace, warn};
 pub const CHAIN_FORK_BUFFER_SIZE: usize = 50;
 
 /// The minimum fork depth to alert on.
+/// TODO: make this configurable
 pub const MIN_FORK_DEPTH: usize = 7;
 
 /// The minimum fork depth to log as info.
@@ -26,10 +27,13 @@ pub const MIN_FORK_DEPTH_FOR_INFO_LOG: usize = 3;
 const_assert!(MIN_FORK_DEPTH >= MIN_FORK_DEPTH_FOR_INFO_LOG);
 
 /// The maximum number of blocks to replay when there are missed blocks.
+/// TODO: make this configurable
 pub const MAX_BLOCKS_TO_REPLAY: BlockNumber = 100;
 
 /// The additional depth to avoid spurious side forks.
 /// Must be non-zero, should be significantly larger than `MAX_BLOCKS_TO_REPLAY`.
+/// TODO: maybe make this configurable, but we'd need to test the minimum number required to avoid
+/// the bug
 const SPURIOUS_SIDE_FORK_AVOIDANCE_DEPTH: usize = 900;
 
 /// The maximum number of blocks to keep in the chain fork state.
