@@ -3,14 +3,12 @@
 use crate::ALERT_BUFFER_SIZE;
 use crate::alerts::Alert;
 use crate::subspace::{
-    BlockInfo, BlockNumber, Event, EventIndex, EventInfo, ExtrinsicIndex, ExtrinsicInfo,
-    FOUNDATION_SUBSPACE_NODE_URL, RawRpcClient, SubspaceClient, SubspaceConfig,
-    create_subspace_client,
+    BlockInfo, BlockNumber, EventIndex, EventInfo, ExtrinsicIndex, ExtrinsicInfo,
+    FOUNDATION_SUBSPACE_NODE_URL, RawEvent, RawEventList, RawExtrinsic, RawExtrinsicList,
+    RawRpcClient, SubspaceClient, create_subspace_client,
 };
 use std::env;
 use subspace_process::{AsyncJoinOnDrop, init_logger};
-use subxt::blocks::{ExtrinsicDetails, Extrinsics};
-use subxt::events::Events;
 use subxt::utils::H256;
 use tokio::sync::mpsc;
 use tracing::info;
@@ -75,11 +73,7 @@ pub async fn fetch_block_info(
     subspace_client: &SubspaceClient,
     block_hash: impl Into<Option<H256>>,
     expected_block_height: impl Into<Option<BlockNumber>>,
-) -> anyhow::Result<(
-    BlockInfo,
-    Extrinsics<SubspaceConfig, SubspaceClient>,
-    Events<SubspaceConfig>,
-)> {
+) -> anyhow::Result<(BlockInfo, RawExtrinsicList, RawEventList)> {
     let block = if let Some(block_hash) = block_hash.into() {
         subspace_client.blocks().at(block_hash).await?
     } else {
@@ -101,12 +95,9 @@ pub async fn fetch_block_info(
 /// Extract and decode an extrinsic from a block.
 pub async fn decode_extrinsic(
     block_info: &BlockInfo,
-    extrinsics: &Extrinsics<SubspaceConfig, SubspaceClient>,
+    extrinsics: &RawExtrinsicList,
     extrinsic_index: ExtrinsicIndex,
-) -> anyhow::Result<(
-    ExtrinsicDetails<SubspaceConfig, SubspaceClient>,
-    ExtrinsicInfo,
-)> {
+) -> anyhow::Result<(RawExtrinsic, ExtrinsicInfo)> {
     let extrinsic = extrinsics
         .iter()
         .nth(
@@ -125,9 +116,9 @@ pub async fn decode_extrinsic(
 /// Extract and decode an event from a block.
 pub async fn decode_event(
     block_info: &BlockInfo,
-    events: &Events<SubspaceConfig>,
+    events: &RawEventList,
     event_index: EventIndex,
-) -> anyhow::Result<(Event, EventInfo)> {
+) -> anyhow::Result<(RawEvent, EventInfo)> {
     // TODO: extract this into a subspace test helper function
     let event = events
         .iter()

@@ -15,8 +15,7 @@ mod subspace;
 
 use crate::alerts::{Alert, BlockCheckMode};
 use crate::chain_fork_monitor::{
-    BlocksSeen, BlocksSeenMessage, CHAIN_FORK_BUFFER_SIZE, MAX_BLOCK_DEPTH, MAX_BLOCKS_TO_REPLAY,
-    check_for_chain_forks,
+    BlockSeen, CHAIN_FORK_BUFFER_SIZE, NewBestBlockMessage, check_for_chain_forks,
 };
 use crate::farming_monitor::{
     DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD, DEFAULT_FARMING_MAX_HISTORY_BLOCK_INTERVAL,
@@ -29,18 +28,16 @@ use crate::slot_time_monitor::{
     DEFAULT_CHECK_INTERVAL, DEFAULT_SLOT_TIME_ALERT_THRESHOLD, SlotTimeMonitorConfig,
 };
 use crate::subspace::{
-    BlockInfo, BlockLink, BlockNumber, Event, LOCAL_SUBSPACE_NODE_URL, MAX_RECONNECTION_ATTEMPTS,
-    MAX_RECONNECTION_DELAY, RawBlockHash, RawRpcClient, SubspaceClient, SubspaceConfig,
-    create_subspace_client,
+    BlockInfo, BlockLink, BlockNumber, LOCAL_SUBSPACE_NODE_URL, MAX_RECONNECTION_ATTEMPTS,
+    MAX_RECONNECTION_DELAY, RawBlock, RawBlockHash, RawEvent, RawExtrinsicList, RawRpcClient,
+    SubspaceClient, create_subspace_client,
 };
 use clap::{Parser, ValueHint};
 use slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor};
-use std::collections::BTreeSet;
 use std::panic;
 use std::sync::Arc;
 use std::time::Duration;
 use subspace_process::{AsyncJoinOnDrop, init_logger, set_exit_on_panic, shutdown_signal};
-use subxt::blocks::{Block, Extrinsics};
 use subxt::ext::futures::FutureExt;
 use subxt::utils::H256;
 use tokio::sync::{mpsc, watch};
@@ -751,9 +748,9 @@ pub async fn replay_previous_best_blocks(
 /// Run checks on a single block, against its previous block.
 async fn run_on_best_block(
     mode: BlockCheckMode,
-    block: &Block<SubspaceConfig, SubspaceClient>,
+    block: &RawBlock,
     block_info: &BlockInfo,
-    extrinsics: &Extrinsics<SubspaceConfig, SubspaceClient>,
+    extrinsics: &RawExtrinsicList,
     prev_block_info: &Option<BlockInfo>,
     slot_time_monitor: &mut MemorySlotTimeMonitor,
     farming_monitor: &mut MemoryFarmingMonitor,
@@ -779,7 +776,7 @@ async fn run_on_best_block(
                 })
                 .ok()
         })
-        .collect::<Vec<Event>>();
+        .collect::<Vec<RawEvent>>();
 
     // Check the block itself for alerts, including stall resumes.
     alerts::check_block(mode, alert_tx, block_info, prev_block_info).await?;

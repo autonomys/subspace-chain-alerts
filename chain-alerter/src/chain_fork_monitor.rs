@@ -1,7 +1,10 @@
 //! Monitoring and alerting for chain forks.
 
 use crate::alerts::{Alert, BlockCheckMode};
-use crate::subspace::{BlockInfo, BlockLink, BlockNumber, BlockPosition, SubspaceClient};
+use crate::subspace::{
+    BlockInfo, BlockLink, BlockNumber, BlockPosition, PARENT_OF_GENESIS, RawBlock,
+    RawExtrinsicList, SubspaceClient,
+};
 use static_assertions::const_assert;
 use std::cmp::max;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -14,6 +17,8 @@ use tracing::{debug, info, trace, warn};
 /// The channel buffer size for the chain fork monitor.
 /// When the buffer is full, the block subscription tasks will wait until the monitor has processed
 /// some blocks.
+///
+/// This is used for performance and memory optimisation only.
 pub const CHAIN_FORK_BUFFER_SIZE: usize = 50;
 
 /// The minimum fork depth to alert on.
@@ -148,21 +153,18 @@ pub struct ChainForkState {
 
 impl ChainForkState {
     /// Create a new chain fork state from the first block link we've seen.
-    pub fn from_first_block(block_link: Arc<BlockLink>) -> Self {
+    pub fn from_first_block(block: Arc<BlockLink>) -> Self {
         let mut blocks_by_hash = HashMap::with_capacity(ESTIMATED_BLOCK_COUNT);
-        blocks_by_hash.insert(block_link.hash(), block_link.clone());
+        blocks_by_hash.insert(block.hash(), block.clone());
 
         let mut tips_by_hash = HashMap::with_capacity(ESTIMATED_TIP_COUNT);
-        tips_by_hash.insert(block_link.hash(), block_link.clone());
+        tips_by_hash.insert(block.hash(), block.clone());
 
         ChainForkState {
             blocks_by_hash,
-            blocks_by_parent: BTreeMap::from([(
-                block_link.parent_position(),
-                vec![block_link.clone()],
-            )]),
+            blocks_by_parent: BTreeMap::from([(block.parent_position(), vec![block.clone()])]),
             tips_by_hash,
-            best_tip: block_link,
+            best_tip: block,
         }
     }
 
@@ -220,9 +222,9 @@ impl ChainForkState {
     }
 
     /// Calculate the depth of a fork.
-    pub fn fork_depth(&self, block_link: &BlockLink) -> usize {
+    pub fn fork_depth(&self, block: &BlockLink) -> usize {
         let mut depth = 1;
-        let mut current_block = block_link;
+        let mut current_block = block;
 
         loop {
             // Find the blocks with the same parent as this block.
@@ -242,7 +244,7 @@ impl ChainForkState {
             } else {
                 // Chain is disconnected, just return the available depth.
                 warn!(
-                    ?block_link,
+                    ?block,
                     ?current_block,
                     "Chain is disconnected, returning minimum fork depth: {}",
                     depth
@@ -402,13 +404,13 @@ impl ChainForkState {
     }
 
     /// Prune a single block from the chain fork state.
-    fn prune_block(&mut self, block_link: &BlockLink) {
-        self.blocks_by_hash.remove(&block_link.hash());
-        self.tips_by_hash.remove(&block_link.hash());
+    fn prune_block(&mut self, block: &BlockLink) {
+        self.blocks_by_hash.remove(&block.hash());
+        self.tips_by_hash.remove(&block.hash());
 
         // If a block is being pruned, all its siblings will also be pruned.
         // This is currently redundant, but it's here for completeness.
-        self.blocks_by_parent.remove(&block_link.parent_position());
+        self.blocks_by_parent.remove(&block.parent_position());
     }
 }
 

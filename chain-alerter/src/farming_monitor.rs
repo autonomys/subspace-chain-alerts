@@ -3,7 +3,7 @@
 
 use crate::alerts::{Alert, AlertKind, BlockCheckMode};
 use crate::subspace::decode::decode_h256_from_composite;
-use crate::subspace::{BlockInfo, BlockNumber, Event};
+use crate::subspace::{BlockInfo, BlockNumber, RawEvent};
 use scale_value::Composite;
 use std::collections::{HashMap, VecDeque};
 use subxt::utils::H256;
@@ -34,7 +34,7 @@ pub trait FarmingMonitor {
         &mut self,
         mode: BlockCheckMode,
         block_info: &BlockInfo,
-        events: &[Event],
+        events: &[RawEvent],
     );
 }
 
@@ -81,7 +81,7 @@ impl FarmingMonitor for MemoryFarmingMonitor {
         &mut self,
         mode: BlockCheckMode,
         block_info: &BlockInfo,
-        events: &[Event],
+        events: &[RawEvent],
     ) {
         // Update the last voted block for each farmer that voted in this block.
         self.update_last_voted_block(events, block_info.height());
@@ -117,7 +117,7 @@ impl MemoryFarmingMonitor {
     }
 
     /// Update the last voted block for each farmer that voted in the block.
-    fn update_last_voted_block(&mut self, events: &[Event], block_height: BlockNumber) {
+    fn update_last_voted_block(&mut self, events: &[RawEvent], block_height: BlockNumber) {
         for event in events.iter() {
             let pallet_name = event.pallet_name();
             let variant_name = event.variant_name();
