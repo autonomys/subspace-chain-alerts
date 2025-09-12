@@ -44,7 +44,7 @@ A reorg happens when:
 ### Which blocks are checked for alerts?
 
 All blocks on a best fork are checked for alerts, including blocks missed by subscriptions.
-<!-- TODO: If there is a reorg, all unchecked blocks on the new best fork are checked for alerts. -->
+If there is a reorg, all unchecked blocks on the new best fork are checked for alerts.
 
 ## Security notes
 

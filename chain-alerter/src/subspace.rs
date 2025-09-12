@@ -21,6 +21,10 @@ use subxt::utils::H256;
 use subxt::{OnlineClient, SubstrateConfig};
 use tracing::{debug, info, trace, warn};
 
+/// The placeholder hash for the parent of the genesis block.
+/// Well-known value.
+pub const PARENT_OF_GENESIS: H256 = H256([0; 32]);
+
 /// One Subspace Credit.
 /// Copied from subspace-runtime-primitives.
 pub const AI3: Balance = 10_u128.pow(18);
