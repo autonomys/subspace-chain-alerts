@@ -512,8 +512,8 @@ pub async fn startup_alert(
     block_info: &BlockInfo,
 ) -> anyhow::Result<()> {
     assert!(
-        mode.is_current(),
-        "should only be called on the first current block"
+        !mode.is_current(),
+        "should only be called on the first replayed block",
     );
 
     // TODO:
