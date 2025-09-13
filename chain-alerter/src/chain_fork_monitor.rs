@@ -8,6 +8,7 @@ use crate::subspace::{
 use static_assertions::const_assert;
 use std::cmp::max;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fmt::{self, Display, FormattingOptions};
 use std::mem;
 use std::sync::Arc;
 use subxt::utils::H256;
@@ -177,7 +178,7 @@ pub struct ChainForkState {
     /// A list of block links by parent height and hash.
     /// This lets us walk the chain forwards using block heights/hashes.
     /// The height is redundant, but it is used for efficient pruning.
-    pub blocks_by_parent: BTreeMap<BlockPosition, Vec<Arc<BlockLink>>>,
+    pub blocks_by_parent: BTreeMap<BlockPosition, BTreeSet<Arc<BlockLink>>>,
 
     /// The tips of each chain fork.
     pub tips_by_hash: HashMap<H256, Arc<BlockLink>>,
@@ -187,6 +188,19 @@ pub struct ChainForkState {
     /// block.
     // TODO: this could become a H256 index into tips_by_hash
     pub best_tip: Arc<BlockLink>,
+}
+
+impl Display for ChainForkState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut f = f.with_options(FormattingOptions::default().alternate(true).to_owned());
+
+        f.debug_struct("ChainForkState")
+            .field("blocks_by_hash", &self.blocks_by_hash.len())
+            .field("blocks_by_parent", &self.blocks_by_parent.len())
+            .field("tips_by_hash", &self.tips_by_hash)
+            .field("best_tip", &self.best_tip)
+            .finish()
+    }
 }
 
 impl ChainForkState {
@@ -200,7 +214,10 @@ impl ChainForkState {
 
         ChainForkState {
             blocks_by_hash,
-            blocks_by_parent: BTreeMap::from([(block.parent_position(), vec![block.clone()])]),
+            blocks_by_parent: BTreeMap::from([(
+                block.parent_position(),
+                BTreeSet::from([block.clone()]),
+            )]),
             tips_by_hash,
             best_tip: block,
         }
@@ -249,7 +266,12 @@ impl ChainForkState {
         self.is_on_same_fork(&self.best_tip, block)
     }
 
-    /// Returns the fork tips a given block is on, if there are any.
+    /// Returns the tips of all recent chain forks.
+    pub fn fork_tips(&self) -> BTreeSet<&Arc<BlockLink>> {
+        self.tips_by_hash.values().collect()
+    }
+
+    /// Returns the tips of the forks a given block is on, if there are any.
     ///
     /// Automatically handles blocks above or below the tip.
     /// Assumes that the chain is connected, and there are no missing blocks.
@@ -264,7 +286,8 @@ impl ChainForkState {
     }
 
     /// Calculate the depth of a fork.
-    pub fn fork_depth(&self, block: &BlockLink) -> usize {
+    /// `mode` is only used for logging.
+    pub fn fork_depth(&self, block: &BlockLink, mode: impl Into<Option<BlockCheckMode>>) -> usize {
         let mut depth = 1;
         let mut current_block = block;
 
@@ -285,12 +308,26 @@ impl ChainForkState {
                 current_block = parent_block;
             } else {
                 // Chain is disconnected, just return the available depth.
-                warn!(
-                    ?block,
-                    ?current_block,
-                    "Chain is disconnected, returning minimum fork depth: {}",
-                    depth
-                );
+                let mode = mode.into();
+                if let Some(mode) = mode
+                    && mode.is_startup()
+                {
+                    trace!(
+                        ?mode,
+                        ?block,
+                        ?current_block,
+                        "Chain is disconnected, returning minimum fork depth: {} (this is expected at startup)",
+                        depth
+                    );
+                } else {
+                    info!(
+                        ?mode,
+                        ?block,
+                        ?current_block,
+                        "Chain is disconnected, returning minimum fork depth: {}",
+                        depth
+                    );
+                }
                 return depth;
             }
             depth += 1;
@@ -348,14 +385,15 @@ impl ChainForkState {
     }
 
     /// Add a new block link to the chain fork state, if is allowed in the state.
-    /// The block link will be cloned if it is added to the state.
-    ///
     /// See `can_add_block()` for more details.
+    ///
+    /// `mode` is only used for logging and invariant checks.
     #[expect(clippy::unwrap_in_result, reason = "panic can't actually happen")]
     pub fn add_block(
         &mut self,
         block: &Arc<BlockLink>,
         is_best_block: bool,
+        mode: impl Into<Option<BlockCheckMode>>,
     ) -> Result<Option<ChainForkEvent>, AddBlockError> {
         self.can_add_block(block)?;
 
@@ -364,12 +402,13 @@ impl ChainForkState {
         self.blocks_by_parent
             .entry(block.parent_position())
             .or_default()
-            .push(block.clone());
+            .insert(block.clone());
 
         let mut is_new_side_fork = false;
         let mut is_side_fork_extended = false;
 
         // Replace all the tips on the same fork with the highest block in the tip set.
+        let mut replaced_best_tip = false;
         let mut fork_tips = self.find_fork_tips(block);
         if !fork_tips.is_empty() {
             is_side_fork_extended = !fork_tips.contains(&self.best_tip);
@@ -379,17 +418,26 @@ impl ChainForkState {
 
             for fork_tip in fork_tips {
                 if fork_tip.height() < highest_tip.height() {
+                    if fork_tip == self.best_tip {
+                        replaced_best_tip = true;
+                    }
                     trace!(
                         ?is_side_fork_extended,
                         ?is_best_block,
+                        ?replaced_best_tip,
                         ?fork_tip,
                         ?highest_tip,
                         ?block,
                         ?self.best_tip,
-                        "Replacing lower fork tip with higher fork tip",
+                        "Replacing lower fork tip with higher fork tip on same chain fork",
                     );
                     self.tips_by_hash.remove(&fork_tip.hash());
                 }
+            }
+
+            // Now restore the tips and best tips invariants.
+            if replaced_best_tip || is_best_block {
+                self.best_tip = highest_tip.clone();
             }
             self.tips_by_hash.insert(highest_tip.hash(), highest_tip);
         } else {
@@ -400,7 +448,7 @@ impl ChainForkState {
                 info!(
                     ?is_best_block,
                     ?block,
-                    "Block is not connected to the chain, adding as a new fork tip anyway\
+                    "Block is not connected to the chain, adding as a new fork tip anyway \
                     (this is expected at startup)",
                 );
             }
@@ -413,6 +461,10 @@ impl ChainForkState {
                 "Block is a new fork tip",
             );
 
+            // Keep tips and best tips in sync.
+            if is_best_block {
+                self.best_tip = block.clone();
+            }
             self.tips_by_hash.insert(block.hash(), block.clone());
         }
 
@@ -420,14 +472,13 @@ impl ChainForkState {
         // Our skipped block replay makes sure we don't get disconnected blocks.
         let is_reorg = is_best_block && (is_side_fork_extended || is_new_side_fork);
 
-        // TODO: If there is a reorg, all unchecked blocks on the new best fork are checked for
-        // alerts.
+        let mode = mode.into();
         let event = if is_reorg {
             Some(ChainForkEvent::Reorg {
                 new_best_block: block.clone(),
                 old_best_block: self.best_tip.clone(),
-                old_fork_depth: self.fork_depth(&self.best_tip),
-                new_fork_depth: self.fork_depth(block),
+                old_fork_depth: self.fork_depth(&self.best_tip, mode),
+                new_fork_depth: self.fork_depth(block, mode),
             })
         } else if is_new_side_fork {
             // TODO: check new and extended side forks above a threshold amount for stealing attacks
@@ -439,15 +490,14 @@ impl ChainForkState {
         } else if is_side_fork_extended {
             Some(ChainForkEvent::SideForkExtended {
                 tip: block.clone(),
-                fork_depth: self.fork_depth(block),
+                fork_depth: self.fork_depth(block, mode),
             })
         } else {
             None
         };
 
-        // Update the best block if needed.
-        if is_best_block {
-            self.best_tip = block.clone();
+        if mode.is_none_or(|m| !m.is_startup()) {
+            self.check_invariants();
         }
 
         Ok(event)
@@ -486,6 +536,8 @@ impl ChainForkState {
                 self.prune_block(block);
             }
         }
+
+        self.check_invariants();
     }
 
     /// Prune a single block from the chain fork state.
@@ -496,6 +548,28 @@ impl ChainForkState {
         // If a block is being pruned, all its siblings will also be pruned.
         // This is currently redundant, but it's here for completeness.
         self.blocks_by_parent.remove(&block.parent_position());
+    }
+
+    /// Check data structure invariants, which are valid after each `prune_blocks()`.
+    /// (And after each `add_block()`, except at startup.)
+    pub fn check_invariants(&self) {
+        assert_eq!(
+            self.tips_by_hash.get(&self.best_tip.hash()),
+            Some(&self.best_tip),
+            "best tip missing from tips by hash: {self}",
+        );
+
+        // There can't be duplicates in a HashMap or BTreeSet. So this is just a check that the
+        // blocks in both collections are the same.
+        // TODO: if this impacts performance, only do it in debug builds using debug_assert!().
+        assert_eq!(
+            self.blocks_by_hash.values().collect::<BTreeSet<_>>(),
+            self.blocks_by_parent
+                .values()
+                .flatten()
+                .collect::<BTreeSet<_>>(),
+            "blocks by hash and by parent should be identical: {self:?}",
+        );
     }
 }
 
@@ -541,6 +615,24 @@ impl BlockSeen {
     }
 }
 
+/// Send a new block to the other alert checks.
+pub async fn send_best_fork_block(
+    mode: BlockCheckMode,
+    is_best_block: bool,
+    block: RawBlock,
+    extrinsics: RawExtrinsicList,
+    block_info: BlockInfo,
+    best_fork_tx: &mpsc::Sender<NewBestBlockMessage>,
+) -> anyhow::Result<()> {
+    if is_best_block {
+        best_fork_tx
+            .send((mode, block, extrinsics, block_info))
+            .await?;
+    }
+
+    Ok(())
+}
+
 /// Add a block and any missing ancestors to the chain fork state, sending alerts as needed.
 pub async fn add_blocks_to_chain_fork_state(
     chain_client: &SubspaceClient,
@@ -554,7 +646,14 @@ pub async fn add_blocks_to_chain_fork_state(
     let mut pending_blocks = BTreeSet::from([block_seen]);
 
     while let Some(block) = pending_blocks.pop_first() {
-        let event = state.add_block(&block, is_best_block);
+        let mode = if pending_blocks.is_empty() {
+            mode
+        } else {
+            // There is at least one pending block ahead of us, so we must be a replayed block.
+            mode.during_replay()
+        };
+
+        let event = state.add_block(&block, is_best_block, mode);
 
         match event {
             // Block was successfully added to the state, and there was a chain fork change or
@@ -562,23 +661,26 @@ pub async fn add_blocks_to_chain_fork_state(
             // Continue to add any descendant blocks.
             Ok(Some(event)) => {
                 if event.needs_info_log() {
-                    info!(?event, "Chain fork or reorg event");
+                    info!(?mode, ?event, "Chain fork or reorg event");
                 } else {
-                    debug!(?event, "Chain fork or reorg event");
+                    debug!(?mode, ?event, "Chain fork or reorg event");
                 }
 
                 if event.needs_alert() || is_best_block {
                     // Get the block info for the best block checker.
                     // Delaying fetching this info saves a lot of work during initial block context
                     // and replays.
-                    // TODO:
-                    // - if the node has pruned this block, just send the alert without it
+                    // TODO: if the node has pruned this block, just send the alert without it
                     let block = chain_client.blocks().at(block.hash()).await?;
                     let extrinsics = block.extrinsics().await?;
                     let block_info =
                         BlockInfo::new(&block, &extrinsics, &chain_client.genesis_hash());
 
-                    if event.needs_alert() {
+                    // We deliberately create spurious forks during startup, while populating the
+                    // history.
+                    // TODO: fix this at a lower level in the init, startup, or fork detection code
+                    // instead
+                    if event.needs_alert() && !mode.is_startup() {
                         // If we have restarted, the new alerter will replay missed blocks, so we
                         // can ignore any send errors to dropped channels.
                         // This also avoids panics during process shutdown.
@@ -587,18 +689,15 @@ pub async fn add_blocks_to_chain_fork_state(
                             .await;
                     }
 
-                    // TODO: turn this into a helper function, it's copied below
-                    if is_best_block {
-                        if pending_blocks.len() > 1 {
-                            best_fork_tx
-                                .send((BlockCheckMode::Replay, block, extrinsics, block_info))
-                                .await?;
-                        } else {
-                            best_fork_tx
-                                .send((mode, block, extrinsics, block_info))
-                                .await?;
-                        }
-                    }
+                    send_best_fork_block(
+                        mode,
+                        is_best_block,
+                        block,
+                        extrinsics,
+                        block_info,
+                        best_fork_tx,
+                    )
+                    .await?;
                 }
             }
 
@@ -606,6 +705,7 @@ pub async fn add_blocks_to_chain_fork_state(
             // Continue to add any descendant blocks.
             Ok(None) => {
                 trace!(
+                    ?mode,
                     ?block,
                     "Block was successfully added to the chain fork state",
                 );
@@ -616,21 +716,22 @@ pub async fn add_blocks_to_chain_fork_state(
                     let block_info =
                         BlockInfo::new(&block, &extrinsics, &chain_client.genesis_hash());
 
-                    if pending_blocks.len() > 1 {
-                        best_fork_tx
-                            .send((BlockCheckMode::Replay, block, extrinsics, block_info))
-                            .await?;
-                    } else {
-                        best_fork_tx
-                            .send((mode, block, extrinsics, block_info))
-                            .await?;
-                    }
+                    send_best_fork_block(
+                        mode,
+                        is_best_block,
+                        block,
+                        extrinsics,
+                        block_info,
+                        best_fork_tx,
+                    )
+                    .await?;
                 }
             }
 
             // Block couldn't be added to the state yet, we need some ancestor blocks first.
             // Add this block and its parent to the pending blocks.
             Err(error) if error.needs_parent_block() => {
+                // Mode could be incorrect here, so we don't log it.
                 trace!(
                     ?block,
                     ?error,
@@ -664,12 +765,14 @@ pub async fn add_blocks_to_chain_fork_state(
             Err(error) => {
                 if error.log_error() {
                     warn!(
+                        ?mode,
                         ?error,
                         ?block,
                         "Ignoring invalid block data from the node, and all pending replayed blocks",
                     );
                 } else {
                     trace!(
+                        ?mode,
                         ?error,
                         ?block,
                         "Block can't be added to the chain fork state, ignoring all pending replayed blocks",
@@ -713,14 +816,18 @@ pub async fn check_for_chain_forks(
     let parent_of_first_block = Arc::new(parent_of_first_block);
 
     // The first block is always a new tip, so we ignore that event.
-    let mut state = ChainForkState::from_first_block(first_block);
+    let mut state = ChainForkState::from_first_block(first_block.clone());
 
     // The context blocks shouldn't have any alerts, because we've gone back using a single chain.
-    // TODO: assert this
+    info!(
+        ?is_best_block,
+        ?first_block,
+        "Adding {MAX_BLOCK_DEPTH} previous blocks to chain fork state, this may take some time...",
+    );
     add_blocks_to_chain_fork_state(
         &chain_client,
         &mut state,
-        BlockCheckMode::Replay,
+        BlockCheckMode::Startup,
         is_best_block,
         parent_of_first_block,
         &best_fork_tx,
@@ -728,6 +835,40 @@ pub async fn check_for_chain_forks(
     )
     .await?;
     state.prune_blocks();
+
+    // Check we populated the state correctly at startup.
+    assert_eq!(
+        state.best_tip, first_block,
+        "wrong best tip after startup: {state}"
+    );
+    assert_eq!(
+        state.fork_tips(),
+        BTreeSet::from([&first_block]),
+        "extra, missing, or wrong fork tips after startup: {state}",
+    );
+    assert_eq!(
+        state.blocks_by_parent.len(),
+        MAX_BLOCK_DEPTH,
+        "wrong number of parent blocks after startup: {state}",
+    );
+
+    // These are only invariants after the state is full and pruned.
+    assert_eq!(
+        state.blocks_by_parent.values().flatten().count(),
+        MAX_BLOCK_DEPTH,
+        "wrong number of child blocks after startup: {state}",
+    );
+    assert_eq!(
+        state.blocks_by_hash.len(),
+        MAX_BLOCK_DEPTH,
+        "wrong number of blocks by hash after startup: {state}",
+    );
+
+    info!(
+        ?is_best_block,
+        %state,
+        "Successfully added context blocks to chain fork state",
+    );
 
     while let Some(block_seen) = new_blocks_rx.recv().await {
         add_blocks_to_chain_fork_state(

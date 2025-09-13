@@ -32,17 +32,49 @@ const MIN_BLOCK_GAP: Duration = Duration::from_secs(TARGET_BLOCK_INTERVAL * 10);
 /// This impacts block stall checks, which can only be spawned on new blocks.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum BlockCheckMode {
-    /// We are checking current blocks.
+    /// We are checking current blocks, which have just arrived in a subscription from the node.
+    /// All alerts are checked on current blocks.
     Current,
 
-    /// We are replaying missed blocks.
+    /// We are replaying missed blocks, which are the ancestors of current blocks.
+    /// Almost all alerts are checked on replayed blocks, except for block stalls.
     Replay,
+
+    /// We are providing context at startup for checks that require a lot of historic blocks.
+    /// Most alerts are checked on startup blocks.
+    Startup,
 }
 
 impl BlockCheckMode {
     /// Whether we are checking current blocks.
     pub fn is_current(&self) -> bool {
-        *self == BlockCheckMode::Current
+        match self {
+            BlockCheckMode::Current => true,
+            BlockCheckMode::Replay | BlockCheckMode::Startup => false,
+        }
+    }
+
+    /// Whether we are checking replayed blocks.
+    #[expect(dead_code, reason = "included for completeness")]
+    pub fn is_replay(&self) -> bool {
+        !self.is_current()
+    }
+
+    /// Whether we are checking startup blocks.
+    pub fn is_startup(&self) -> bool {
+        match self {
+            BlockCheckMode::Current | BlockCheckMode::Replay => false,
+            BlockCheckMode::Startup => true,
+        }
+    }
+
+    /// Returns this block check mode, modified for replaying blocks.
+    pub fn during_replay(&self) -> Self {
+        match self {
+            // Blocks can't be current during a replay.
+            BlockCheckMode::Current => BlockCheckMode::Replay,
+            BlockCheckMode::Replay | BlockCheckMode::Startup => *self,
+        }
     }
 }
 
@@ -511,10 +543,7 @@ pub async fn startup_alert(
     alert_tx: &mpsc::Sender<Alert>,
     block_info: &BlockInfo,
 ) -> anyhow::Result<()> {
-    assert!(
-        !mode.is_current(),
-        "should only be called on the first replayed block",
-    );
+    assert!(mode.is_startup(), "should only be called at startup");
 
     // TODO:
     // - always post this to the test channel, because it's not a real "alert"
