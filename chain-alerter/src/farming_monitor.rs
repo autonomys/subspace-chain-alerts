@@ -58,11 +58,19 @@ pub struct FarmingMonitorConfig {
 }
 
 /// State tracked by the farming monitor, and updated at the same time.
+/// TODO:
+///   - currently during a reorg, alerts are disabled (because of pruning, the threshold is not met
+///     until the new blocks are at or above the previous tip height), but votes and active farmer
+///     counts are kept for blocks that were reorged away from
+///   - handle reorgs by deleting the votes and blocks that were reorged away from
 #[derive(Debug, Clone)]
 pub struct FarmingMonitorState {
-    /// The last block voted by a farmer.
+    /// The last block voted by a farmer, by farmer public key hash.
+    /// TODO: change this to `HashMap<H256, BTreeSet<BlockNumber>>`, and delete the last few
+    /// entries in the `BTreeSet` (or the whole `HashMap` entry) when a reorg happens.
     last_block_voted_by_farmer: HashMap<H256, BlockNumber>,
     /// The number of farmers that have votes in the last `max_block_interval` blocks.
+    /// TODO: delete the last few entries when a reorg happens.
     active_farmers_in_last_blocks: VecDeque<usize>,
 }
 

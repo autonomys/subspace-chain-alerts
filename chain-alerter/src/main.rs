@@ -183,6 +183,7 @@ async fn run() -> anyhow::Result<()> {
         true,
     );
 
+    // Spawn tasks to send blocks from the node subscriptions to the fork monitor.
     let best_chain_client = chain_client.clone();
     let best_blocks_fut = AsyncJoinOnDrop::new(
         tokio::spawn(run_on_best_blocks_subscription(
