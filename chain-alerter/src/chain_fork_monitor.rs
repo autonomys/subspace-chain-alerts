@@ -29,8 +29,17 @@ pub const MIN_FORK_DEPTH: usize = 7;
 /// The minimum fork depth to log as info.
 pub const MIN_FORK_DEPTH_FOR_INFO_LOG: usize = 3;
 
+/// The minimum number of blocks to alert on for backwards reorgs.
+/// Currently we alert on all backwards reorgs.
+pub const MIN_BACKWARDS_REORG_DEPTH: usize = 1;
+
+/// The minimum number of blocks to log as info for backwards reorgs.
+/// Currently we log all backwards reorgs.
+pub const MIN_BACKWARDS_REORG_DEPTH_FOR_INFO_LOG: usize = 1;
+
 // Alerting without logging doesn't make sense.
 const_assert!(MIN_FORK_DEPTH >= MIN_FORK_DEPTH_FOR_INFO_LOG);
+const_assert!(MIN_BACKWARDS_REORG_DEPTH >= MIN_BACKWARDS_REORG_DEPTH_FOR_INFO_LOG);
 
 /// The maximum number of blocks to keep in the chain fork state.
 ///
@@ -143,12 +152,15 @@ impl ChainForkEvent {
     /// Returns true if the event has a fork depth greater than the minimum fork depth for alerts.
     pub fn needs_alert(&self) -> bool {
         self.largest_fork_depth() >= MIN_FORK_DEPTH
+            || self.backwards_reorg_depth().unwrap_or_default() >= MIN_BACKWARDS_REORG_DEPTH
     }
 
     /// Returns true if the event has a fork depth greater than the minimum fork depth for info
     /// logs.
     pub fn needs_info_log(&self) -> bool {
         self.largest_fork_depth() >= MIN_FORK_DEPTH_FOR_INFO_LOG
+            || self.backwards_reorg_depth().unwrap_or_default()
+                >= MIN_BACKWARDS_REORG_DEPTH_FOR_INFO_LOG
     }
 
     /// Returns the largest fork depth in the event.
@@ -161,6 +173,22 @@ impl ChainForkEvent {
                 old_fork_depth,
                 ..
             } => max(*new_fork_depth, *old_fork_depth),
+        }
+    }
+
+    /// Returns the number of blocks that the reorg went backwards by.
+    /// Reorgs to a lower height are possible but rare.
+    pub fn backwards_reorg_depth(&self) -> Option<usize> {
+        match self {
+            ChainForkEvent::Reorg {
+                new_fork_depth,
+                old_fork_depth,
+                ..
+            } if old_fork_depth > new_fork_depth => Some(old_fork_depth - new_fork_depth),
+            // Reorg to an equal or higher block, so it didn't go backwards.
+            ChainForkEvent::Reorg { .. } => None,
+            // Not a reorg, so no backwards depth.
+            ChainForkEvent::NewSideFork { .. } | ChainForkEvent::SideForkExtended { .. } => None,
         }
     }
 }

@@ -21,9 +21,9 @@ Important event alerts for Subspace blockchains.
 Blocks can be received in any order, and block notifications can be skipped, particularly during bulk syncing.
 When a block is received from the best or all/any blocks subscription:
 
-1. it is checked to see if it is the best block ("all blocks" only)
-2. the fork monitor connects it to the existing chain, fetching missing parent blocks if needed
-  a. if there are too many missing blocks, it is treated as a disconnected fork
+1. it is checked to see if it is the best block (only needed for the "all blocks" subscription)
+2. the fork monitor connects it to the existing chain, fetching missing parent blocks  needed
+  a. if there are too many missing blocks, it is treated as a disconnected new fork
 3. new and missing blocks on the best fork are checked for alerts
   <!-- TODO: a. some alerts also check side forks -->
 
@@ -45,6 +45,26 @@ A reorg happens when:
 
 All blocks on a best fork are checked for alerts, including blocks missed by subscriptions.
 If there is a reorg, all unchecked blocks on the new best fork are checked for alerts.
+
+For example:
+
+Here is a typical chain fork:
+
+```text
+A - F - C1 - D1
+      \ C2 - D2 - E2
+```
+
+If the local node receives all the blocks up to D1 first, then all the blocks up to E2, it will reorg from D1 to E2.
+The chain fork monitor will check the blocks in this order:
+`A - F - C1 - D1` then `C2 - D2 - E2`.
+Some alerts check against the parent block, which is provided for each listed block.
+Other alerts check a larger context, and need to manage it carefully during reorgs.
+
+It is possible (but unlikely) for the chain to reorg from a higher to a lower height,
+if the solution range after an era transition is significantly different on the two forks.
+
+For details of the fork choice algorithm, see [the subspace protocol specification](https://subspace.github.io/protocol-specs/docs/decex/workflow#fork-choice-rule).
 
 ## Security notes
 

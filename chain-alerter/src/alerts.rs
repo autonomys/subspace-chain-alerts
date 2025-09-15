@@ -107,6 +107,8 @@ impl Alert {
         block_info: BlockInfo,
         mode: BlockCheckMode,
     ) -> Self {
+        let backwards_reorg_depth = event.backwards_reorg_depth();
+
         let alert_kind = match event {
             // The new block is always the same as block_info, so we ignore it.
             ChainForkEvent::NewSideFork { tip: _, fork_depth } => {
@@ -124,6 +126,7 @@ impl Alert {
                 old_best_block: old_best_block.position,
                 old_fork_depth,
                 new_fork_depth,
+                backwards_reorg_depth,
             },
         };
 
@@ -183,6 +186,9 @@ pub enum AlertKind {
 
         /// The number of blocks from the new best block to the reorg point.
         new_fork_depth: usize,
+
+        /// The number of blocks that the reorg went backwards by.
+        backwards_reorg_depth: Option<usize>,
     },
 
     /// A `force_*` Balances call has been detected.
@@ -311,14 +317,26 @@ impl Display for AlertKind {
                 old_best_block,
                 old_fork_depth,
                 new_fork_depth,
+                backwards_reorg_depth,
             } => {
                 write!(
                     f,
-                    "**Reorg detected**\n\
+                    "**{}Reorg detected**\n\
                     New fork depth: {new_fork_depth}\n\
                     Old fork depth: {old_fork_depth}\n\
                     Old best block: {old_best_block}",
-                )
+                    if backwards_reorg_depth.is_some() {
+                        "Backwards "
+                    } else {
+                        ""
+                    },
+                )?;
+
+                if let Some(backwards_reorg_depth) = backwards_reorg_depth {
+                    write!(f, "\nBackwards reorg depth: {backwards_reorg_depth}")?;
+                }
+
+                Ok(())
             }
 
             AlertKind::ForceBalanceTransfer {
