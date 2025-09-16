@@ -15,11 +15,15 @@ use subspace_process::AsyncJoinOnDrop;
 use subxt::backend::rpc::reconnecting_rpc_client::ExponentialBackoff;
 use subxt::blocks::{Block, ExtrinsicDetails, Extrinsics};
 use subxt::config::substrate::DigestItem;
-use subxt::events::{EventDetails, Phase};
+use subxt::events::{EventDetails, Events, Phase};
 use subxt::ext::subxt_rpcs::client::ReconnectingRpcClient;
 use subxt::utils::H256;
 use subxt::{OnlineClient, SubstrateConfig};
 use tracing::{debug, info, trace, warn};
+
+/// The placeholder hash for the parent of the genesis block.
+/// Well-known value.
+pub const PARENT_OF_GENESIS: H256 = H256([0; 32]);
 
 /// One Subspace Credit.
 /// Copied from subspace-runtime-primitives.
@@ -74,14 +78,27 @@ pub type RawRpcClient = ReconnectingRpcClient;
 #[allow(dead_code, reason = "only used in tests")]
 pub type RawBlockHash = [u8; 32];
 
+/// The type of Subspace block.
+pub type RawBlock = Block<SubspaceConfig, SubspaceClient>;
+
+/// The type of a Subspace extrinsic list.
+pub type RawExtrinsicList = Extrinsics<SubspaceConfig, SubspaceClient>;
+
+/// The type of a Subspace event list.
+pub type RawExtrinsic = ExtrinsicDetails<SubspaceConfig, SubspaceClient>;
+
 /// The Subspace/subxt extrinsic index type.
 pub type ExtrinsicIndex = u32;
 
-/// The Subspace/subxt event index type.
-pub type EventIndex = u32;
+/// The type of a Subspace event list.
+#[allow(dead_code, reason = "included for completeness")]
+pub type RawEventList = Events<SubspaceConfig>;
 
 /// The Subspace/subxt event details type.
-pub type Event = EventDetails<SubspaceConfig>;
+pub type RawEvent = EventDetails<SubspaceConfig>;
+
+/// The Subspace/subxt event index type.
+pub type EventIndex = u32;
 
 /// Create a new reconnecting Subspace client.
 /// Returns the subxt client, the raw RPC client, and a task handle for the subxt metadata update
@@ -166,11 +183,22 @@ impl BlockPosition {
     }
 
     /// Create a new block position from a block.
-    pub fn from_block(block: &Block<SubspaceConfig, SubspaceClient>) -> Self {
+    pub fn from_block(block: &RawBlock) -> Self {
         BlockPosition {
             height: block.header().number,
             hash: block.hash(),
         }
+    }
+
+    /// Create a block position, given its hash.
+    #[expect(dead_code, reason = "included for completeness")]
+    pub async fn with_block_hash(
+        block_hash: H256,
+        chain_client: &SubspaceClient,
+    ) -> anyhow::Result<Self> {
+        let block = chain_client.blocks().at(block_hash).await?;
+
+        Ok(Self::from_block(&block))
     }
 
     /// Returns the minimum possible block position for a block height.
@@ -184,6 +212,7 @@ impl BlockPosition {
 
     /// Returns the maximum possible block position for a block height.
     /// Use this for range queries.
+    #[expect(dead_code, reason = "included for completeness")]
     pub fn max_for_height_range(height: BlockNumber) -> Self {
         BlockPosition {
             height,
@@ -218,13 +247,24 @@ impl BlockLink {
     }
 
     /// Create a new block link from a block info.
+    #[expect(dead_code, reason = "included for completeness")]
     pub fn from_block_info(block_info: &BlockInfo) -> Self {
         block_info.link
     }
 
     /// Create a new block link from a block.
-    pub fn from_block(block: &Block<SubspaceConfig, SubspaceClient>) -> Self {
+    pub fn from_block(block: &RawBlock) -> Self {
         Self::new(BlockPosition::from_block(block), block.header().parent_hash)
+    }
+
+    /// Create a block link, given its hash.
+    pub async fn with_block_hash(
+        block_hash: H256,
+        chain_client: &SubspaceClient,
+    ) -> anyhow::Result<Self> {
+        let block = chain_client.blocks().at(block_hash).await?;
+
+        Ok(Self::from_block(&block))
     }
 
     /// Returns the block hash.
@@ -297,17 +337,39 @@ impl Display for BlockInfo {
 
 impl BlockInfo {
     /// Create a block info from a block and its extrinsics.
-    pub fn new(
-        block: &Block<SubspaceConfig, SubspaceClient>,
-        extrinsics: &Extrinsics<SubspaceConfig, SubspaceClient>,
-        genesis_hash: &H256,
-    ) -> BlockInfo {
-        BlockInfo {
+    pub fn new(block: &RawBlock, extrinsics: &RawExtrinsicList, genesis_hash: &H256) -> Self {
+        Self {
             link: BlockLink::from_block(block),
             time: BlockTime::new(extrinsics),
             slot: Slot::new(block),
             genesis_hash: *genesis_hash,
         }
+    }
+
+    /// Create a block info from a block, after fetching its extrinsics.
+    pub async fn with_block(
+        block: &RawBlock,
+        chain_client: &SubspaceClient,
+    ) -> anyhow::Result<Self> {
+        // These errors represent a connection failure or similar, and require a
+        // restart.
+        let extrinsics = block.extrinsics().await?;
+
+        Ok(BlockInfo::new(
+            block,
+            &extrinsics,
+            &chain_client.genesis_hash(),
+        ))
+    }
+
+    /// Create a block info, given its hash.
+    pub async fn with_block_hash(
+        block_hash: H256,
+        chain_client: &SubspaceClient,
+    ) -> anyhow::Result<Self> {
+        let block = chain_client.blocks().at(block_hash).await?;
+
+        Self::with_block(&block, chain_client).await
     }
 
     /// Returns the block height.
@@ -349,7 +411,7 @@ impl BlockTime {
     /// string.
     ///
     /// If the block does not have a timestamp set extrinsic, or parsing fails, returns `None`.
-    pub fn new(extrinsics: &Extrinsics<SubspaceConfig, SubspaceClient>) -> Option<BlockTime> {
+    pub fn new(extrinsics: &RawExtrinsicList) -> Option<BlockTime> {
         // Find the timestamp set extrinsic (usually the first extrinsic).
         for extrinsic in extrinsics.iter() {
             let Ok(meta) = extrinsic.extrinsic_metadata() else {
@@ -432,10 +494,7 @@ impl Display for ExtrinsicInfo {
 
 impl ExtrinsicInfo {
     /// Check and collect an extrinsic's info.
-    pub fn new(
-        extrinsic: &ExtrinsicDetails<SubspaceConfig, SubspaceClient>,
-        block_info: &BlockInfo,
-    ) -> Option<ExtrinsicInfo> {
+    pub fn new(extrinsic: &RawExtrinsic, block_info: &BlockInfo) -> Option<ExtrinsicInfo> {
         let Ok(meta) = extrinsic.extrinsic_metadata() else {
             // If we can't get the extrinsic pallet and call name, there's nothing we can do.
             // Just log it and move on.
@@ -471,6 +530,7 @@ impl ExtrinsicInfo {
     }
 
     /// Format the extrinsic's fields as a string, truncating it if it is too long.
+    #[expect(dead_code, reason = "included for completeness")]
     pub fn fields_str(&self) -> String {
         fmt_fields(&self.fields)
     }
@@ -515,7 +575,7 @@ impl Display for EventInfo {
 
 impl EventInfo {
     /// Check and collect an event's info.
-    pub fn new(event: &EventDetails<SubspaceConfig>, block_info: &BlockInfo) -> EventInfo {
+    pub fn new(event: &RawEvent, block_info: &BlockInfo) -> EventInfo {
         let meta = event.event_metadata();
 
         // We can usually get the event fields, but we don't need the fields for some
@@ -541,6 +601,7 @@ impl EventInfo {
     }
 
     /// Format the event's fields as a string, truncating it if it is too long.
+    #[expect(dead_code, reason = "included for completeness")]
     pub fn fields_str(&self) -> String {
         fmt_fields(&self.fields)
     }
@@ -610,7 +671,7 @@ impl Slot {
     const SLOT_OFFSET: usize = 1;
 
     /// Create a new slot from a block.
-    pub fn new(block: &Block<SubspaceConfig, SubspaceClient>) -> Option<Slot> {
+    pub fn new(block: &RawBlock) -> Option<Slot> {
         for log in block.header().digest.logs.clone() {
             trace!("Checking log {:?}, looking for pre runtime digest", log);
 

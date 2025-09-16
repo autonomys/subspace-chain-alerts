@@ -64,11 +64,11 @@ async fn test_startup_alert() -> anyhow::Result<()> {
 
     let (block_info, _, _) = fetch_block_info(&subspace_client, None, None).await?;
 
-    alerts::startup_alert(BlockCheckMode::Current, &alert_tx, &block_info).await?;
+    alerts::startup_alert(BlockCheckMode::Startup, &alert_tx, &block_info).await?;
     let alert = alert_rx.try_recv().expect("no alert received");
     assert_eq!(
         alert,
-        Alert::new(AlertKind::Startup, block_info, BlockCheckMode::Current),
+        Alert::new(AlertKind::Startup, block_info, BlockCheckMode::Startup),
     );
 
     // Check block slot parsing works on real blocks.

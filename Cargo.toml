@@ -51,8 +51,10 @@ sha2 = { opt-level = 3 }
 smallvec = { opt-level = 3 }
 
 [profile.release]
-# We have no state that needs to be unwound
-panic = "abort"
+# keep full debug info in the binary, performance is less important than good error messages
+debug = "full"
+debug-assertions = true
+overflow-checks = true
 
 [profile.production]
 inherits = "release"

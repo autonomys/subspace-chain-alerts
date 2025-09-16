@@ -3,7 +3,7 @@
 
 use crate::alerts::{Alert, AlertKind, BlockCheckMode};
 use crate::subspace::decode::decode_h256_from_composite;
-use crate::subspace::{BlockInfo, BlockNumber, Event};
+use crate::subspace::{BlockInfo, BlockNumber, RawEvent};
 use scale_value::Composite;
 use std::collections::{HashMap, VecDeque};
 use subxt::utils::H256;
@@ -34,7 +34,7 @@ pub trait FarmingMonitor {
         &mut self,
         mode: BlockCheckMode,
         block_info: &BlockInfo,
-        events: &[Event],
+        events: &[RawEvent],
     );
 }
 
@@ -58,11 +58,19 @@ pub struct FarmingMonitorConfig {
 }
 
 /// State tracked by the farming monitor, and updated at the same time.
+/// TODO:
+///   - currently during a reorg, alerts are disabled (because of pruning, the threshold is not met
+///     until the new blocks are at or above the previous tip height), but votes and active farmer
+///     counts are kept for blocks that were reorged away from
+///   - handle reorgs by deleting the votes and blocks that were reorged away from
 #[derive(Debug, Clone)]
 pub struct FarmingMonitorState {
-    /// The last block voted by a farmer.
+    /// The last block voted by a farmer, by farmer public key hash.
+    /// TODO: change this to `HashMap<H256, BTreeSet<BlockNumber>>`, and delete the last few
+    /// entries in the `BTreeSet` (or the whole `HashMap` entry) when a reorg happens.
     last_block_voted_by_farmer: HashMap<H256, BlockNumber>,
     /// The number of farmers that have votes in the last `max_block_interval` blocks.
+    /// TODO: delete the last few entries when a reorg happens.
     active_farmers_in_last_blocks: VecDeque<usize>,
 }
 
@@ -81,7 +89,7 @@ impl FarmingMonitor for MemoryFarmingMonitor {
         &mut self,
         mode: BlockCheckMode,
         block_info: &BlockInfo,
-        events: &[Event],
+        events: &[RawEvent],
     ) {
         // Update the last voted block for each farmer that voted in this block.
         self.update_last_voted_block(events, block_info.height());
@@ -117,7 +125,7 @@ impl MemoryFarmingMonitor {
     }
 
     /// Update the last voted block for each farmer that voted in the block.
-    fn update_last_voted_block(&mut self, events: &[Event], block_height: BlockNumber) {
+    fn update_last_voted_block(&mut self, events: &[RawEvent], block_height: BlockNumber) {
         for event in events.iter() {
             let pallet_name = event.pallet_name();
             let variant_name = event.variant_name();

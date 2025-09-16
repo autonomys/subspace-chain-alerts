@@ -6,14 +6,13 @@ mod tests;
 use crate::chain_fork_monitor::ChainForkEvent;
 use crate::format::{fmt_amount, fmt_duration, fmt_timestamp};
 use crate::subspace::{
-    AI3, Balance, BlockInfo, BlockPosition, BlockTime, Event, EventInfo, ExtrinsicInfo,
-    SubspaceClient, SubspaceConfig, TARGET_BLOCK_INTERVAL, gap_since_last_block, gap_since_time,
+    AI3, Balance, BlockInfo, BlockPosition, BlockTime, EventInfo, ExtrinsicInfo, RawEvent,
+    RawExtrinsic, TARGET_BLOCK_INTERVAL, gap_since_last_block, gap_since_time,
 };
 use chrono::Utc;
 use scale_value::Composite;
 use std::fmt::{self, Display};
 use std::time::Duration;
-use subxt::blocks::ExtrinsicDetails;
 use tokio::sync::{mpsc, watch};
 use tokio::time::sleep;
 use tracing::{debug, warn};
@@ -29,21 +28,57 @@ const MIN_BALANCE_CHANGE: Balance = 1_000_000 * AI3;
 /// <https://github.com/paritytech/polkadot-sdk/blob/0034d178fff88a0fd87cf0ec1d8f122ae0011d78/substrate/frame/timestamp/src/lib.rs#L307>
 const MIN_BLOCK_GAP: Duration = Duration::from_secs(TARGET_BLOCK_INTERVAL * 10);
 
+/// The amount of time to add/subtract from the minimum block gap to account for consensus clock
+/// drift, async timer delays, and similar inaccuracies.
+const BLOCK_GAP_SLOP: Duration = Duration::from_secs(1);
+
 /// Whether we are replaying missed blocks, or checking current blocks.
 /// This impacts block stall checks, which can only be spawned on new blocks.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum BlockCheckMode {
-    /// We are checking current blocks.
+    /// We are checking current blocks, which have just arrived in a subscription from the node.
+    /// All alerts are checked on current blocks.
     Current,
 
-    /// We are replaying missed blocks.
+    /// We are replaying missed blocks, which are the ancestors of current blocks.
+    /// Almost all alerts are checked on replayed blocks, except for block stalls.
     Replay,
+
+    /// We are providing context at startup for checks that require a lot of historic blocks.
+    /// Most alerts are checked on startup blocks.
+    Startup,
 }
 
 impl BlockCheckMode {
     /// Whether we are checking current blocks.
     pub fn is_current(&self) -> bool {
-        *self == BlockCheckMode::Current
+        match self {
+            BlockCheckMode::Current => true,
+            BlockCheckMode::Replay | BlockCheckMode::Startup => false,
+        }
+    }
+
+    /// Whether we are checking replayed blocks.
+    #[expect(dead_code, reason = "included for completeness")]
+    pub fn is_replay(&self) -> bool {
+        !self.is_current()
+    }
+
+    /// Whether we are checking startup blocks.
+    pub fn is_startup(&self) -> bool {
+        match self {
+            BlockCheckMode::Current | BlockCheckMode::Replay => false,
+            BlockCheckMode::Startup => true,
+        }
+    }
+
+    /// Returns this block check mode, modified for replaying blocks.
+    pub fn during_replay(&self) -> Self {
+        match self {
+            // Blocks can't be current during a replay.
+            BlockCheckMode::Current => BlockCheckMode::Replay,
+            BlockCheckMode::Replay | BlockCheckMode::Startup => *self,
+        }
     }
 }
 
@@ -76,6 +111,8 @@ impl Alert {
         block_info: BlockInfo,
         mode: BlockCheckMode,
     ) -> Self {
+        let backwards_reorg_depth = event.backwards_reorg_depth();
+
         let alert_kind = match event {
             // The new block is always the same as block_info, so we ignore it.
             ChainForkEvent::NewSideFork { tip: _, fork_depth } => {
@@ -93,6 +130,7 @@ impl Alert {
                 old_best_block: old_best_block.position,
                 old_fork_depth,
                 new_fork_depth,
+                backwards_reorg_depth,
             },
         };
 
@@ -152,6 +190,9 @@ pub enum AlertKind {
 
         /// The number of blocks from the new best block to the reorg point.
         new_fork_depth: usize,
+
+        /// The number of blocks that the reorg went backwards by.
+        backwards_reorg_depth: Option<usize>,
     },
 
     /// A `force_*` Balances call has been detected.
@@ -280,14 +321,26 @@ impl Display for AlertKind {
                 old_best_block,
                 old_fork_depth,
                 new_fork_depth,
+                backwards_reorg_depth,
             } => {
                 write!(
                     f,
-                    "**Reorg detected**\n\
+                    "**{}Reorg detected**\n\
                     New fork depth: {new_fork_depth}\n\
                     Old fork depth: {old_fork_depth}\n\
                     Old best block: {old_best_block}",
-                )
+                    if backwards_reorg_depth.is_some() {
+                        "Backwards "
+                    } else {
+                        ""
+                    },
+                )?;
+
+                if let Some(backwards_reorg_depth) = backwards_reorg_depth {
+                    write!(f, "\nBackwards reorg depth: {backwards_reorg_depth}")?;
+                }
+
+                Ok(())
             }
 
             AlertKind::ForceBalanceTransfer {
@@ -512,10 +565,7 @@ pub async fn startup_alert(
     alert_tx: &mpsc::Sender<Alert>,
     block_info: &BlockInfo,
 ) -> anyhow::Result<()> {
-    assert!(
-        mode.is_current(),
-        "should only be called on the first current block"
-    );
+    assert!(mode.is_startup(), "should only be called at startup");
 
     // TODO:
     // - always post this to the test channel, because it's not a real "alert"
@@ -545,7 +595,9 @@ pub async fn check_block(
 
     // Because it depends on the next block, this check logs after block production resumes.
     if let Some(gap) = gap_since_last_block(*block_info, *prev_block_info) {
-        if gap >= MIN_BLOCK_GAP {
+        // Resume alerts without a stall are harmless, and might actually be interesting in
+        // themselves.
+        if gap >= MIN_BLOCK_GAP.saturating_sub(BLOCK_GAP_SLOP) {
             alert_tx
                 .send(Alert::new(
                     AlertKind::BlockProductionResumed {
@@ -583,14 +635,21 @@ pub async fn check_for_block_stall(
     block_info: BlockInfo,
     latest_block_rx: watch::Receiver<Option<BlockInfo>>,
 ) {
-    assert!(mode.is_current(), "doesn't work on replayed blocks");
+    // It doesn't make sense to check the local clock for stalls on replayed blocks, because we
+    // already know there's a new current block. It's expensive to spawn a task, so return
+    // early.
+    if !mode.is_current() {
+        return;
+    }
 
     let old_block_info = block_info;
 
     // There's no need to check the result of the spawned task, panics are impossible, and other
     // errors are handled by replaying missed blocks on restart.
     tokio::spawn(async move {
-        sleep(MIN_BLOCK_GAP).await;
+        // Stall alerts without a resume are alarming, it looks like either the chain or alerter
+        // has stopped. We've seen a spurious stall at exactly 60 seconds, but only once.
+        sleep(MIN_BLOCK_GAP.saturating_add(BLOCK_GAP_SLOP)).await;
 
         // Avoid a potential deadlock by copying the watched value immediately.
         let latest_block_info: BlockInfo = latest_block_rx
@@ -629,7 +688,7 @@ pub async fn check_extrinsic(
     // TODO: when we add a check that doesn't work on replayed blocks, skip it using mode
     mode: BlockCheckMode,
     alert_tx: &mpsc::Sender<Alert>,
-    extrinsic: &ExtrinsicDetails<SubspaceConfig, SubspaceClient>,
+    extrinsic: &RawExtrinsic,
     block_info: &BlockInfo,
 ) -> anyhow::Result<()> {
     let Some(extrinsic_info) = ExtrinsicInfo::new(extrinsic, block_info) else {
@@ -731,7 +790,7 @@ pub async fn check_event(
     // TODO: when we add a check that doesn't work on replayed blocks, skip it using mode
     mode: BlockCheckMode,
     alert_tx: &mpsc::Sender<Alert>,
-    event: &Event,
+    event: &RawEvent,
     block_info: &BlockInfo,
 ) -> anyhow::Result<()> {
     let event_info = EventInfo::new(event, block_info);
