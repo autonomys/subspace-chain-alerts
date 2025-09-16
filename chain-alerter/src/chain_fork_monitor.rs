@@ -27,6 +27,9 @@ pub const CHAIN_FORK_BUFFER_SIZE: usize = 50;
 pub const MIN_FORK_DEPTH: usize = 7;
 
 /// The minimum fork depth to log as info.
+pub const MIN_FORK_DEPTH_FOR_WARN_LOG: usize = 5;
+
+/// The minimum fork depth to log as info.
 pub const MIN_FORK_DEPTH_FOR_INFO_LOG: usize = 3;
 
 /// The minimum number of blocks to alert on for backwards reorgs.
@@ -35,11 +38,12 @@ pub const MIN_BACKWARDS_REORG_DEPTH: usize = 1;
 
 /// The minimum number of blocks to log as info for backwards reorgs.
 /// Currently we log all backwards reorgs.
-pub const MIN_BACKWARDS_REORG_DEPTH_FOR_INFO_LOG: usize = 1;
+pub const MIN_BACKWARDS_REORG_DEPTH_FOR_WARN_LOG: usize = 1;
 
-// Alerting without logging doesn't make sense.
-const_assert!(MIN_FORK_DEPTH >= MIN_FORK_DEPTH_FOR_INFO_LOG);
-const_assert!(MIN_BACKWARDS_REORG_DEPTH >= MIN_BACKWARDS_REORG_DEPTH_FOR_INFO_LOG);
+// Alerting without logging and warning without info-ing don't make sense.
+const_assert!(MIN_FORK_DEPTH >= MIN_FORK_DEPTH_FOR_WARN_LOG);
+const_assert!(MIN_FORK_DEPTH_FOR_WARN_LOG >= MIN_FORK_DEPTH_FOR_INFO_LOG);
+const_assert!(MIN_BACKWARDS_REORG_DEPTH >= MIN_BACKWARDS_REORG_DEPTH_FOR_WARN_LOG);
 
 /// The maximum number of blocks to keep in the chain fork state.
 ///
@@ -155,12 +159,18 @@ impl ChainForkEvent {
             || self.backwards_reorg_depth().unwrap_or_default() >= MIN_BACKWARDS_REORG_DEPTH
     }
 
+    /// Returns true if the event has a fork depth greater than the minimum fork depth for warn
+    /// logs.
+    pub fn needs_warn_log(&self) -> bool {
+        self.largest_fork_depth() >= MIN_FORK_DEPTH_FOR_WARN_LOG
+            || self.backwards_reorg_depth().unwrap_or_default()
+                >= MIN_BACKWARDS_REORG_DEPTH_FOR_WARN_LOG
+    }
+
     /// Returns true if the event has a fork depth greater than the minimum fork depth for info
     /// logs.
     pub fn needs_info_log(&self) -> bool {
         self.largest_fork_depth() >= MIN_FORK_DEPTH_FOR_INFO_LOG
-            || self.backwards_reorg_depth().unwrap_or_default()
-                >= MIN_BACKWARDS_REORG_DEPTH_FOR_INFO_LOG
     }
 
     /// Returns the largest fork depth in the event.
@@ -688,7 +698,9 @@ pub async fn add_blocks_to_chain_fork_state(
             // reorg.
             // Continue to add any descendant blocks.
             Ok(Some(event)) => {
-                if event.needs_info_log() {
+                if event.needs_warn_log() {
+                    warn!(?mode, ?event, "Chain fork or reorg event");
+                } else if event.needs_info_log() {
                     info!(?mode, ?event, "Chain fork or reorg event");
                 } else {
                     debug!(?mode, ?event, "Chain fork or reorg event");
