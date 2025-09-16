@@ -28,6 +28,10 @@ const MIN_BALANCE_CHANGE: Balance = 1_000_000 * AI3;
 /// <https://github.com/paritytech/polkadot-sdk/blob/0034d178fff88a0fd87cf0ec1d8f122ae0011d78/substrate/frame/timestamp/src/lib.rs#L307>
 const MIN_BLOCK_GAP: Duration = Duration::from_secs(TARGET_BLOCK_INTERVAL * 10);
 
+/// The amount of time to add/subtract from the minimum block gap to account for consensus clock
+/// drift, async timer delays, and similar inaccuracies.
+const BLOCK_GAP_SLOP: Duration = Duration::from_secs(1);
+
 /// Whether we are replaying missed blocks, or checking current blocks.
 /// This impacts block stall checks, which can only be spawned on new blocks.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -591,7 +595,9 @@ pub async fn check_block(
 
     // Because it depends on the next block, this check logs after block production resumes.
     if let Some(gap) = gap_since_last_block(*block_info, *prev_block_info) {
-        if gap >= MIN_BLOCK_GAP {
+        // Resume alerts without a stall are harmless, and might actually be interesting in
+        // themselves.
+        if gap >= MIN_BLOCK_GAP.saturating_sub(BLOCK_GAP_SLOP) {
             alert_tx
                 .send(Alert::new(
                     AlertKind::BlockProductionResumed {
@@ -629,14 +635,21 @@ pub async fn check_for_block_stall(
     block_info: BlockInfo,
     latest_block_rx: watch::Receiver<Option<BlockInfo>>,
 ) {
-    assert!(mode.is_current(), "doesn't work on replayed blocks");
+    // It doesn't make sense to check the local clock for stalls on replayed blocks, because we
+    // already know there's a new current block. It's expensive to spawn a task, so return
+    // early.
+    if !mode.is_current() {
+        return;
+    }
 
     let old_block_info = block_info;
 
     // There's no need to check the result of the spawned task, panics are impossible, and other
     // errors are handled by replaying missed blocks on restart.
     tokio::spawn(async move {
-        sleep(MIN_BLOCK_GAP).await;
+        // Stall alerts without a resume are alarming, it looks like either the chain or alerter
+        // has stopped. We've seen a spurious stall at exactly 60 seconds, but only once.
+        sleep(MIN_BLOCK_GAP.saturating_add(BLOCK_GAP_SLOP)).await;
 
         // Avoid a potential deadlock by copying the watched value immediately.
         let latest_block_info: BlockInfo = latest_block_rx
