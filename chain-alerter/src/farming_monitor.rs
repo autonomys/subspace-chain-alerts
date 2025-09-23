@@ -8,7 +8,7 @@ use scale_value::Composite;
 use std::collections::{HashMap, VecDeque};
 use subxt::utils::H256;
 use tokio::sync::mpsc;
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 /// The default minimum allowed change from the average farmer votes within the checking
 /// window.
@@ -26,6 +26,11 @@ pub const DEFAULT_FARMING_MIN_ALERT_BLOCK_INTERVAL: usize = 1000;
 
 /// The default maximum history size for the farming monitor.
 pub const DEFAULT_FARMING_MAX_HISTORY_BLOCK_INTERVAL: usize = 1000;
+
+/// The farmer vote event pallet name.
+pub const FARMER_VOTE_EVENT_PALLET_NAME: &str = "Subspace";
+/// The farmer vote event variant name.
+pub const FARMER_VOTE_EVENT_VARIANT_NAME: &str = "FarmerVote";
 
 /// Interface for farming monitors that consume blocks and perform checks.
 pub trait FarmingMonitor {
@@ -130,6 +135,13 @@ impl MemoryFarmingMonitor {
             let pallet_name = event.pallet_name();
             let variant_name = event.variant_name();
 
+            if pallet_name != FARMER_VOTE_EVENT_PALLET_NAME
+                || variant_name != FARMER_VOTE_EVENT_VARIANT_NAME
+            {
+                trace!("Event {pallet_name:?}.{variant_name:?} is not a farmer vote");
+                continue;
+            }
+
             let named_fields = match event.field_values() {
                 Ok(Composite::Named(named_fields)) => named_fields,
                 Err(e) => {
@@ -187,6 +199,11 @@ impl MemoryFarmingMonitor {
         self.state
             .active_farmers_in_last_blocks
             .truncate(self.config.max_block_interval);
+
+        info!(
+            "Number of farmers with votes in the last {} blocks: {}",
+            self.config.max_block_interval, number_of_farmers_with_votes
+        );
     }
 
     /// Returns the current number of farmers with votes, and the fraction that number is of the
