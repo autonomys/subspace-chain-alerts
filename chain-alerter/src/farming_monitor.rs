@@ -461,6 +461,23 @@ mod tests {
                 BlockCheckMode::Current,
             )
         );
+
+        assert_eq!(
+            farming_monitor.state.status,
+            FarmingMonitorStatus::AlertingDecrease
+        );
+
+        // Check that no alert is emitted again after the alert has been emitted.
+        farming_monitor
+            .check_farmer_count(&block_info, BlockCheckMode::Current)
+            .await;
+
+        alert_rx.try_recv().unwrap_err();
+
+        assert_eq!(
+            farming_monitor.state.status,
+            FarmingMonitorStatus::NotFiring
+        );
     }
 
     #[tokio::test]
@@ -515,6 +532,23 @@ mod tests {
                 mock_block_info,
                 BlockCheckMode::Current,
             )
+        );
+
+        assert_eq!(
+            farming_monitor.state.status,
+            FarmingMonitorStatus::AlertingIncrease
+        );
+
+        // Check that no alert is emitted again after the alert has been emitted.
+        farming_monitor
+            .check_farmer_count(&mock_block_info, BlockCheckMode::Current)
+            .await;
+
+        alert_rx.try_recv().unwrap_err();
+
+        assert_eq!(
+            farming_monitor.state.status,
+            FarmingMonitorStatus::NotFiring
         );
     }
 
