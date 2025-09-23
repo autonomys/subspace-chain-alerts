@@ -211,7 +211,7 @@ impl MemoryFarmingMonitor {
             .active_farmers_in_last_blocks
             .truncate(self.config.max_block_interval);
 
-        info!(
+        debug!(
             "Number of farmers with votes in the last {} blocks: {}",
             self.config.max_block_interval, number_of_farmers_with_votes
         );
