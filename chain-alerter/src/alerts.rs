@@ -2,7 +2,9 @@
 
 #[cfg(test)]
 mod tests;
+pub mod transfer;
 
+use crate::alerts::transfer::{check_transfer_event, check_transfer_extrinsic};
 use crate::chain_fork_monitor::ChainForkEvent;
 use crate::format::{fmt_amount, fmt_duration, fmt_timestamp};
 use crate::subspace::{
@@ -10,12 +12,11 @@ use crate::subspace::{
     RawExtrinsic, TARGET_BLOCK_INTERVAL, gap_since_last_block, gap_since_time,
 };
 use chrono::Utc;
-use scale_value::Composite;
 use std::fmt::{self, Display};
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio::time::sleep;
-use tracing::{debug, warn};
+use tracing::warn;
 
 /// The minimum balance change to alert on.
 const MIN_BALANCE_CHANGE: Balance = 1_000_000 * AI3;
@@ -204,13 +205,46 @@ pub enum AlertKind {
         transfer_value: Option<Balance>,
     },
 
-    /// A large Balance transfer has been detected.
+    /// A large Balance transfer extrinsic has been detected.
     LargeBalanceTransfer {
         /// The Balance call's extrinsic information.
         extrinsic_info: ExtrinsicInfo,
 
         /// The transfer value.
         transfer_value: Balance,
+    },
+
+    /// A large Balance transfer event has been detected.
+    LargeBalanceTransferEvent {
+        /// The Balance event information.
+        event_info: EventInfo,
+
+        /// The transfer value.
+        transfer_value: Balance,
+    },
+
+    /// A transfer to or from an important address has been detected.
+    ImportantAddressTransfer {
+        /// The list of important address kinds.
+        address_kinds: String,
+
+        /// The Balance call's extrinsic information.
+        extrinsic_info: ExtrinsicInfo,
+
+        /// The transfer value.
+        transfer_value: Option<Balance>,
+    },
+
+    /// A transfer event to or from an important address has been detected.
+    ImportantAddressTransferEvent {
+        /// The list of important address kinds.
+        address_kinds: String,
+
+        /// The Balance event information.
+        event_info: EventInfo,
+
+        /// The transfer value.
+        transfer_value: Option<Balance>,
     },
 
     /// A Sudo call has been detected.
@@ -274,11 +308,11 @@ pub enum AlertKind {
 impl Display for AlertKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AlertKind::Startup => {
+            Self::Startup => {
                 write!(f, "**Launched and connected to the node**")
             }
 
-            AlertKind::BlockProductionStall { gap } => {
+            Self::BlockProductionStall { gap } => {
                 write!(
                     f,
                     "**Block production stalled**\n\
@@ -287,7 +321,7 @@ impl Display for AlertKind {
                 )
             }
 
-            AlertKind::BlockProductionResumed {
+            Self::BlockProductionResumed {
                 gap,
                 prev_block_info,
             } => {
@@ -301,7 +335,7 @@ impl Display for AlertKind {
                 )
             }
 
-            AlertKind::NewSideFork { fork_depth } => {
+            Self::NewSideFork { fork_depth } => {
                 write!(
                     f,
                     "**New side chain fork detected**\n\
@@ -309,7 +343,7 @@ impl Display for AlertKind {
                 )
             }
 
-            AlertKind::SideForkExtended { fork_depth } => {
+            Self::SideForkExtended { fork_depth } => {
                 write!(
                     f,
                     "**Side chain fork extended**\n\
@@ -317,7 +351,7 @@ impl Display for AlertKind {
                 )
             }
 
-            AlertKind::Reorg {
+            Self::Reorg {
                 old_best_block,
                 old_fork_depth,
                 new_fork_depth,
@@ -343,7 +377,7 @@ impl Display for AlertKind {
                 Ok(())
             }
 
-            AlertKind::ForceBalanceTransfer {
+            Self::ForceBalanceTransfer {
                 extrinsic_info,
                 transfer_value,
             } => {
@@ -356,7 +390,7 @@ impl Display for AlertKind {
                 )
             }
 
-            AlertKind::LargeBalanceTransfer {
+            Self::LargeBalanceTransfer {
                 extrinsic_info,
                 transfer_value,
             } => {
@@ -370,7 +404,51 @@ impl Display for AlertKind {
                 )
             }
 
-            AlertKind::SudoCall { extrinsic_info } => {
+            Self::LargeBalanceTransferEvent {
+                event_info,
+                transfer_value,
+            } => {
+                write!(
+                    f,
+                    "**Large Balances event detected**\n\
+                    Transfer value: {} (above {})\n\
+                    {event_info}",
+                    fmt_amount(*transfer_value),
+                    fmt_amount(MIN_BALANCE_CHANGE),
+                )
+            }
+
+            Self::ImportantAddressTransfer {
+                address_kinds,
+                extrinsic_info,
+                transfer_value,
+            } => {
+                write!(
+                    f,
+                    "**Important address transfer detected**\n\
+                    Kind(s): {address_kinds}\n\
+                    Transfer value: {}\n\
+                    {extrinsic_info}",
+                    fmt_amount(*transfer_value),
+                )
+            }
+
+            Self::ImportantAddressTransferEvent {
+                address_kinds,
+                event_info,
+                transfer_value,
+            } => {
+                write!(
+                    f,
+                    "**Important address transfer detected**\n\
+                    Kind(s): {address_kinds}\n\
+                    Transfer value: {}\n\
+                    {event_info}",
+                    fmt_amount(*transfer_value),
+                )
+            }
+
+            Self::SudoCall { extrinsic_info } => {
                 write!(
                     f,
                     "**Sudo call detected**\n\
@@ -378,7 +456,7 @@ impl Display for AlertKind {
                 )
             }
 
-            AlertKind::SudoEvent { event_info } => {
+            Self::SudoEvent { event_info } => {
                 write!(
                     f,
                     "**Sudo event detected**\n\
@@ -386,7 +464,7 @@ impl Display for AlertKind {
                 )
             }
 
-            AlertKind::OperatorSlashed { event_info } => {
+            Self::OperatorSlashed { event_info } => {
                 write!(
                     f,
                     "**Operator slash detected**\n\
@@ -394,7 +472,7 @@ impl Display for AlertKind {
                 )
             }
 
-            AlertKind::SlotTime {
+            Self::SlotTime {
                 current_ratio,
                 threshold,
                 interval,
@@ -412,7 +490,7 @@ impl Display for AlertKind {
                 )
             }
 
-            AlertKind::FarmersDecreasedSuddenly {
+            Self::FarmersDecreasedSuddenly {
                 number_of_farmers_with_votes,
                 average_number_of_farmers_with_votes,
                 number_of_blocks,
@@ -424,7 +502,7 @@ impl Display for AlertKind {
                     Average number of farmers with votes in previous {number_of_blocks} blocks: {average_number_of_farmers_with_votes}",
                 )
             }
-            AlertKind::FarmersIncreasedSuddenly {
+            Self::FarmersIncreasedSuddenly {
                 number_of_farmers_with_votes,
                 average_number_of_farmers_with_votes,
                 number_of_blocks,
@@ -447,24 +525,27 @@ impl AlertKind {
     #[allow(dead_code, reason = "TODO: use in tests")]
     pub fn prev_block_info(&self) -> Option<&BlockInfo> {
         match self {
-            AlertKind::BlockProductionResumed {
+            Self::BlockProductionResumed {
                 prev_block_info, ..
             } => Some(prev_block_info),
             // Deliberately repeat each enum variant here, so we can't forget to update this
             // method when adding new variants.
-            AlertKind::Startup
-            | AlertKind::BlockProductionStall { .. }
-            | AlertKind::NewSideFork { .. }
-            | AlertKind::SideForkExtended { .. }
-            | AlertKind::Reorg { .. }
-            | AlertKind::ForceBalanceTransfer { .. }
-            | AlertKind::LargeBalanceTransfer { .. }
-            | AlertKind::SudoCall { .. }
-            | AlertKind::SudoEvent { .. }
-            | AlertKind::OperatorSlashed { .. }
-            | AlertKind::SlotTime { .. }
-            | AlertKind::FarmersDecreasedSuddenly { .. }
-            | AlertKind::FarmersIncreasedSuddenly { .. } => None,
+            Self::Startup
+            | Self::BlockProductionStall { .. }
+            | Self::NewSideFork { .. }
+            | Self::SideForkExtended { .. }
+            | Self::Reorg { .. }
+            | Self::ForceBalanceTransfer { .. }
+            | Self::LargeBalanceTransfer { .. }
+            | Self::LargeBalanceTransferEvent { .. }
+            | Self::ImportantAddressTransfer { .. }
+            | Self::ImportantAddressTransferEvent { .. }
+            | Self::SudoCall { .. }
+            | Self::SudoEvent { .. }
+            | Self::OperatorSlashed { .. }
+            | Self::SlotTime { .. }
+            | Self::FarmersDecreasedSuddenly { .. }
+            | Self::FarmersIncreasedSuddenly { .. } => None,
         }
     }
 
@@ -474,22 +555,25 @@ impl AlertKind {
     #[allow(dead_code, reason = "TODO: use in tests")]
     pub fn prev_block_position(&self) -> Option<BlockPosition> {
         match self {
-            AlertKind::BlockProductionResumed {
+            Self::BlockProductionResumed {
                 prev_block_info, ..
             } => Some(prev_block_info.position()),
-            AlertKind::Reorg { old_best_block, .. } => Some(*old_best_block),
-            AlertKind::Startup
-            | AlertKind::BlockProductionStall { .. }
-            | AlertKind::NewSideFork { .. }
-            | AlertKind::SideForkExtended { .. }
-            | AlertKind::ForceBalanceTransfer { .. }
-            | AlertKind::LargeBalanceTransfer { .. }
-            | AlertKind::SudoCall { .. }
-            | AlertKind::SudoEvent { .. }
-            | AlertKind::OperatorSlashed { .. }
-            | AlertKind::SlotTime { .. }
-            | AlertKind::FarmersDecreasedSuddenly { .. }
-            | AlertKind::FarmersIncreasedSuddenly { .. } => None,
+            Self::Reorg { old_best_block, .. } => Some(*old_best_block),
+            Self::Startup
+            | Self::BlockProductionStall { .. }
+            | Self::NewSideFork { .. }
+            | Self::SideForkExtended { .. }
+            | Self::ForceBalanceTransfer { .. }
+            | Self::LargeBalanceTransfer { .. }
+            | Self::LargeBalanceTransferEvent { .. }
+            | Self::ImportantAddressTransfer { .. }
+            | Self::ImportantAddressTransferEvent { .. }
+            | Self::SudoCall { .. }
+            | Self::SudoEvent { .. }
+            | Self::OperatorSlashed { .. }
+            | Self::SlotTime { .. }
+            | Self::FarmersDecreasedSuddenly { .. }
+            | Self::FarmersIncreasedSuddenly { .. } => None,
         }
     }
 
@@ -497,20 +581,23 @@ impl AlertKind {
     #[cfg_attr(not(test), allow(dead_code, reason = "only used in tests"))]
     pub fn extrinsic_info(&self) -> Option<&ExtrinsicInfo> {
         match self {
-            AlertKind::ForceBalanceTransfer { extrinsic_info, .. } => Some(extrinsic_info),
-            AlertKind::LargeBalanceTransfer { extrinsic_info, .. } => Some(extrinsic_info),
-            AlertKind::SudoCall { extrinsic_info } => Some(extrinsic_info),
-            AlertKind::Startup
-            | AlertKind::FarmersDecreasedSuddenly { .. }
-            | AlertKind::FarmersIncreasedSuddenly { .. }
-            | AlertKind::BlockProductionStall { .. }
-            | AlertKind::BlockProductionResumed { .. }
-            | AlertKind::NewSideFork { .. }
-            | AlertKind::SideForkExtended { .. }
-            | AlertKind::Reorg { .. }
-            | AlertKind::SudoEvent { .. }
-            | AlertKind::OperatorSlashed { .. }
-            | AlertKind::SlotTime { .. } => None,
+            Self::ForceBalanceTransfer { extrinsic_info, .. }
+            | Self::LargeBalanceTransfer { extrinsic_info, .. }
+            | Self::ImportantAddressTransfer { extrinsic_info, .. }
+            | Self::SudoCall { extrinsic_info } => Some(extrinsic_info),
+            Self::Startup
+            | Self::FarmersDecreasedSuddenly { .. }
+            | Self::FarmersIncreasedSuddenly { .. }
+            | Self::BlockProductionStall { .. }
+            | Self::BlockProductionResumed { .. }
+            | Self::NewSideFork { .. }
+            | Self::SideForkExtended { .. }
+            | Self::LargeBalanceTransferEvent { .. }
+            | Self::ImportantAddressTransferEvent { .. }
+            | Self::Reorg { .. }
+            | Self::SudoEvent { .. }
+            | Self::OperatorSlashed { .. }
+            | Self::SlotTime { .. } => None,
         }
     }
 
@@ -518,20 +605,23 @@ impl AlertKind {
     #[allow(dead_code, reason = "TODO: use in tests")]
     pub fn transfer_value(&self) -> Option<Balance> {
         match self {
-            AlertKind::ForceBalanceTransfer { transfer_value, .. } => *transfer_value,
-            AlertKind::LargeBalanceTransfer { transfer_value, .. } => Some(*transfer_value),
-            AlertKind::Startup
-            | AlertKind::FarmersDecreasedSuddenly { .. }
-            | AlertKind::FarmersIncreasedSuddenly { .. }
-            | AlertKind::BlockProductionStall { .. }
-            | AlertKind::BlockProductionResumed { .. }
-            | AlertKind::NewSideFork { .. }
-            | AlertKind::SideForkExtended { .. }
-            | AlertKind::Reorg { .. }
-            | AlertKind::SudoCall { .. }
-            | AlertKind::SudoEvent { .. }
-            | AlertKind::OperatorSlashed { .. }
-            | AlertKind::SlotTime { .. } => None,
+            Self::ForceBalanceTransfer { transfer_value, .. }
+            | Self::ImportantAddressTransfer { transfer_value, .. }
+            | Self::ImportantAddressTransferEvent { transfer_value, .. } => *transfer_value,
+            Self::LargeBalanceTransfer { transfer_value, .. }
+            | Self::LargeBalanceTransferEvent { transfer_value, .. } => Some(*transfer_value),
+            Self::Startup
+            | Self::FarmersDecreasedSuddenly { .. }
+            | Self::FarmersIncreasedSuddenly { .. }
+            | Self::BlockProductionStall { .. }
+            | Self::BlockProductionResumed { .. }
+            | Self::NewSideFork { .. }
+            | Self::SideForkExtended { .. }
+            | Self::Reorg { .. }
+            | Self::SudoCall { .. }
+            | Self::SudoEvent { .. }
+            | Self::OperatorSlashed { .. }
+            | Self::SlotTime { .. } => None,
         }
     }
 
@@ -539,20 +629,23 @@ impl AlertKind {
     #[cfg_attr(not(test), allow(dead_code, reason = "only used in tests"))]
     pub fn event_info(&self) -> Option<&EventInfo> {
         match self {
-            AlertKind::SudoEvent { event_info } => Some(event_info),
-            AlertKind::OperatorSlashed { event_info } => Some(event_info),
-            AlertKind::Startup
-            | AlertKind::BlockProductionStall { .. }
-            | AlertKind::BlockProductionResumed { .. }
-            | AlertKind::NewSideFork { .. }
-            | AlertKind::SideForkExtended { .. }
-            | AlertKind::Reorg { .. }
-            | AlertKind::ForceBalanceTransfer { .. }
-            | AlertKind::LargeBalanceTransfer { .. }
-            | AlertKind::SudoCall { .. }
-            | AlertKind::SlotTime { .. }
-            | AlertKind::FarmersDecreasedSuddenly { .. }
-            | AlertKind::FarmersIncreasedSuddenly { .. } => None,
+            Self::LargeBalanceTransferEvent { event_info, .. }
+            | Self::ImportantAddressTransferEvent { event_info, .. }
+            | Self::SudoEvent { event_info }
+            | Self::OperatorSlashed { event_info } => Some(event_info),
+            Self::Startup
+            | Self::BlockProductionStall { .. }
+            | Self::BlockProductionResumed { .. }
+            | Self::NewSideFork { .. }
+            | Self::SideForkExtended { .. }
+            | Self::Reorg { .. }
+            | Self::ForceBalanceTransfer { .. }
+            | Self::LargeBalanceTransfer { .. }
+            | Self::ImportantAddressTransfer { .. }
+            | Self::SudoCall { .. }
+            | Self::SlotTime { .. }
+            | Self::FarmersDecreasedSuddenly { .. }
+            | Self::FarmersIncreasedSuddenly { .. } => None,
         }
     }
 }
@@ -702,6 +795,8 @@ pub async fn check_extrinsic(
     // - link extrinsic and account to subscan
     // - add extrinsic success/failure to alerts
 
+    check_transfer_extrinsic(mode, alert_tx, &extrinsic_info, block_info).await?;
+
     // All sudo calls are alerts.
     // TODO:
     // - test this alert by checking a historic block with a sudo call
@@ -715,67 +810,6 @@ pub async fn check_extrinsic(
                 mode,
             ))
             .await?;
-    } else if extrinsic_info.pallet == "Balances" {
-        // "force*" calls and large balance changes are alerts.
-
-        // subxt knows these field names, so we can search for the transfer value by
-        // name.
-        // TODO:
-        // - track the total of recent transfers, so the threshold can't be bypassed by splitting
-        //   the transfer into multiple calls
-        // - split this field search into a function which takes a field name, and another function
-        //   which does the numeric conversion and range check
-        let transfer_value: Option<Balance> = if let Composite::Named(named_fields) =
-            &extrinsic_info.fields
-            && let Some((_, transfer_value)) = named_fields
-                .iter()
-                .find(|(name, _)| ["value", "amount", "new_free", "delta"].contains(&name.as_str()))
-        {
-            transfer_value.as_u128()
-        } else {
-            None
-        };
-
-        debug!(?mode, "transfer_value: {:?}", transfer_value);
-
-        // TODO:
-        // - test force alerts by checking a historic block with that call
-        // - do we want to track burn calls? <https://autonomys.subscan.io/extrinsic/137324-31>
-        if extrinsic_info.call.starts_with("force") {
-            alert_tx
-                .send(Alert::new(
-                    AlertKind::ForceBalanceTransfer {
-                        extrinsic_info,
-                        transfer_value,
-                    },
-                    *block_info,
-                    mode,
-                ))
-                .await?;
-        } else if let Some(transfer_value) = transfer_value
-            && transfer_value >= MIN_BALANCE_CHANGE
-        {
-            alert_tx
-                .send(Alert::new(
-                    AlertKind::LargeBalanceTransfer {
-                        extrinsic_info,
-                        transfer_value,
-                    },
-                    *block_info,
-                    mode,
-                ))
-                .await?;
-        } else if transfer_value.is_none()
-            && !["transfer_all", "upgrade_accounts"].contains(&extrinsic_info.call.as_str())
-        {
-            // Every other Balances extrinsic should have an amount.
-            // TODO: check transfer_all by accessing account storage to get the value
-            warn!(
-                ?mode,
-                ?extrinsic_info,
-                "Balance: extrinsic amount unavailable in block",
-            );
-        }
     }
 
     Ok(())
@@ -800,6 +834,8 @@ pub async fn check_event(
     // - add tests to make sure we can parse the events for each alert
     // - format account IDs as ss58 with prefix 6094
     // - link event and account to subscan
+
+    check_transfer_event(mode, alert_tx, &event_info, block_info).await?;
 
     // All operator slashes are alerts.
     // TODO:
