@@ -8,7 +8,7 @@ use scale_value::Composite;
 use std::collections::{HashMap, VecDeque};
 use subxt::utils::H256;
 use tokio::sync::mpsc;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, trace, warn};
 
 /// The default minimum allowed change from the average farmer votes within the checking
 /// window.
