@@ -284,11 +284,11 @@ pub enum AlertKind {
 impl Display for AlertKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AlertKind::Startup => {
+            Self::Startup => {
                 write!(f, "**Launched and connected to the node**")
             }
 
-            AlertKind::BlockProductionStall { gap } => {
+            Self::BlockProductionStall { gap } => {
                 write!(
                     f,
                     "**Block production stalled**\n\
@@ -297,7 +297,7 @@ impl Display for AlertKind {
                 )
             }
 
-            AlertKind::BlockProductionResumed {
+            Self::BlockProductionResumed {
                 gap,
                 prev_block_info,
             } => {
@@ -311,7 +311,7 @@ impl Display for AlertKind {
                 )
             }
 
-            AlertKind::NewSideFork { fork_depth } => {
+            Self::NewSideFork { fork_depth } => {
                 write!(
                     f,
                     "**New side chain fork detected**\n\
@@ -319,7 +319,7 @@ impl Display for AlertKind {
                 )
             }
 
-            AlertKind::SideForkExtended { fork_depth } => {
+            Self::SideForkExtended { fork_depth } => {
                 write!(
                     f,
                     "**Side chain fork extended**\n\
@@ -327,7 +327,7 @@ impl Display for AlertKind {
                 )
             }
 
-            AlertKind::Reorg {
+            Self::Reorg {
                 old_best_block,
                 old_fork_depth,
                 new_fork_depth,
@@ -353,7 +353,7 @@ impl Display for AlertKind {
                 Ok(())
             }
 
-            AlertKind::ForceBalanceTransfer {
+            Self::ForceBalanceTransfer {
                 extrinsic_info,
                 transfer_value,
             } => {
@@ -366,7 +366,7 @@ impl Display for AlertKind {
                 )
             }
 
-            AlertKind::LargeBalanceTransfer {
+            Self::LargeBalanceTransfer {
                 extrinsic_info,
                 transfer_value,
             } => {
@@ -380,7 +380,7 @@ impl Display for AlertKind {
                 )
             }
 
-            AlertKind::LargeBalanceTransferEvent {
+            Self::LargeBalanceTransferEvent {
                 event_info,
                 transfer_value,
             } => {
@@ -394,7 +394,7 @@ impl Display for AlertKind {
                 )
             }
 
-            AlertKind::SudoCall { extrinsic_info } => {
+            Self::SudoCall { extrinsic_info } => {
                 write!(
                     f,
                     "**Sudo call detected**\n\
@@ -402,7 +402,7 @@ impl Display for AlertKind {
                 )
             }
 
-            AlertKind::SudoEvent { event_info } => {
+            Self::SudoEvent { event_info } => {
                 write!(
                     f,
                     "**Sudo event detected**\n\
@@ -410,7 +410,7 @@ impl Display for AlertKind {
                 )
             }
 
-            AlertKind::OperatorSlashed { event_info } => {
+            Self::OperatorSlashed { event_info } => {
                 write!(
                     f,
                     "**Operator slash detected**\n\
@@ -418,7 +418,7 @@ impl Display for AlertKind {
                 )
             }
 
-            AlertKind::SlotTime {
+            Self::SlotTime {
                 current_ratio,
                 threshold,
                 interval,
@@ -436,7 +436,7 @@ impl Display for AlertKind {
                 )
             }
 
-            AlertKind::FarmersDecreasedSuddenly {
+            Self::FarmersDecreasedSuddenly {
                 number_of_farmers_with_votes,
                 average_number_of_farmers_with_votes,
                 number_of_blocks,
@@ -448,7 +448,7 @@ impl Display for AlertKind {
                     Average number of farmers with votes in previous {number_of_blocks} blocks: {average_number_of_farmers_with_votes}",
                 )
             }
-            AlertKind::FarmersIncreasedSuddenly {
+            Self::FarmersIncreasedSuddenly {
                 number_of_farmers_with_votes,
                 average_number_of_farmers_with_votes,
                 number_of_blocks,
@@ -471,25 +471,25 @@ impl AlertKind {
     #[allow(dead_code, reason = "TODO: use in tests")]
     pub fn prev_block_info(&self) -> Option<&BlockInfo> {
         match self {
-            AlertKind::BlockProductionResumed {
+            Self::BlockProductionResumed {
                 prev_block_info, ..
             } => Some(prev_block_info),
             // Deliberately repeat each enum variant here, so we can't forget to update this
             // method when adding new variants.
-            AlertKind::Startup
-            | AlertKind::BlockProductionStall { .. }
-            | AlertKind::NewSideFork { .. }
-            | AlertKind::SideForkExtended { .. }
-            | AlertKind::Reorg { .. }
-            | AlertKind::ForceBalanceTransfer { .. }
-            | AlertKind::LargeBalanceTransfer { .. }
-            | AlertKind::LargeBalanceTransferEvent { .. }
-            | AlertKind::SudoCall { .. }
-            | AlertKind::SudoEvent { .. }
-            | AlertKind::OperatorSlashed { .. }
-            | AlertKind::SlotTime { .. }
-            | AlertKind::FarmersDecreasedSuddenly { .. }
-            | AlertKind::FarmersIncreasedSuddenly { .. } => None,
+            Self::Startup
+            | Self::BlockProductionStall { .. }
+            | Self::NewSideFork { .. }
+            | Self::SideForkExtended { .. }
+            | Self::Reorg { .. }
+            | Self::ForceBalanceTransfer { .. }
+            | Self::LargeBalanceTransfer { .. }
+            | Self::LargeBalanceTransferEvent { .. }
+            | Self::SudoCall { .. }
+            | Self::SudoEvent { .. }
+            | Self::OperatorSlashed { .. }
+            | Self::SlotTime { .. }
+            | Self::FarmersDecreasedSuddenly { .. }
+            | Self::FarmersIncreasedSuddenly { .. } => None,
         }
     }
 
@@ -499,23 +499,23 @@ impl AlertKind {
     #[allow(dead_code, reason = "TODO: use in tests")]
     pub fn prev_block_position(&self) -> Option<BlockPosition> {
         match self {
-            AlertKind::BlockProductionResumed {
+            Self::BlockProductionResumed {
                 prev_block_info, ..
             } => Some(prev_block_info.position()),
-            AlertKind::Reorg { old_best_block, .. } => Some(*old_best_block),
-            AlertKind::Startup
-            | AlertKind::BlockProductionStall { .. }
-            | AlertKind::NewSideFork { .. }
-            | AlertKind::SideForkExtended { .. }
-            | AlertKind::ForceBalanceTransfer { .. }
-            | AlertKind::LargeBalanceTransfer { .. }
-            | AlertKind::LargeBalanceTransferEvent { .. }
-            | AlertKind::SudoCall { .. }
-            | AlertKind::SudoEvent { .. }
-            | AlertKind::OperatorSlashed { .. }
-            | AlertKind::SlotTime { .. }
-            | AlertKind::FarmersDecreasedSuddenly { .. }
-            | AlertKind::FarmersIncreasedSuddenly { .. } => None,
+            Self::Reorg { old_best_block, .. } => Some(*old_best_block),
+            Self::Startup
+            | Self::BlockProductionStall { .. }
+            | Self::NewSideFork { .. }
+            | Self::SideForkExtended { .. }
+            | Self::ForceBalanceTransfer { .. }
+            | Self::LargeBalanceTransfer { .. }
+            | Self::LargeBalanceTransferEvent { .. }
+            | Self::SudoCall { .. }
+            | Self::SudoEvent { .. }
+            | Self::OperatorSlashed { .. }
+            | Self::SlotTime { .. }
+            | Self::FarmersDecreasedSuddenly { .. }
+            | Self::FarmersIncreasedSuddenly { .. } => None,
         }
     }
 
@@ -523,21 +523,21 @@ impl AlertKind {
     #[cfg_attr(not(test), allow(dead_code, reason = "only used in tests"))]
     pub fn extrinsic_info(&self) -> Option<&ExtrinsicInfo> {
         match self {
-            AlertKind::ForceBalanceTransfer { extrinsic_info, .. } => Some(extrinsic_info),
-            AlertKind::LargeBalanceTransfer { extrinsic_info, .. } => Some(extrinsic_info),
-            AlertKind::SudoCall { extrinsic_info } => Some(extrinsic_info),
-            AlertKind::Startup
-            | AlertKind::FarmersDecreasedSuddenly { .. }
-            | AlertKind::FarmersIncreasedSuddenly { .. }
-            | AlertKind::BlockProductionStall { .. }
-            | AlertKind::BlockProductionResumed { .. }
-            | AlertKind::NewSideFork { .. }
-            | AlertKind::SideForkExtended { .. }
-            | AlertKind::LargeBalanceTransferEvent { .. }
-            | AlertKind::Reorg { .. }
-            | AlertKind::SudoEvent { .. }
-            | AlertKind::OperatorSlashed { .. }
-            | AlertKind::SlotTime { .. } => None,
+            Self::ForceBalanceTransfer { extrinsic_info, .. } => Some(extrinsic_info),
+            Self::LargeBalanceTransfer { extrinsic_info, .. } => Some(extrinsic_info),
+            Self::SudoCall { extrinsic_info } => Some(extrinsic_info),
+            Self::Startup
+            | Self::FarmersDecreasedSuddenly { .. }
+            | Self::FarmersIncreasedSuddenly { .. }
+            | Self::BlockProductionStall { .. }
+            | Self::BlockProductionResumed { .. }
+            | Self::NewSideFork { .. }
+            | Self::SideForkExtended { .. }
+            | Self::LargeBalanceTransferEvent { .. }
+            | Self::Reorg { .. }
+            | Self::SudoEvent { .. }
+            | Self::OperatorSlashed { .. }
+            | Self::SlotTime { .. } => None,
         }
     }
 
@@ -545,21 +545,21 @@ impl AlertKind {
     #[allow(dead_code, reason = "TODO: use in tests")]
     pub fn transfer_value(&self) -> Option<Balance> {
         match self {
-            AlertKind::ForceBalanceTransfer { transfer_value, .. } => *transfer_value,
-            AlertKind::LargeBalanceTransfer { transfer_value, .. }
-            | AlertKind::LargeBalanceTransferEvent { transfer_value, .. } => Some(*transfer_value),
-            AlertKind::Startup
-            | AlertKind::FarmersDecreasedSuddenly { .. }
-            | AlertKind::FarmersIncreasedSuddenly { .. }
-            | AlertKind::BlockProductionStall { .. }
-            | AlertKind::BlockProductionResumed { .. }
-            | AlertKind::NewSideFork { .. }
-            | AlertKind::SideForkExtended { .. }
-            | AlertKind::Reorg { .. }
-            | AlertKind::SudoCall { .. }
-            | AlertKind::SudoEvent { .. }
-            | AlertKind::OperatorSlashed { .. }
-            | AlertKind::SlotTime { .. } => None,
+            Self::ForceBalanceTransfer { transfer_value, .. } => *transfer_value,
+            Self::LargeBalanceTransfer { transfer_value, .. }
+            | Self::LargeBalanceTransferEvent { transfer_value, .. } => Some(*transfer_value),
+            Self::Startup
+            | Self::FarmersDecreasedSuddenly { .. }
+            | Self::FarmersIncreasedSuddenly { .. }
+            | Self::BlockProductionStall { .. }
+            | Self::BlockProductionResumed { .. }
+            | Self::NewSideFork { .. }
+            | Self::SideForkExtended { .. }
+            | Self::Reorg { .. }
+            | Self::SudoCall { .. }
+            | Self::SudoEvent { .. }
+            | Self::OperatorSlashed { .. }
+            | Self::SlotTime { .. } => None,
         }
     }
 
@@ -567,21 +567,21 @@ impl AlertKind {
     #[cfg_attr(not(test), allow(dead_code, reason = "only used in tests"))]
     pub fn event_info(&self) -> Option<&EventInfo> {
         match self {
-            AlertKind::LargeBalanceTransferEvent { event_info, .. }
-            | AlertKind::SudoEvent { event_info }
-            | AlertKind::OperatorSlashed { event_info } => Some(event_info),
-            AlertKind::Startup
-            | AlertKind::BlockProductionStall { .. }
-            | AlertKind::BlockProductionResumed { .. }
-            | AlertKind::NewSideFork { .. }
-            | AlertKind::SideForkExtended { .. }
-            | AlertKind::Reorg { .. }
-            | AlertKind::ForceBalanceTransfer { .. }
-            | AlertKind::LargeBalanceTransfer { .. }
-            | AlertKind::SudoCall { .. }
-            | AlertKind::SlotTime { .. }
-            | AlertKind::FarmersDecreasedSuddenly { .. }
-            | AlertKind::FarmersIncreasedSuddenly { .. } => None,
+            Self::LargeBalanceTransferEvent { event_info, .. }
+            | Self::SudoEvent { event_info }
+            | Self::OperatorSlashed { event_info } => Some(event_info),
+            Self::Startup
+            | Self::BlockProductionStall { .. }
+            | Self::BlockProductionResumed { .. }
+            | Self::NewSideFork { .. }
+            | Self::SideForkExtended { .. }
+            | Self::Reorg { .. }
+            | Self::ForceBalanceTransfer { .. }
+            | Self::LargeBalanceTransfer { .. }
+            | Self::SudoCall { .. }
+            | Self::SlotTime { .. }
+            | Self::FarmersDecreasedSuddenly { .. }
+            | Self::FarmersIncreasedSuddenly { .. } => None,
         }
     }
 }
