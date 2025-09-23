@@ -2,7 +2,7 @@
 
 use scale_value::{Composite, Value, ValueDef};
 use subxt::utils::H256;
-use tracing::debug;
+use tracing::{debug, trace};
 
 /// Decode a H256 from a composite value.
 pub fn decode_h256_from_composite(composite: &Value<u32>) -> Option<H256> {
@@ -35,7 +35,7 @@ pub fn decode_h256_from_composite(composite: &Value<u32>) -> Option<H256> {
 
         let value_h256 = H256::from_slice(&bytes);
 
-        debug!(
+        trace!(
             "Extracted H256 from composite: {}",
             hex::encode(value_h256.as_bytes())
         );

@@ -2,9 +2,9 @@
 
 #[cfg(test)]
 mod tests;
-mod transfer;
+pub mod transfer;
 
-use crate::alerts::transfer::{check_balance_event, check_balance_extrinsic};
+use crate::alerts::transfer::{check_transfer_event, check_transfer_extrinsic};
 use crate::chain_fork_monitor::ChainForkEvent;
 use crate::format::{fmt_amount, fmt_duration, fmt_timestamp};
 use crate::subspace::{
@@ -223,6 +223,30 @@ pub enum AlertKind {
         transfer_value: Balance,
     },
 
+    /// A transfer to or from an important address has been detected.
+    ImportantAddressTransfer {
+        /// The list of important address kinds.
+        address_kinds: String,
+
+        /// The Balance call's extrinsic information.
+        extrinsic_info: ExtrinsicInfo,
+
+        /// The transfer value.
+        transfer_value: Option<Balance>,
+    },
+
+    /// A transfer event to or from an important address has been detected.
+    ImportantAddressTransferEvent {
+        /// The list of important address kinds.
+        address_kinds: String,
+
+        /// The Balance event information.
+        event_info: EventInfo,
+
+        /// The transfer value.
+        transfer_value: Option<Balance>,
+    },
+
     /// A Sudo call has been detected.
     SudoCall {
         /// The sudo call's extrinsic information.
@@ -394,6 +418,36 @@ impl Display for AlertKind {
                 )
             }
 
+            Self::ImportantAddressTransfer {
+                address_kinds,
+                extrinsic_info,
+                transfer_value,
+            } => {
+                write!(
+                    f,
+                    "**Important address transfer detected**\n\
+                    Kind(s): {address_kinds}\n\
+                    Transfer value: {}\n\
+                    {extrinsic_info}",
+                    fmt_amount(*transfer_value),
+                )
+            }
+
+            Self::ImportantAddressTransferEvent {
+                address_kinds,
+                event_info,
+                transfer_value,
+            } => {
+                write!(
+                    f,
+                    "**Important address transfer detected**\n\
+                    Kind(s): {address_kinds}\n\
+                    Transfer value: {}\n\
+                    {event_info}",
+                    fmt_amount(*transfer_value),
+                )
+            }
+
             Self::SudoCall { extrinsic_info } => {
                 write!(
                     f,
@@ -484,6 +538,8 @@ impl AlertKind {
             | Self::ForceBalanceTransfer { .. }
             | Self::LargeBalanceTransfer { .. }
             | Self::LargeBalanceTransferEvent { .. }
+            | Self::ImportantAddressTransfer { .. }
+            | Self::ImportantAddressTransferEvent { .. }
             | Self::SudoCall { .. }
             | Self::SudoEvent { .. }
             | Self::OperatorSlashed { .. }
@@ -510,6 +566,8 @@ impl AlertKind {
             | Self::ForceBalanceTransfer { .. }
             | Self::LargeBalanceTransfer { .. }
             | Self::LargeBalanceTransferEvent { .. }
+            | Self::ImportantAddressTransfer { .. }
+            | Self::ImportantAddressTransferEvent { .. }
             | Self::SudoCall { .. }
             | Self::SudoEvent { .. }
             | Self::OperatorSlashed { .. }
@@ -523,9 +581,10 @@ impl AlertKind {
     #[cfg_attr(not(test), allow(dead_code, reason = "only used in tests"))]
     pub fn extrinsic_info(&self) -> Option<&ExtrinsicInfo> {
         match self {
-            Self::ForceBalanceTransfer { extrinsic_info, .. } => Some(extrinsic_info),
-            Self::LargeBalanceTransfer { extrinsic_info, .. } => Some(extrinsic_info),
-            Self::SudoCall { extrinsic_info } => Some(extrinsic_info),
+            Self::ForceBalanceTransfer { extrinsic_info, .. }
+            | Self::LargeBalanceTransfer { extrinsic_info, .. }
+            | Self::ImportantAddressTransfer { extrinsic_info, .. }
+            | Self::SudoCall { extrinsic_info } => Some(extrinsic_info),
             Self::Startup
             | Self::FarmersDecreasedSuddenly { .. }
             | Self::FarmersIncreasedSuddenly { .. }
@@ -534,6 +593,7 @@ impl AlertKind {
             | Self::NewSideFork { .. }
             | Self::SideForkExtended { .. }
             | Self::LargeBalanceTransferEvent { .. }
+            | Self::ImportantAddressTransferEvent { .. }
             | Self::Reorg { .. }
             | Self::SudoEvent { .. }
             | Self::OperatorSlashed { .. }
@@ -545,7 +605,9 @@ impl AlertKind {
     #[allow(dead_code, reason = "TODO: use in tests")]
     pub fn transfer_value(&self) -> Option<Balance> {
         match self {
-            Self::ForceBalanceTransfer { transfer_value, .. } => *transfer_value,
+            Self::ForceBalanceTransfer { transfer_value, .. }
+            | Self::ImportantAddressTransfer { transfer_value, .. }
+            | Self::ImportantAddressTransferEvent { transfer_value, .. } => *transfer_value,
             Self::LargeBalanceTransfer { transfer_value, .. }
             | Self::LargeBalanceTransferEvent { transfer_value, .. } => Some(*transfer_value),
             Self::Startup
@@ -568,6 +630,7 @@ impl AlertKind {
     pub fn event_info(&self) -> Option<&EventInfo> {
         match self {
             Self::LargeBalanceTransferEvent { event_info, .. }
+            | Self::ImportantAddressTransferEvent { event_info, .. }
             | Self::SudoEvent { event_info }
             | Self::OperatorSlashed { event_info } => Some(event_info),
             Self::Startup
@@ -578,6 +641,7 @@ impl AlertKind {
             | Self::Reorg { .. }
             | Self::ForceBalanceTransfer { .. }
             | Self::LargeBalanceTransfer { .. }
+            | Self::ImportantAddressTransfer { .. }
             | Self::SudoCall { .. }
             | Self::SlotTime { .. }
             | Self::FarmersDecreasedSuddenly { .. }
@@ -731,7 +795,7 @@ pub async fn check_extrinsic(
     // - link extrinsic and account to subscan
     // - add extrinsic success/failure to alerts
 
-    check_balance_extrinsic(mode, alert_tx, &extrinsic_info, block_info).await?;
+    check_transfer_extrinsic(mode, alert_tx, &extrinsic_info, block_info).await?;
 
     // All sudo calls are alerts.
     // TODO:
@@ -771,7 +835,7 @@ pub async fn check_event(
     // - format account IDs as ss58 with prefix 6094
     // - link event and account to subscan
 
-    check_balance_event(mode, alert_tx, &event_info, block_info).await?;
+    check_transfer_event(mode, alert_tx, &event_info, block_info).await?;
 
     // All operator slashes are alerts.
     // TODO:

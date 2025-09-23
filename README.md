@@ -118,6 +118,7 @@ For details of the fork choice algorithm, see [the subspace protocol specificati
   - `alerts.rs`: checks for alerts in each block and extrinsic
     - `farming_monitor.rs`: unique farmer vote count monitoring
     - `slot_time_monitor.rs`: slot production rate monitoring for slot alerts
+    - `transfer.rs`: amount transfer and address alerts
   - `subspace.rs`: Uses `subxt` and `scale-value` for chain interaction
   - `slack.rs`: Uses `slack-morphism` to send messages to Slack
   - `main.rs`: main process logic and run loop

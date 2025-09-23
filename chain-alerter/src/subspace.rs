@@ -4,7 +4,8 @@ pub mod decode;
 #[cfg(test)]
 pub mod tests;
 
-use crate::format::{fmt_fields, fmt_timestamp};
+use crate::alerts::transfer::{Accounts, TransferValue};
+use crate::format::{fmt_amount, fmt_fields, fmt_timestamp};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use scale_value::Composite;
@@ -17,7 +18,7 @@ use subxt::blocks::{Block, ExtrinsicDetails, Extrinsics};
 use subxt::config::substrate::DigestItem;
 use subxt::events::{EventDetails, Events, Phase};
 use subxt::ext::subxt_rpcs::client::ReconnectingRpcClient;
-use subxt::utils::H256;
+use subxt::utils::{AccountId32, H256};
 use subxt::{OnlineClient, SubstrateConfig};
 use tracing::{debug, info, trace, warn};
 
@@ -470,6 +471,9 @@ pub struct ExtrinsicInfo {
     /// The extrinsic hash.
     pub hash: H256,
 
+    /// The extrinsic signing address, if it exists.
+    pub signing_address: Option<AccountId32>,
+
     /// The extrinsic fields, with the extrinsic index as a context.
     pub fields: Composite<ExtrinsicIndex>,
 }
@@ -481,11 +485,26 @@ impl Display for ExtrinsicInfo {
             call,
             index,
             hash,
+            signing_address,
             fields,
         } = self;
 
         writeln!(f, "Extrinsic {pallet}::{call} (index {index})")?;
         writeln!(f, "Hash: {hash:?}")?;
+        if let Some(signing_address) = signing_address {
+            writeln!(f, "Signing Address: {signing_address}")?;
+        }
+        if let Some(transfer_value) = self.transfer_value() {
+            writeln!(f, "Transfer Value: {}", fmt_amount(transfer_value))?;
+        }
+        let accounts: Vec<String> = self
+            .accounts()
+            .iter()
+            .map(|account| account.to_string())
+            .collect();
+        if !accounts.is_empty() {
+            writeln!(f, "Accounts: {}", accounts.join(", "))?;
+        }
         write!(f, "{}", fmt_fields(fields))?;
 
         Ok(())
@@ -520,11 +539,28 @@ impl ExtrinsicInfo {
             Composite::unnamed(Vec::new())
         });
 
+        trace!(
+            "extrinsic {}::{} (index {}): signing address: {:?}, signature: {:?}",
+            meta.pallet.name(),
+            meta.variant.name,
+            extrinsic.index(),
+            extrinsic.address_bytes().map(hex::encode),
+            extrinsic.signature_bytes().map(hex::encode),
+        );
+        // For unsigned extrinsics, this field is `None`.
+        // Strip the SCALE variant of the MultiAddress enum, because we're checking the length
+        // anyway.
+        let signing_address = extrinsic
+            .address_bytes()
+            .and_then(|addr| addr.split_at_checked(1)?.1.try_into().ok())
+            .map(AccountId32);
+
         Some(ExtrinsicInfo {
             pallet: meta.pallet.name().to_string(),
             call: meta.variant.name.to_string(),
             index: extrinsic.index(),
             hash: extrinsic.hash(),
+            signing_address,
             fields,
         })
     }
@@ -567,6 +603,17 @@ impl Display for EventInfo {
 
         writeln!(f, "Event {pallet}::{kind} (index {index})")?;
         writeln!(f, "Phase: {phase:?}")?;
+        if let Some(transfer_value) = self.transfer_value() {
+            writeln!(f, "Transfer Value: {}", fmt_amount(transfer_value))?;
+        }
+        let accounts: Vec<String> = self
+            .accounts()
+            .iter()
+            .map(|account| account.to_string())
+            .collect();
+        if !accounts.is_empty() {
+            writeln!(f, "Accounts: {}", accounts.join(", "))?;
+        }
         write!(f, "{}", fmt_fields(fields))?;
 
         Ok(())
