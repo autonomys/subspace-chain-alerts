@@ -32,20 +32,31 @@ const SUDO_BLOCK: (BlockNumber, RawBlockHash, ExtrinsicIndex, EventIndex, Slot) 
 /// <https://autonomys.subscan.io/transfer?page=1&time_dimension=date&value_dimension=token&value_start=1000000>
 ///
 /// TODO: turn this into a struct
-const LARGE_TRANSFER_BLOCKS: [(BlockNumber, RawBlockHash, ExtrinsicIndex, Balance, Slot); 2] = [
-    // <https://autonomys.subscan.io/extrinsic/3651663-3>
+const LARGE_TRANSFER_BLOCKS: [(
+    BlockNumber,
+    RawBlockHash,
+    ExtrinsicIndex,
+    EventIndex,
+    Balance,
+    Slot,
+); 2] = [
     (
         3_651_663,
         hex_literal::hex!("57d707e832379fa2e1a74f82b337178361f70770b252eff165027af5bdbff416"),
+        // <https://autonomys.subscan.io/extrinsic/3651663-3>
         3,
+        // <https://autonomys.subscan.io/event/3651663-6>
+        6,
         1_139_874_580_721_948_575_925_918,
         Slot(21_994_481),
     ),
-    // <https://autonomys.subscan.io/extrinsic/3662965-19>
     (
         3_662_965,
         hex_literal::hex!("1eb7e3ac5af1142f9e1298cd75475f77e3527d602ca5033ce7ace96e681c95d7"),
+        // <https://autonomys.subscan.io/extrinsic/3662965-19>
         19,
+        // <https://autonomys.subscan.io/event/3662965-41>
+        41,
         2_114_333_002_000_000_000_000_000,
         Slot(22_062_247),
     ),
@@ -151,20 +162,37 @@ async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
     let (subspace_client, _, alert_tx, mut alert_rx, update_task) =
         test_setup(node_rpc_url()).await?;
 
-    for (block_number, block_hash, extrinsic_index, transfer_value, slot) in LARGE_TRANSFER_BLOCKS {
-        let (block_info, extrinsics, _events) =
+    for (block_number, block_hash, extrinsic_index, event_index, transfer_value, slot) in
+        LARGE_TRANSFER_BLOCKS
+    {
+        let (block_info, extrinsics, events) =
             fetch_block_info(&subspace_client, H256::from(block_hash), block_number).await?;
 
         let (extrinsic, extrinsic_info) =
             decode_extrinsic(&block_info, &extrinsics, extrinsic_index).await?;
+        let (event, event_info) = decode_event(&block_info, &events, event_index).await?;
 
         alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info).await?;
-        let alert = alert_rx.try_recv().expect("no alert received");
+        let alert = alert_rx.try_recv().expect("no extrinsic alert received");
         assert_eq!(
             alert,
             Alert::new(
                 AlertKind::LargeBalanceTransfer {
                     extrinsic_info,
+                    transfer_value,
+                },
+                block_info,
+                BlockCheckMode::Replay,
+            )
+        );
+
+        alerts::check_event(BlockCheckMode::Replay, &alert_tx, &event, &block_info).await?;
+        let alert = alert_rx.try_recv().expect("no event alert received");
+        assert_eq!(
+            alert,
+            Alert::new(
+                AlertKind::LargeBalanceTransferEvent {
+                    event_info,
                     transfer_value,
                 },
                 block_info,

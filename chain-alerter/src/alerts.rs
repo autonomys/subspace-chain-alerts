@@ -4,7 +4,7 @@
 mod tests;
 mod transfer;
 
-use crate::alerts::transfer::check_balance_extrinsic;
+use crate::alerts::transfer::{check_balance_event, check_balance_extrinsic};
 use crate::chain_fork_monitor::ChainForkEvent;
 use crate::format::{fmt_amount, fmt_duration, fmt_timestamp};
 use crate::subspace::{
@@ -205,10 +205,19 @@ pub enum AlertKind {
         transfer_value: Option<Balance>,
     },
 
-    /// A large Balance transfer has been detected.
+    /// A large Balance transfer extrinsic has been detected.
     LargeBalanceTransfer {
         /// The Balance call's extrinsic information.
         extrinsic_info: ExtrinsicInfo,
+
+        /// The transfer value.
+        transfer_value: Balance,
+    },
+
+    /// A large Balance transfer event has been detected.
+    LargeBalanceTransferEvent {
+        /// The Balance event information.
+        event_info: EventInfo,
 
         /// The transfer value.
         transfer_value: Balance,
@@ -371,6 +380,20 @@ impl Display for AlertKind {
                 )
             }
 
+            AlertKind::LargeBalanceTransferEvent {
+                event_info,
+                transfer_value,
+            } => {
+                write!(
+                    f,
+                    "**Large Balances event detected**\n\
+                    Transfer value: {} (above {})\n\
+                    {event_info}",
+                    fmt_amount(*transfer_value),
+                    fmt_amount(MIN_BALANCE_CHANGE),
+                )
+            }
+
             AlertKind::SudoCall { extrinsic_info } => {
                 write!(
                     f,
@@ -460,6 +483,7 @@ impl AlertKind {
             | AlertKind::Reorg { .. }
             | AlertKind::ForceBalanceTransfer { .. }
             | AlertKind::LargeBalanceTransfer { .. }
+            | AlertKind::LargeBalanceTransferEvent { .. }
             | AlertKind::SudoCall { .. }
             | AlertKind::SudoEvent { .. }
             | AlertKind::OperatorSlashed { .. }
@@ -485,6 +509,7 @@ impl AlertKind {
             | AlertKind::SideForkExtended { .. }
             | AlertKind::ForceBalanceTransfer { .. }
             | AlertKind::LargeBalanceTransfer { .. }
+            | AlertKind::LargeBalanceTransferEvent { .. }
             | AlertKind::SudoCall { .. }
             | AlertKind::SudoEvent { .. }
             | AlertKind::OperatorSlashed { .. }
@@ -508,6 +533,7 @@ impl AlertKind {
             | AlertKind::BlockProductionResumed { .. }
             | AlertKind::NewSideFork { .. }
             | AlertKind::SideForkExtended { .. }
+            | AlertKind::LargeBalanceTransferEvent { .. }
             | AlertKind::Reorg { .. }
             | AlertKind::SudoEvent { .. }
             | AlertKind::OperatorSlashed { .. }
@@ -520,7 +546,8 @@ impl AlertKind {
     pub fn transfer_value(&self) -> Option<Balance> {
         match self {
             AlertKind::ForceBalanceTransfer { transfer_value, .. } => *transfer_value,
-            AlertKind::LargeBalanceTransfer { transfer_value, .. } => Some(*transfer_value),
+            AlertKind::LargeBalanceTransfer { transfer_value, .. }
+            | AlertKind::LargeBalanceTransferEvent { transfer_value, .. } => Some(*transfer_value),
             AlertKind::Startup
             | AlertKind::FarmersDecreasedSuddenly { .. }
             | AlertKind::FarmersIncreasedSuddenly { .. }
@@ -540,8 +567,9 @@ impl AlertKind {
     #[cfg_attr(not(test), allow(dead_code, reason = "only used in tests"))]
     pub fn event_info(&self) -> Option<&EventInfo> {
         match self {
-            AlertKind::SudoEvent { event_info } => Some(event_info),
-            AlertKind::OperatorSlashed { event_info } => Some(event_info),
+            AlertKind::LargeBalanceTransferEvent { event_info, .. }
+            | AlertKind::SudoEvent { event_info }
+            | AlertKind::OperatorSlashed { event_info } => Some(event_info),
             AlertKind::Startup
             | AlertKind::BlockProductionStall { .. }
             | AlertKind::BlockProductionResumed { .. }
@@ -742,6 +770,8 @@ pub async fn check_event(
     // - add tests to make sure we can parse the events for each alert
     // - format account IDs as ss58 with prefix 6094
     // - link event and account to subscan
+
+    check_balance_event(mode, alert_tx, &event_info, block_info).await?;
 
     // All operator slashes are alerts.
     // TODO:
