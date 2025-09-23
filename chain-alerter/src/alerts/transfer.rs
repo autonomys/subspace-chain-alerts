@@ -83,19 +83,9 @@ pub trait TransferValue {
 
 impl TransferValue for ExtrinsicInfo {
     fn transfer_value(&self) -> Option<Balance> {
-        if (self.pallet == "Balances" || self.pallet == "Transporter")
-            && let Composite::Named(named_fields) = &self.fields
-        {
-            // subxt knows these field names, so we can search for the transfer value by name.
-            // TODO:
-            // - split this field search into a function which takes a field name, and another
-            //   function which does the numeric conversion
-            if let Some((_name, transfer_value)) = named_fields
-                .iter()
-                .find(|(name, _)| ["value", "amount", "new_free", "delta"].contains(&name.as_str()))
-            {
-                return transfer_value.as_u128();
-            }
+        if self.pallet == "Balances" || self.pallet == "Transporter" {
+            // subxt knows the field names, so we can search for the transfer value by name.
+            return total_transfer_value(&self.fields, &["value", "amount", "new_free", "delta"]);
         }
 
         None
@@ -104,29 +94,10 @@ impl TransferValue for ExtrinsicInfo {
 
 impl TransferValue for EventInfo {
     fn transfer_value(&self) -> Option<Balance> {
-        if (self.pallet == "Balances" || self.pallet == "Transporter")
-            && let Composite::Named(named_fields) = &self.fields
-            && let Some((_name, transfer_value)) = named_fields
-                .iter()
-                .find(|(name, _)| name.as_str() == "amount")
-        {
-            return transfer_value.as_u128();
-        }
-
-        if self.pallet == "Transactionpayment"
-            && let Composite::Named(named_fields) = &self.fields
-        {
-            let transfer_values: Vec<u128> = named_fields
-                .iter()
-                .filter(|(name, _)| ["actual_fee", "tip"].contains(&name.as_str()))
-                .flat_map(|(_, value)| value.as_u128())
-                .collect();
-
-            if transfer_values.is_empty() {
-                return None;
-            }
-
-            return Some(transfer_values.iter().sum());
+        if self.pallet == "Balances" || self.pallet == "Transporter" {
+            return total_transfer_value(&self.fields, &["amount"]);
+        } else if self.pallet == "Transactionpayment" {
+            return total_transfer_value(&self.fields, &["actual_fee", "tip"]);
         }
 
         None
@@ -186,14 +157,12 @@ impl Accounts for ExtrinsicInfo {
             account_list.push(Account::Signer(signing_address.clone()));
         }
 
-        if self.pallet == "Balances"
-            && let Composite::Named(named_fields) = &self.fields
-            && let Some((_name, account_id)) = named_fields
-                .iter()
-                .find(|(name, _)| name.as_str() == "dest")
-            && let Some(account_id) = decode_h256_from_composite(account_id)
-        {
-            account_list.push(Account::Receiver(account_id.0.into()));
+        if self.pallet == "Balances" {
+            let accounts = list_accounts(&self.fields, &["dest"])
+                .into_iter()
+                .map(Account::Receiver);
+
+            account_list.extend(accounts);
         }
 
         // TODO: add `dst_location` AccountId20 from Transporter events:
@@ -207,35 +176,65 @@ impl Accounts for EventInfo {
     fn accounts(&self) -> Vec<Account> {
         let mut account_list = vec![];
 
-        if self.pallet == "Balances"
-            && let Composite::Named(named_fields) = &self.fields
-            && let Some((name, account_id)) = named_fields
-                .iter()
-                .find(|(name, _)| ["who", "from", "to"].contains(&name.as_str()))
-            && let Some(account_id) = decode_h256_from_composite(account_id)
-        {
-            if ["who", "to"].contains(&name.as_str()) {
-                if ["Burned", "Withdraw"].contains(&self.kind.as_str()) {
-                    account_list.push(Account::Sender(account_id.0.into()));
-                } else {
-                    account_list.push(Account::Receiver(account_id.0.into()));
-                }
-            } else if name.as_str() == "from" {
-                account_list.push(Account::Sender(account_id.0.into()));
+        if self.pallet == "Balances" {
+            let receiver_accounts = list_accounts(&self.fields, &["who", "to"]);
+            let sender_accounts = list_accounts(&self.fields, &["from"]);
+
+            // Burning or withdrawing means "who" becomes the sender.
+            if ["Burned", "Withdraw"].contains(&self.kind.as_str()) {
+                account_list.extend(receiver_accounts.into_iter().map(Account::Sender));
+            } else {
+                account_list.extend(receiver_accounts.into_iter().map(Account::Receiver));
             }
+
+            account_list.extend(sender_accounts.into_iter().map(Account::Sender));
         }
 
-        if self.pallet == "Transactionpayment"
-            && let Composite::Named(named_fields) = &self.fields
-            && let Some((_name, account_id)) =
-                named_fields.iter().find(|(name, _)| name.as_str() == "who")
-            && let Some(account_id) = decode_h256_from_composite(account_id)
-        {
-            account_list.push(Account::Sender(account_id.0.into()));
+        if self.pallet == "Transactionpayment" {
+            // Transaction payments are always about the sender.
+            let accounts = list_accounts(&self.fields, &["who"]);
+            account_list.extend(accounts.into_iter().map(Account::Sender));
         }
 
         account_list
     }
+}
+
+/// Returns the sum of the transfer values from the supplied named fields.
+/// If there are no fields with those names, returns `None`.
+pub fn total_transfer_value(fields: &Composite<u32>, field_names: &[&str]) -> Option<Balance> {
+    if let Composite::Named(named_fields) = fields {
+        let transfer_values: Vec<u128> = named_fields
+            .iter()
+            .filter(|(name, _)| field_names.contains(&name.as_str()))
+            .flat_map(|(_, value)| value.as_u128())
+            .collect();
+
+        if transfer_values.is_empty() {
+            return None;
+        }
+
+        return Some(transfer_values.iter().sum());
+    }
+
+    None
+}
+
+/// Returns a list of the accounts from the supplied named fields.
+/// If there are no fields with those names, returns an empty list.
+pub fn list_accounts(fields: &Composite<u32>, field_names: &[&str]) -> Vec<AccountId32> {
+    if let Composite::Named(named_fields) = fields {
+        let account_list: Vec<AccountId32> = named_fields
+            .iter()
+            .filter(|(name, _)| field_names.contains(&name.as_str()))
+            .flat_map(|(_, value)| decode_h256_from_composite(value))
+            .map(|account_id| account_id.0.into())
+            .collect();
+
+        return account_list;
+    }
+
+    vec![]
 }
 
 /// Check a Balance extrinsic for alerts.
