@@ -31,6 +31,8 @@ pub const DEFAULT_FARMING_MAX_HISTORY_BLOCK_INTERVAL: usize = 1000;
 pub const FARMER_VOTE_EVENT_PALLET_NAME: &str = "Subspace";
 /// The farmer vote event variant name.
 pub const FARMER_VOTE_EVENT_VARIANT_NAME: &str = "FarmerVote";
+/// The farmer vote event public key field name.
+pub const FARMER_VOTE_EVENT_PUBLIC_KEY_FIELD_NAME: &str = "public_key";
 
 /// Interface for farming monitors that consume blocks and perform checks.
 pub trait FarmingMonitor {
@@ -153,7 +155,10 @@ impl MemoryFarmingMonitor {
 
             debug!("Event {pallet_name:?}.{variant_name:?} named_fields: {named_fields:?}");
 
-            let public_key_hash = match named_fields.iter().find(|(name, _)| name == "public_key") {
+            let public_key_hash = match named_fields
+                .iter()
+                .find(|(name, _)| name == FARMER_VOTE_EVENT_PUBLIC_KEY_FIELD_NAME)
+            {
                 Some((_, public_key_value)) => decode_h256_from_composite(public_key_value),
                 None => continue,
             };
