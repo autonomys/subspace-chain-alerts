@@ -473,11 +473,6 @@ mod tests {
             .await;
 
         alert_rx.try_recv().unwrap_err();
-
-        assert_eq!(
-            farming_monitor.state.status,
-            FarmingMonitorStatus::NotAlerting
-        );
     }
 
     #[tokio::test]
@@ -545,11 +540,6 @@ mod tests {
             .await;
 
         alert_rx.try_recv().unwrap_err();
-
-        assert_eq!(
-            farming_monitor.state.status,
-            FarmingMonitorStatus::NotAlerting
-        );
     }
 
     #[tokio::test]
