@@ -3,13 +3,13 @@
 //! Set the `NODE_URL` env var to the RPC URL of a Subspace node to override the default public
 //! instance.
 
-use crate::alerts::{self, Alert, AlertKind, BlockCheckMode};
+use crate::alerts::{self, Alert, AlertKind, BlockCheckMode, MIN_BALANCE_CHANGE};
 use crate::slot_time_monitor::test_utils::mock_block_info;
 use crate::slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor, SlotTimeMonitorConfig};
 use crate::subspace::tests::{
     decode_event, decode_extrinsic, fetch_block_info, node_rpc_url, test_setup,
 };
-use crate::subspace::{Balance, BlockNumber, EventIndex, ExtrinsicIndex, RawBlockHash, Slot};
+use crate::subspace::{AI3, Balance, BlockNumber, EventIndex, ExtrinsicIndex, RawBlockHash, Slot};
 use anyhow::Ok;
 use std::assert_matches::assert_matches;
 use std::time::Duration;
@@ -28,7 +28,7 @@ const SUDO_BLOCK: (BlockNumber, RawBlockHash, ExtrinsicIndex, EventIndex, Slot) 
     Slot(22_859_254),
 );
 
-/// Some extrinsics for large balance transfers.
+/// Some extrinsics and events for large balance transfers.
 /// <https://autonomys.subscan.io/transfer?page=1&time_dimension=date&value_dimension=token&value_start=1000000>
 ///
 /// TODO: turn this into a struct
@@ -59,6 +59,56 @@ const LARGE_TRANSFER_BLOCKS: [(
         41,
         2_114_333_002_000_000_000_000_000,
         Slot(22_062_247),
+    ),
+];
+
+/// Some extrinsics and events for important address transfers.
+///
+/// TODO: turn this into a struct
+const IMPORTANT_ADDRESS_BLOCKS: [(
+    BlockNumber,
+    RawBlockHash,
+    ExtrinsicIndex,
+    EventIndex,
+    &str,
+    Balance,
+    Slot,
+); 3] = [
+    // <https://autonomys.subscan.io/account/sudqduciRx3fZcNRbW1mmmBAntuZLkwhcXyVctsGJyrjRTPaA>
+    (
+        4_259_127,
+        hex_literal::hex!("db8e0ad0b8ced4483b3cd90780716ac3eab27b55ab667c59cd159ac40756d5c0"),
+        // <https://autonomys.subscan.io/extrinsic/4259127-4>
+        4,
+        // <https://autonomys.subscan.io/event/4259127-8>
+        8,
+        "Subspace Foundation Near-Term Treasury",
+        4_999_990 * AI3,
+        Slot(25_647_927),
+    ),
+    // <https://autonomys.subscan.io/account/suesYE9yAqNJrMiZPY4hKNMjMTXBkkD1rHgQrSNes1bUnw37U>
+    (
+        4_204_424,
+        hex_literal::hex!("dd369e3ea40398feda099d88b02ff1c9094b3df346efd47e8c78c1508f5da1aa"),
+        // <https://autonomys.subscan.io/extrinsic/4204424-25>
+        25,
+        // <https://autonomys.subscan.io/event/4204424-50>
+        50,
+        "Market Liquidity",
+        20_000 * AI3,
+        Slot(25_314_662),
+    ),
+    // <https://autonomys.subscan.io/account/sudqduciRx3fZcNRbW1mmmBAntuZLkwhcXyVctsGJyrjRTPaA>
+    (
+        3_850_288,
+        hex_literal::hex!("57e48f5cd1258de2f53400d774f6e4d3e4a57e935708d8a655cf85fde1e2dacb"),
+        // <https://autonomys.subscan.io/extrinsic/3850288-13>
+        13,
+        // <https://autonomys.subscan.io/event/3850288-28>
+        28,
+        "Operations",
+        150 * AI3,
+        Slot(23_187_041),
     ),
 ];
 
@@ -173,6 +223,7 @@ async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
         let (event, event_info) = decode_event(&block_info, &events, event_index).await?;
 
         alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info).await?;
+
         let alert = alert_rx.try_recv().expect("no extrinsic alert received");
         assert_eq!(
             alert,
@@ -194,6 +245,104 @@ async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
                 AlertKind::LargeBalanceTransferEvent {
                     event_info,
                     transfer_value,
+                },
+                block_info,
+                BlockCheckMode::Replay,
+            )
+        );
+
+        // Check block slot parsing works on a known slot value.
+        assert_eq!(alert.block_info.slot, Some(slot));
+    }
+
+    let result = update_task.now_or_never();
+    assert!(
+        result.is_none(),
+        "metadata update task exited unexpectedly with: {result:?}"
+    );
+
+    Ok(())
+}
+
+/// Check that the important address alert works on known important address blocks.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_important_address_alerts() -> anyhow::Result<()> {
+    let (subspace_client, _, alert_tx, mut alert_rx, update_task) =
+        test_setup(node_rpc_url()).await?;
+
+    for (
+        block_number,
+        block_hash,
+        extrinsic_index,
+        event_index,
+        address_kinds,
+        transfer_value,
+        slot,
+    ) in IMPORTANT_ADDRESS_BLOCKS
+    {
+        let (block_info, extrinsics, events) =
+            fetch_block_info(&subspace_client, H256::from(block_hash), block_number).await?;
+
+        let (extrinsic, extrinsic_info) =
+            decode_extrinsic(&block_info, &extrinsics, extrinsic_index).await?;
+        let (event, event_info) = decode_event(&block_info, &events, event_index).await?;
+
+        alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info).await?;
+
+        // The order of these alerts is not actually important.
+        if transfer_value >= MIN_BALANCE_CHANGE {
+            let alert = alert_rx.try_recv().expect("no extrinsic alert received");
+            assert_eq!(
+                alert,
+                Alert::new(
+                    AlertKind::LargeBalanceTransfer {
+                        extrinsic_info: extrinsic_info.clone(),
+                        transfer_value,
+                    },
+                    block_info,
+                    BlockCheckMode::Replay,
+                )
+            );
+        }
+
+        let alert = alert_rx.try_recv().expect("no extrinsic alert received");
+        assert_eq!(
+            alert,
+            Alert::new(
+                AlertKind::ImportantAddressTransfer {
+                    address_kinds: address_kinds.to_string(),
+                    extrinsic_info,
+                    transfer_value: Some(transfer_value),
+                },
+                block_info,
+                BlockCheckMode::Replay,
+            )
+        );
+
+        alerts::check_event(BlockCheckMode::Replay, &alert_tx, &event, &block_info).await?;
+        if transfer_value >= MIN_BALANCE_CHANGE {
+            let alert = alert_rx.try_recv().expect("no event alert received");
+            assert_eq!(
+                alert,
+                Alert::new(
+                    AlertKind::LargeBalanceTransferEvent {
+                        event_info: event_info.clone(),
+                        transfer_value,
+                    },
+                    block_info,
+                    BlockCheckMode::Replay,
+                )
+            );
+        }
+
+        let alert = alert_rx.try_recv().expect("no event alert received");
+        assert_eq!(
+            alert,
+            Alert::new(
+                AlertKind::ImportantAddressTransferEvent {
+                    address_kinds: address_kinds.to_string(),
+                    event_info,
+                    transfer_value: Some(transfer_value),
                 },
                 block_info,
                 BlockCheckMode::Replay,
