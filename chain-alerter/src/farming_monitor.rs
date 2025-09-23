@@ -71,7 +71,7 @@ pub enum FarmingMonitorStatus {
     /// The farming monitor has emitted an alert
     AlertingDecrease,
     /// The farming monitor has not emitted an alert
-    NotFiring,
+    NotAlerting,
 }
 
 /// State tracked by the farming monitor, and updated at the same time.
@@ -134,7 +134,7 @@ impl MemoryFarmingMonitor {
             state: FarmingMonitorState {
                 last_block_voted_by_farmer: HashMap::new(),
                 active_farmers_in_last_blocks: VecDeque::with_capacity(config.max_block_interval),
-                status: FarmingMonitorStatus::NotFiring,
+                status: FarmingMonitorStatus::NotAlerting,
             },
         }
     }
@@ -302,7 +302,7 @@ impl MemoryFarmingMonitor {
                 self.state.status = FarmingMonitorStatus::AlertingIncrease;
             }
         } else {
-            self.state.status = FarmingMonitorStatus::NotFiring;
+            self.state.status = FarmingMonitorStatus::NotAlerting;
         }
     }
 }
@@ -476,7 +476,7 @@ mod tests {
 
         assert_eq!(
             farming_monitor.state.status,
-            FarmingMonitorStatus::NotFiring
+            FarmingMonitorStatus::NotAlerting
         );
     }
 
@@ -548,7 +548,7 @@ mod tests {
 
         assert_eq!(
             farming_monitor.state.status,
-            FarmingMonitorStatus::NotFiring
+            FarmingMonitorStatus::NotAlerting
         );
     }
 
