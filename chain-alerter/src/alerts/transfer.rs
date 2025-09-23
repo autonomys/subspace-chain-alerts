@@ -6,6 +6,34 @@ use scale_value::Composite;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
+/// A trait for accessing the transfer value from an object.
+pub trait TransferValue {
+    /// Returns the transfer value, if it is present.
+    fn transfer_value(&self) -> Option<Balance>;
+}
+
+impl TransferValue for ExtrinsicInfo {
+    fn transfer_value(&self) -> Option<Balance> {
+        if self.pallet != "Balances" {
+            return None;
+        }
+
+        let Composite::Named(named_fields) = &self.fields else {
+            return None;
+        };
+
+        // subxt knows these field names, so we can search for the transfer value byname.
+        // TODO:
+        // - split this field search into a function which takes a field name, and another function
+        //   which does the numeric conversion and range check
+        let (_, transfer_value) = named_fields
+            .iter()
+            .find(|(name, _)| ["value", "amount", "new_free", "delta"].contains(&name.as_str()))?;
+
+        transfer_value.as_u128()
+    }
+}
+
 /// Check a Balance extrinsic for alerts.
 /// Does nothing if the extrinsic is any other kind of extrinsic.
 pub async fn check_balance_extrinsic(
@@ -20,23 +48,10 @@ pub async fn check_balance_extrinsic(
 
     // "force*" calls and large balance changes are alerts.
 
-    // subxt knows these field names, so we can search for the transfer value by
-    // name.
     // TODO:
     // - track the total of recent transfers, so the threshold can't be bypassed by splitting the
     //   transfer into multiple calls
-    // - split this field search into a function which takes a field name, and another function
-    //   which does the numeric conversion and range check
-    let transfer_value: Option<Balance> = if let Composite::Named(named_fields) =
-        &extrinsic_info.fields
-        && let Some((_, transfer_value)) = named_fields
-            .iter()
-            .find(|(name, _)| ["value", "amount", "new_free", "delta"].contains(&name.as_str()))
-    {
-        transfer_value.as_u128()
-    } else {
-        None
-    };
+    let transfer_value = extrinsic_info.transfer_value();
 
     debug!(?mode, "transfer_value: {:?}", transfer_value);
 
