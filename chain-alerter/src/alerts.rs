@@ -2,7 +2,9 @@
 
 #[cfg(test)]
 mod tests;
+mod transfer;
 
+use crate::alerts::transfer::check_balance_extrinsic;
 use crate::chain_fork_monitor::ChainForkEvent;
 use crate::format::{fmt_amount, fmt_duration, fmt_timestamp};
 use crate::subspace::{
@@ -10,12 +12,11 @@ use crate::subspace::{
     RawExtrinsic, TARGET_BLOCK_INTERVAL, gap_since_last_block, gap_since_time,
 };
 use chrono::Utc;
-use scale_value::Composite;
 use std::fmt::{self, Display};
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio::time::sleep;
-use tracing::{debug, warn};
+use tracing::warn;
 
 /// The minimum balance change to alert on.
 const MIN_BALANCE_CHANGE: Balance = 1_000_000 * AI3;
@@ -702,6 +703,8 @@ pub async fn check_extrinsic(
     // - link extrinsic and account to subscan
     // - add extrinsic success/failure to alerts
 
+    check_balance_extrinsic(mode, alert_tx, &extrinsic_info, block_info).await?;
+
     // All sudo calls are alerts.
     // TODO:
     // - test this alert by checking a historic block with a sudo call
@@ -715,67 +718,6 @@ pub async fn check_extrinsic(
                 mode,
             ))
             .await?;
-    } else if extrinsic_info.pallet == "Balances" {
-        // "force*" calls and large balance changes are alerts.
-
-        // subxt knows these field names, so we can search for the transfer value by
-        // name.
-        // TODO:
-        // - track the total of recent transfers, so the threshold can't be bypassed by splitting
-        //   the transfer into multiple calls
-        // - split this field search into a function which takes a field name, and another function
-        //   which does the numeric conversion and range check
-        let transfer_value: Option<Balance> = if let Composite::Named(named_fields) =
-            &extrinsic_info.fields
-            && let Some((_, transfer_value)) = named_fields
-                .iter()
-                .find(|(name, _)| ["value", "amount", "new_free", "delta"].contains(&name.as_str()))
-        {
-            transfer_value.as_u128()
-        } else {
-            None
-        };
-
-        debug!(?mode, "transfer_value: {:?}", transfer_value);
-
-        // TODO:
-        // - test force alerts by checking a historic block with that call
-        // - do we want to track burn calls? <https://autonomys.subscan.io/extrinsic/137324-31>
-        if extrinsic_info.call.starts_with("force") {
-            alert_tx
-                .send(Alert::new(
-                    AlertKind::ForceBalanceTransfer {
-                        extrinsic_info,
-                        transfer_value,
-                    },
-                    *block_info,
-                    mode,
-                ))
-                .await?;
-        } else if let Some(transfer_value) = transfer_value
-            && transfer_value >= MIN_BALANCE_CHANGE
-        {
-            alert_tx
-                .send(Alert::new(
-                    AlertKind::LargeBalanceTransfer {
-                        extrinsic_info,
-                        transfer_value,
-                    },
-                    *block_info,
-                    mode,
-                ))
-                .await?;
-        } else if transfer_value.is_none()
-            && !["transfer_all", "upgrade_accounts"].contains(&extrinsic_info.call.as_str())
-        {
-            // Every other Balances extrinsic should have an amount.
-            // TODO: check transfer_all by accessing account storage to get the value
-            warn!(
-                ?mode,
-                ?extrinsic_info,
-                "Balance: extrinsic amount unavailable in block",
-            );
-        }
     }
 
     Ok(())
