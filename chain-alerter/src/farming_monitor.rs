@@ -134,15 +134,10 @@ impl MemoryFarmingMonitor {
     /// Update the last voted block for each farmer that voted in the block.
     fn update_last_voted_block(&mut self, events: &[RawEvent], block_height: BlockNumber) {
         for event in events.iter() {
-            let pallet_name = event.pallet_name();
-            let variant_name = event.variant_name();
-
-            if pallet_name != FARMER_VOTE_EVENT_PALLET_NAME
-                || variant_name != FARMER_VOTE_EVENT_VARIANT_NAME
-            {
-                trace!("Event {pallet_name:?}.{variant_name:?} is not a farmer vote");
-                continue;
-            }
+            let event = match (event.pallet_name(), event.variant_name()) {
+                (FARMER_VOTE_EVENT_PALLET_NAME, FARMER_VOTE_EVENT_VARIANT_NAME) => event,
+                _ => continue,
+            };
 
             let named_fields = match event.field_values() {
                 Ok(Composite::Named(named_fields)) => named_fields,
@@ -152,8 +147,6 @@ impl MemoryFarmingMonitor {
                 }
                 _ => continue,
             };
-
-            debug!("Event {pallet_name:?}.{variant_name:?} named_fields: {named_fields:?}");
 
             let public_key_hash = match named_fields
                 .iter()
