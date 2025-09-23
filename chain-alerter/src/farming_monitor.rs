@@ -64,6 +64,16 @@ pub struct FarmingMonitorConfig {
     pub minimum_block_interval: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FarmingMonitorStatus {
+    /// The farming monitor has emitted an alert
+    AlertingIncrease,
+    /// The farming monitor has emitted an alert
+    AlertingDecrease,
+    /// The farming monitor has not emitted an alert
+    NotFiring,
+}
+
 /// State tracked by the farming monitor, and updated at the same time.
 /// TODO:
 ///   - currently during a reorg, alerts are disabled (because of pruning, the threshold is not met
@@ -79,6 +89,8 @@ pub struct FarmingMonitorState {
     /// The number of farmers that have votes in the last `max_block_interval` blocks.
     /// TODO: delete the last few entries when a reorg happens.
     active_farmers_in_last_blocks: VecDeque<usize>,
+    /// Status of the alert.
+    status: FarmingMonitorStatus,
 }
 
 /// A farming monitor that tracks the number of farmers with votes in the last `max_block_interval`
@@ -122,6 +134,7 @@ impl MemoryFarmingMonitor {
             state: FarmingMonitorState {
                 last_block_voted_by_farmer: HashMap::new(),
                 active_farmers_in_last_blocks: VecDeque::with_capacity(config.max_block_interval),
+                status: FarmingMonitorStatus::NotFiring,
             },
         }
     }
@@ -249,39 +262,47 @@ impl MemoryFarmingMonitor {
 
         // Check if the current number of farmers with votes is greater than the alert threshold.
         if fraction_of_average < self.config.low_end_change_threshold {
-            let _ = self
-                .config
-                .alert_tx
-                .send(Alert::new(
-                    AlertKind::FarmersDecreasedSuddenly {
-                        number_of_farmers_with_votes,
-                        average_number_of_farmers_with_votes,
-                        number_of_blocks: u32::try_from(
-                            self.state.active_farmers_in_last_blocks.len(),
-                        )
-                        .expect("farmers should fit in a u32 integer"),
-                    },
-                    *block_info,
-                    mode,
-                ))
-                .await;
+            if self.state.status != FarmingMonitorStatus::AlertingDecrease {
+                let _ = self
+                    .config
+                    .alert_tx
+                    .send(Alert::new(
+                        AlertKind::FarmersDecreasedSuddenly {
+                            number_of_farmers_with_votes,
+                            average_number_of_farmers_with_votes,
+                            number_of_blocks: u32::try_from(
+                                self.state.active_farmers_in_last_blocks.len(),
+                            )
+                            .expect("farmers should fit in a u32 integer"),
+                        },
+                        *block_info,
+                        mode,
+                    ))
+                    .await;
+                self.state.status = FarmingMonitorStatus::AlertingDecrease;
+            }
         } else if fraction_of_average > self.config.high_end_change_threshold {
-            let _ = self
-                .config
-                .alert_tx
-                .send(Alert::new(
-                    AlertKind::FarmersIncreasedSuddenly {
-                        number_of_farmers_with_votes,
-                        average_number_of_farmers_with_votes,
-                        number_of_blocks: u32::try_from(
-                            self.state.active_farmers_in_last_blocks.len(),
-                        )
-                        .expect("farmers should fit in a u32 integer"),
-                    },
-                    *block_info,
-                    mode,
-                ))
-                .await;
+            if self.state.status != FarmingMonitorStatus::AlertingIncrease {
+                let _ = self
+                    .config
+                    .alert_tx
+                    .send(Alert::new(
+                        AlertKind::FarmersIncreasedSuddenly {
+                            number_of_farmers_with_votes,
+                            average_number_of_farmers_with_votes,
+                            number_of_blocks: u32::try_from(
+                                self.state.active_farmers_in_last_blocks.len(),
+                            )
+                            .expect("farmers should fit in a u32 integer"),
+                        },
+                        *block_info,
+                        mode,
+                    ))
+                    .await;
+                self.state.status = FarmingMonitorStatus::AlertingIncrease;
+            }
+        } else {
+            self.state.status = FarmingMonitorStatus::NotFiring;
         }
     }
 }
