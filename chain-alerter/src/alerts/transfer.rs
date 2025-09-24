@@ -58,6 +58,11 @@ pub const IMPORTANT_ADDRESSES: &[(&str, &str)] = &[
         "Game of Domains",
         "sueCdBhsNJ9LH76wYyJYhK8fvcvYt1q3J3AwWq674rwPEvbKS",
     ),
+    // <https://forum.autonomys.xyz/t/boosting-early-staking-the-guardians-of-growth-initiative/4962/2>
+    (
+        "Guardians of Growth",
+        "sugQzjjyAfhzktFDdAkZrcTq5qzMaRoSV2qs1gTcjjuBeybWT",
+    ),
 ];
 
 /// If the address is an important address, returns the kind of important address, otherwise returns
