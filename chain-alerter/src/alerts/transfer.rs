@@ -83,9 +83,12 @@ pub trait TransferValue {
 
 impl TransferValue for ExtrinsicInfo {
     fn transfer_value(&self) -> Option<Balance> {
-        if self.pallet == "Balances" || self.pallet == "Transporter" {
+        if self.pallet == "Balances" {
             // subxt knows the field names, so we can search for the transfer value by name.
             return total_transfer_value(&self.fields, &["value", "amount", "new_free", "delta"]);
+        } else if self.pallet == "Transporter" || self.pallet == "Domains" {
+            // Operator nomination is a kind of transfer to an operator stake.
+            return total_transfer_value(&self.fields, &["amount"]);
         }
 
         None
@@ -94,7 +97,7 @@ impl TransferValue for ExtrinsicInfo {
 
 impl TransferValue for EventInfo {
     fn transfer_value(&self) -> Option<Balance> {
-        if self.pallet == "Balances" || self.pallet == "Transporter" {
+        if self.pallet == "Balances" || self.pallet == "Transporter" || self.pallet == "Domains" {
             return total_transfer_value(&self.fields, &["amount"]);
         } else if self.pallet == "Transactionpayment" {
             return total_transfer_value(&self.fields, &["actual_fee", "tip"]);
@@ -189,11 +192,12 @@ impl Accounts for EventInfo {
             }
 
             account_list.extend(sender_accounts.into_iter().map(Account::Sender));
-        }
-
-        if self.pallet == "Transactionpayment" {
+        } else if self.pallet == "Transactionpayment" {
             // Transaction payments are always about the sender.
             let accounts = list_accounts(&self.fields, &["who"]);
+            account_list.extend(accounts.into_iter().map(Account::Sender));
+        } else if self.pallet == "Domains" {
+            let accounts = list_accounts(&self.fields, &["nominator_id"]);
             account_list.extend(accounts.into_iter().map(Account::Sender));
         }
 
