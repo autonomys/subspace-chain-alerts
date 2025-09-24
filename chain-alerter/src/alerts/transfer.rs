@@ -104,7 +104,7 @@ impl TransferValue for EventInfo {
     }
 }
 
-/// A typed account ID.
+/// An account ID and attached role type.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Account {
     /// The signer of an extrinsic.
@@ -154,6 +154,7 @@ impl Accounts for ExtrinsicInfo {
         let mut account_list = vec![];
 
         if let Some(signing_address) = self.signing_address.as_ref() {
+            // Handle signer for Balances, Transporter, Domains, etc.
             account_list.push(Account::Signer(signing_address.clone()));
         }
 
@@ -222,14 +223,19 @@ pub fn total_transfer_value(fields: &Composite<u32>, field_names: &[&str]) -> Op
 
 /// Returns a list of the accounts from the supplied named fields.
 /// If there are no fields with those names, returns an empty list.
+///
+/// Accounts can be duplicated if they perform different roles in the extrinsic or event.
 pub fn list_accounts(fields: &Composite<u32>, field_names: &[&str]) -> Vec<AccountId32> {
     if let Composite::Named(named_fields) = fields {
-        let account_list: Vec<AccountId32> = named_fields
+        let mut account_list: Vec<AccountId32> = named_fields
             .iter()
             .filter(|(name, _)| field_names.contains(&name.as_str()))
             .flat_map(|(_, value)| decode_h256_from_composite(value))
             .map(|account_id| account_id.0.into())
             .collect();
+
+        account_list.sort();
+        account_list.dedup();
 
         return account_list;
     }
@@ -298,10 +304,13 @@ pub async fn check_transfer_extrinsic(
     }
 
     let accounts = extrinsic_info.accounts();
-    let important_address_kinds = accounts
+    let mut important_address_kinds = accounts
         .iter()
         .flat_map(|account| account.important_address_kind())
         .collect::<Vec<_>>();
+    important_address_kinds.sort();
+    important_address_kinds.dedup();
+
     trace!(
         ?mode,
         ?accounts,
@@ -364,10 +373,13 @@ pub async fn check_transfer_event(
     }
 
     let accounts = event_info.accounts();
-    let important_address_kinds = accounts
+    let mut important_address_kinds = accounts
         .iter()
         .flat_map(|account| account.important_address_kind())
         .collect::<Vec<_>>();
+    important_address_kinds.sort();
+    important_address_kinds.dedup();
+
     trace!(
         ?mode,
         ?accounts,
