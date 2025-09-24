@@ -27,6 +27,13 @@ pub const DEFAULT_FARMING_MIN_ALERT_BLOCK_INTERVAL: usize = 1000;
 /// The default maximum history size for the farming monitor.
 pub const DEFAULT_FARMING_MAX_HISTORY_BLOCK_INTERVAL: usize = 1000;
 
+/// The farmer vote event pallet name.
+pub const FARMER_VOTE_EVENT_PALLET_NAME: &str = "Subspace";
+/// The farmer vote event variant name.
+pub const FARMER_VOTE_EVENT_VARIANT_NAME: &str = "FarmerVote";
+/// The farmer vote event public key field name.
+pub const FARMER_VOTE_EVENT_PUBLIC_KEY_FIELD_NAME: &str = "public_key";
+
 /// Interface for farming monitors that consume blocks and perform checks.
 pub trait FarmingMonitor {
     /// Ingest a block and update internal state; may emit alerts.
@@ -57,6 +64,17 @@ pub struct FarmingMonitorConfig {
     pub minimum_block_interval: usize,
 }
 
+/// The type of alert issued by the farming monitor, if there was one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FarmingMonitorStatus {
+    /// The farming monitor has emitted an increase alert.
+    AlertingIncrease,
+    /// The farming monitor has emitted a decrease alert.
+    AlertingDecrease,
+    /// The farming monitor did not emit an alert.
+    NotAlerting,
+}
+
 /// State tracked by the farming monitor, and updated at the same time.
 /// TODO:
 ///   - currently during a reorg, alerts are disabled (because of pruning, the threshold is not met
@@ -72,6 +90,8 @@ pub struct FarmingMonitorState {
     /// The number of farmers that have votes in the last `max_block_interval` blocks.
     /// TODO: delete the last few entries when a reorg happens.
     active_farmers_in_last_blocks: VecDeque<usize>,
+    /// The last alert issued by the farming monitor.
+    status: FarmingMonitorStatus,
 }
 
 /// A farming monitor that tracks the number of farmers with votes in the last `max_block_interval`
@@ -115,6 +135,7 @@ impl MemoryFarmingMonitor {
             state: FarmingMonitorState {
                 last_block_voted_by_farmer: HashMap::new(),
                 active_farmers_in_last_blocks: VecDeque::with_capacity(config.max_block_interval),
+                status: FarmingMonitorStatus::NotAlerting,
             },
         }
     }
@@ -127,8 +148,10 @@ impl MemoryFarmingMonitor {
     /// Update the last voted block for each farmer that voted in the block.
     fn update_last_voted_block(&mut self, events: &[RawEvent], block_height: BlockNumber) {
         for event in events.iter() {
-            let pallet_name = event.pallet_name();
-            let variant_name = event.variant_name();
+            let event = match (event.pallet_name(), event.variant_name()) {
+                (FARMER_VOTE_EVENT_PALLET_NAME, FARMER_VOTE_EVENT_VARIANT_NAME) => event,
+                _ => continue,
+            };
 
             let named_fields = match event.field_values() {
                 Ok(Composite::Named(named_fields)) => named_fields,
@@ -139,9 +162,10 @@ impl MemoryFarmingMonitor {
                 _ => continue,
             };
 
-            debug!("Event {pallet_name:?}.{variant_name:?} named_fields: {named_fields:?}");
-
-            let public_key_hash = match named_fields.iter().find(|(name, _)| name == "public_key") {
+            let public_key_hash = match named_fields
+                .iter()
+                .find(|(name, _)| name == FARMER_VOTE_EVENT_PUBLIC_KEY_FIELD_NAME)
+            {
                 Some((_, public_key_value)) => decode_h256_from_composite(public_key_value),
                 None => continue,
             };
@@ -187,6 +211,11 @@ impl MemoryFarmingMonitor {
         self.state
             .active_farmers_in_last_blocks
             .truncate(self.config.max_block_interval);
+
+        debug!(
+            "Number of farmers with votes in the last {} blocks: {}",
+            self.config.max_block_interval, number_of_farmers_with_votes
+        );
     }
 
     /// Returns the current number of farmers with votes, and the fraction that number is of the
@@ -234,39 +263,47 @@ impl MemoryFarmingMonitor {
 
         // Check if the current number of farmers with votes is greater than the alert threshold.
         if fraction_of_average < self.config.low_end_change_threshold {
-            let _ = self
-                .config
-                .alert_tx
-                .send(Alert::new(
-                    AlertKind::FarmersDecreasedSuddenly {
-                        number_of_farmers_with_votes,
-                        average_number_of_farmers_with_votes,
-                        number_of_blocks: u32::try_from(
-                            self.state.active_farmers_in_last_blocks.len(),
-                        )
-                        .expect("farmers should fit in a u32 integer"),
-                    },
-                    *block_info,
-                    mode,
-                ))
-                .await;
+            if self.state.status != FarmingMonitorStatus::AlertingDecrease {
+                let _ = self
+                    .config
+                    .alert_tx
+                    .send(Alert::new(
+                        AlertKind::FarmersDecreasedSuddenly {
+                            number_of_farmers_with_votes,
+                            average_number_of_farmers_with_votes,
+                            number_of_blocks: u32::try_from(
+                                self.state.active_farmers_in_last_blocks.len(),
+                            )
+                            .expect("farmers should fit in a u32 integer"),
+                        },
+                        *block_info,
+                        mode,
+                    ))
+                    .await;
+                self.state.status = FarmingMonitorStatus::AlertingDecrease;
+            }
         } else if fraction_of_average > self.config.high_end_change_threshold {
-            let _ = self
-                .config
-                .alert_tx
-                .send(Alert::new(
-                    AlertKind::FarmersIncreasedSuddenly {
-                        number_of_farmers_with_votes,
-                        average_number_of_farmers_with_votes,
-                        number_of_blocks: u32::try_from(
-                            self.state.active_farmers_in_last_blocks.len(),
-                        )
-                        .expect("farmers should fit in a u32 integer"),
-                    },
-                    *block_info,
-                    mode,
-                ))
-                .await;
+            if self.state.status != FarmingMonitorStatus::AlertingIncrease {
+                let _ = self
+                    .config
+                    .alert_tx
+                    .send(Alert::new(
+                        AlertKind::FarmersIncreasedSuddenly {
+                            number_of_farmers_with_votes,
+                            average_number_of_farmers_with_votes,
+                            number_of_blocks: u32::try_from(
+                                self.state.active_farmers_in_last_blocks.len(),
+                            )
+                            .expect("farmers should fit in a u32 integer"),
+                        },
+                        *block_info,
+                        mode,
+                    ))
+                    .await;
+                self.state.status = FarmingMonitorStatus::AlertingIncrease;
+            }
+        } else {
+            self.state.status = FarmingMonitorStatus::NotAlerting;
         }
     }
 }
@@ -425,6 +462,18 @@ mod tests {
                 BlockCheckMode::Current,
             )
         );
+
+        assert_eq!(
+            farming_monitor.state.status,
+            FarmingMonitorStatus::AlertingDecrease
+        );
+
+        // Check that no alert is emitted again after the alert has been emitted.
+        farming_monitor
+            .check_farmer_count(&block_info, BlockCheckMode::Current)
+            .await;
+
+        alert_rx.try_recv().unwrap_err();
     }
 
     #[tokio::test]
@@ -480,6 +529,18 @@ mod tests {
                 BlockCheckMode::Current,
             )
         );
+
+        assert_eq!(
+            farming_monitor.state.status,
+            FarmingMonitorStatus::AlertingIncrease
+        );
+
+        // Check that no alert is emitted again after the alert has been emitted.
+        farming_monitor
+            .check_farmer_count(&mock_block_info, BlockCheckMode::Current)
+            .await;
+
+        alert_rx.try_recv().unwrap_err();
     }
 
     #[tokio::test]
