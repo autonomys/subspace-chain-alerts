@@ -7,7 +7,8 @@ use crate::alerts::{self, Alert, AlertKind, BlockCheckMode, MIN_BALANCE_CHANGE};
 use crate::slot_time_monitor::test_utils::mock_block_info;
 use crate::slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor, SlotTimeMonitorConfig};
 use crate::subspace::tests::{
-    decode_event, decode_extrinsic, fetch_block_info, node_rpc_url, test_setup,
+    alert_channel_only_setup, decode_event, decode_extrinsic, fetch_block_info, node_rpc_url,
+    test_setup,
 };
 use crate::subspace::{AI3, Balance, BlockNumber, EventIndex, ExtrinsicIndex, RawBlockHash, Slot};
 use anyhow::Ok;
@@ -365,7 +366,7 @@ async fn test_important_address_alerts() -> anyhow::Result<()> {
 /// Check that the slot time alert is not triggered when the time per slot is below the threshold.
 #[tokio::test(flavor = "multi_thread")]
 async fn no_expected_test_slot_time_alert() -> anyhow::Result<()> {
-    let (_, _, alert_tx, mut alert_rx, update_task) = test_setup(node_rpc_url()).await?;
+    let (alert_tx, mut alert_rx) = alert_channel_only_setup();
 
     let first_block = mock_block_info(1000, Slot(100));
     let second_block = mock_block_info(2000, Slot(200));
@@ -389,12 +390,6 @@ async fn no_expected_test_slot_time_alert() -> anyhow::Result<()> {
         .try_recv()
         .expect_err("alert received when none expected");
 
-    let result = update_task.now_or_never();
-    assert!(
-        result.is_none(),
-        "metadata update task exited unexpectedly with: {result:?}"
-    );
-
     Ok(())
 }
 
@@ -402,7 +397,7 @@ async fn no_expected_test_slot_time_alert() -> anyhow::Result<()> {
 /// has elapsed enough time.
 #[tokio::test(flavor = "multi_thread")]
 async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
-    let (_, _, alert_tx, mut alert_rx, update_task) = test_setup(node_rpc_url()).await?;
+    let (alert_tx, mut alert_rx) = alert_channel_only_setup();
 
     let first_block = mock_block_info(1000, Slot(100));
     let second_block = mock_block_info(2000, Slot(200));
@@ -442,12 +437,6 @@ async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
         )
     );
 
-    let result = update_task.now_or_never();
-    assert!(
-        result.is_none(),
-        "metadata update task exited unexpectedly with: {result:?}"
-    );
-
     Ok(())
 }
 
@@ -455,7 +444,7 @@ async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
 /// but has not elapsed enough time.
 #[tokio::test(flavor = "multi_thread")]
 async fn expected_test_slot_time_alert_but_not_yet() -> anyhow::Result<()> {
-    let (_, _, alert_tx, mut alert_rx, update_task) = test_setup(node_rpc_url()).await?;
+    let (alert_tx, mut alert_rx) = alert_channel_only_setup();
 
     let first_block = mock_block_info(1000, Slot(100));
     let second_block = mock_block_info(2000, Slot(200));
@@ -478,12 +467,6 @@ async fn expected_test_slot_time_alert_but_not_yet() -> anyhow::Result<()> {
     alert_rx
         .try_recv()
         .expect_err("alert received when none expected");
-
-    let result = update_task.now_or_never();
-    assert!(
-        result.is_none(),
-        "metadata update task exited unexpectedly with: {result:?}"
-    );
 
     Ok(())
 }

@@ -49,7 +49,7 @@ pub async fn test_setup(
         create_subspace_client(node_rpc_url.as_ref()).await?;
 
     // Create a channel to receive alerts.
-    let (alert_tx, alert_rx) = mpsc::channel(ALERT_BUFFER_SIZE);
+    let (alert_tx, alert_rx) = alert_channel_only_setup();
 
     Ok((
         chain_client,
@@ -58,6 +58,12 @@ pub async fn test_setup(
         alert_rx,
         update_task,
     ))
+}
+
+/// Set up alert channels for testing.
+pub fn alert_channel_only_setup() -> (mpsc::Sender<Alert>, mpsc::Receiver<Alert>) {
+    let (alert_tx, alert_rx) = mpsc::channel(ALERT_BUFFER_SIZE);
+    (alert_tx, alert_rx)
 }
 
 /// Get the block info, extrinsics, and events for a block.
