@@ -64,13 +64,14 @@ pub struct FarmingMonitorConfig {
     pub minimum_block_interval: usize,
 }
 
+/// The type of alert issued by the farming monitor, if there was one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FarmingMonitorStatus {
-    /// The farming monitor has emitted an alert
+    /// The farming monitor has emitted an increase alert.
     AlertingIncrease,
-    /// The farming monitor has emitted an alert
+    /// The farming monitor has emitted a decrease alert.
     AlertingDecrease,
-    /// The farming monitor has not emitted an alert
+    /// The farming monitor did not emit an alert.
     NotAlerting,
 }
 
@@ -89,7 +90,7 @@ pub struct FarmingMonitorState {
     /// The number of farmers that have votes in the last `max_block_interval` blocks.
     /// TODO: delete the last few entries when a reorg happens.
     active_farmers_in_last_blocks: VecDeque<usize>,
-    /// Status of the alert.
+    /// The last alert issued by the farming monitor.
     status: FarmingMonitorStatus,
 }
 
