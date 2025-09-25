@@ -491,20 +491,17 @@ impl Display for ExtrinsicInfo {
 
         writeln!(f, "Extrinsic {pallet}::{call} (index {index})")?;
         writeln!(f, "Hash: {hash:?}")?;
+
         if let Some(signing_address) = signing_address {
             writeln!(f, "Signing Address: {signing_address}")?;
         }
         if let Some(transfer_value) = self.transfer_value() {
             writeln!(f, "Transfer Value: {}", fmt_amount(transfer_value))?;
         }
-        let accounts: Vec<String> = self
-            .accounts()
-            .iter()
-            .map(|account| account.to_string())
-            .collect();
-        if !accounts.is_empty() {
-            writeln!(f, "Accounts: {}", accounts.join(", "))?;
+        if let Some(accounts) = self.accounts_str() {
+            writeln!(f, "Accounts: {accounts}")?;
         }
+
         write!(f, "{}", fmt_fields(fields))?;
 
         Ok(())
@@ -603,17 +600,14 @@ impl Display for EventInfo {
 
         writeln!(f, "Event {pallet}::{kind} (index {index})")?;
         writeln!(f, "Phase: {phase:?}")?;
+
         if let Some(transfer_value) = self.transfer_value() {
             writeln!(f, "Transfer Value: {}", fmt_amount(transfer_value))?;
         }
-        let accounts: Vec<String> = self
-            .accounts()
-            .iter()
-            .map(|account| account.to_string())
-            .collect();
-        if !accounts.is_empty() {
-            writeln!(f, "Accounts: {}", accounts.join(", "))?;
+        if let Some(accounts) = self.accounts_str() {
+            writeln!(f, "Accounts: {accounts}")?;
         }
+
         write!(f, "{}", fmt_fields(fields))?;
 
         Ok(())

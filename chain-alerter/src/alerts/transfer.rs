@@ -4,6 +4,7 @@ use crate::alerts::{Alert, AlertKind, BlockCheckMode, MIN_BALANCE_CHANGE};
 use crate::subspace::decode::decode_h256_from_composite;
 use crate::subspace::{Balance, BlockInfo, EventInfo, ExtrinsicInfo};
 use scale_value::Composite;
+use std::collections::BTreeSet;
 use std::fmt::{self, Display};
 use std::str::FromStr;
 use subxt::utils::AccountId32;
@@ -58,6 +59,11 @@ pub const IMPORTANT_ADDRESSES: &[(&str, &str)] = &[
         "Game of Domains",
         "sueCdBhsNJ9LH76wYyJYhK8fvcvYt1q3J3AwWq674rwPEvbKS",
     ),
+    // <https://forum.autonomys.xyz/t/boosting-early-staking-the-guardians-of-growth-initiative/4962/2>
+    (
+        "Guardians of Growth",
+        "sugQzjjyAfhzktFDdAkZrcTq5qzMaRoSV2qs1gTcjjuBeybWT",
+    ),
 ];
 
 /// If the address is an important address, returns the kind of important address, otherwise returns
@@ -77,15 +83,18 @@ pub fn important_address_kind(address: &Account) -> Option<&'static str> {
 
 /// A trait for accessing the transfer value from an object.
 pub trait TransferValue {
-    /// Returns the transfer value, if it is present.
+    /// Returns the total transfer value, if it is present.
     fn transfer_value(&self) -> Option<Balance>;
 }
 
 impl TransferValue for ExtrinsicInfo {
     fn transfer_value(&self) -> Option<Balance> {
-        if self.pallet == "Balances" || self.pallet == "Transporter" {
+        if self.pallet == "Balances" {
             // subxt knows the field names, so we can search for the transfer value by name.
             return total_transfer_value(&self.fields, &["value", "amount", "new_free", "delta"]);
+        } else if self.pallet == "Transporter" || self.pallet == "Domains" {
+            // Operator nomination is a kind of transfer to an operator stake.
+            return total_transfer_value(&self.fields, &["amount"]);
         }
 
         None
@@ -94,7 +103,7 @@ impl TransferValue for ExtrinsicInfo {
 
 impl TransferValue for EventInfo {
     fn transfer_value(&self) -> Option<Balance> {
-        if self.pallet == "Balances" || self.pallet == "Transporter" {
+        if self.pallet == "Balances" || self.pallet == "Transporter" || self.pallet == "Domains" {
             return total_transfer_value(&self.fields, &["amount"]);
         } else if self.pallet == "Transactionpayment" {
             return total_transfer_value(&self.fields, &["actual_fee", "tip"]);
@@ -104,8 +113,8 @@ impl TransferValue for EventInfo {
     }
 }
 
-/// A typed account ID.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// An account ID and attached role type.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum Account {
     /// The signer of an extrinsic.
     Signer(AccountId32),
@@ -145,16 +154,60 @@ impl Display for Account {
 
 /// A trait for accessing the account IDs and account types from an object.
 pub trait Accounts {
-    /// Returns the account IDs and types, if present.
-    fn accounts(&self) -> Vec<Account>;
+    /// Returns sorted account IDs and types, if present.
+    fn accounts(&self) -> BTreeSet<Account>;
+
+    /// Returns a sorted list of account IDs and types, separated by commas.
+    /// Returns `None` if there are no accounts.
+    fn accounts_str(&self) -> Option<String> {
+        let accounts = self.accounts();
+
+        if accounts.is_empty() {
+            return None;
+        }
+
+        Some(
+            accounts
+                .iter()
+                .map(|account| account.to_string())
+                .collect::<Vec<String>>()
+                .join(", "),
+        )
+    }
+
+    /// Returns sorted important address kinds, if the addresses are important.
+    fn important_address_kinds(&self) -> BTreeSet<&str> {
+        self.accounts()
+            .iter()
+            .flat_map(|account| account.important_address_kind())
+            .collect()
+    }
+
+    /// Returns a sorted list of important address kinds, separated by commas.
+    /// Returns `None` if there are no important address kinds.
+    fn important_address_kinds_str(&self) -> Option<String> {
+        let important_address_kinds = self.important_address_kinds();
+
+        if important_address_kinds.is_empty() {
+            return None;
+        }
+
+        Some(
+            important_address_kinds
+                .into_iter()
+                .collect::<Vec<&str>>()
+                .join(", "),
+        )
+    }
 }
 
 impl Accounts for ExtrinsicInfo {
-    fn accounts(&self) -> Vec<Account> {
-        let mut account_list = vec![];
+    fn accounts(&self) -> BTreeSet<Account> {
+        let mut account_list = BTreeSet::new();
 
         if let Some(signing_address) = self.signing_address.as_ref() {
-            account_list.push(Account::Signer(signing_address.clone()));
+            // Handle signer for Balances, Transporter, Domains, etc.
+            account_list.insert(Account::Signer(signing_address.clone()));
         }
 
         if self.pallet == "Balances" {
@@ -173,8 +226,8 @@ impl Accounts for ExtrinsicInfo {
 }
 
 impl Accounts for EventInfo {
-    fn accounts(&self) -> Vec<Account> {
-        let mut account_list = vec![];
+    fn accounts(&self) -> BTreeSet<Account> {
+        let mut account_list = BTreeSet::new();
 
         if self.pallet == "Balances" {
             let receiver_accounts = list_accounts(&self.fields, &["who", "to"]);
@@ -188,11 +241,12 @@ impl Accounts for EventInfo {
             }
 
             account_list.extend(sender_accounts.into_iter().map(Account::Sender));
-        }
-
-        if self.pallet == "Transactionpayment" {
+        } else if self.pallet == "Transactionpayment" {
             // Transaction payments are always about the sender.
             let accounts = list_accounts(&self.fields, &["who"]);
+            account_list.extend(accounts.into_iter().map(Account::Sender));
+        } else if self.pallet == "Domains" {
+            let accounts = list_accounts(&self.fields, &["nominator_id"]);
             account_list.extend(accounts.into_iter().map(Account::Sender));
         }
 
@@ -222,19 +276,19 @@ pub fn total_transfer_value(fields: &Composite<u32>, field_names: &[&str]) -> Op
 
 /// Returns a list of the accounts from the supplied named fields.
 /// If there are no fields with those names, returns an empty list.
-pub fn list_accounts(fields: &Composite<u32>, field_names: &[&str]) -> Vec<AccountId32> {
+///
+/// Accounts can be duplicated if they perform different roles in the extrinsic or event.
+pub fn list_accounts(fields: &Composite<u32>, field_names: &[&str]) -> BTreeSet<AccountId32> {
     if let Composite::Named(named_fields) = fields {
-        let account_list: Vec<AccountId32> = named_fields
+        named_fields
             .iter()
             .filter(|(name, _)| field_names.contains(&name.as_str()))
             .flat_map(|(_, value)| decode_h256_from_composite(value))
             .map(|account_id| account_id.0.into())
-            .collect();
-
-        return account_list;
+            .collect()
+    } else {
+        BTreeSet::new()
     }
-
-    vec![]
 }
 
 /// Check a Balance extrinsic for alerts.
@@ -297,25 +351,21 @@ pub async fn check_transfer_extrinsic(
         );
     }
 
-    let accounts = extrinsic_info.accounts();
-    let important_address_kinds = accounts
-        .iter()
-        .flat_map(|account| account.important_address_kind())
-        .collect::<Vec<_>>();
+    let important_address_kinds = extrinsic_info.important_address_kinds_str();
+
     trace!(
         ?mode,
-        ?accounts,
         ?important_address_kinds,
         ?extrinsic_info,
         ?block_info,
-        "extrinsic account list"
+        "extrinsic account list",
     );
 
-    if !important_address_kinds.is_empty() {
+    if let Some(important_address_kinds) = important_address_kinds {
         alert_tx
             .send(Alert::new(
                 AlertKind::ImportantAddressTransfer {
-                    address_kinds: important_address_kinds.join(", "),
+                    address_kinds: important_address_kinds,
                     extrinsic_info: extrinsic_info.clone(),
                     // The transfer value can be missing for a transfer_all call.
                     // TODO: check account storage to get the transfer value if it is missing
@@ -364,10 +414,8 @@ pub async fn check_transfer_event(
     }
 
     let accounts = event_info.accounts();
-    let important_address_kinds = accounts
-        .iter()
-        .flat_map(|account| account.important_address_kind())
-        .collect::<Vec<_>>();
+    let important_address_kinds = event_info.important_address_kinds_str();
+
     trace!(
         ?mode,
         ?accounts,
@@ -377,11 +425,11 @@ pub async fn check_transfer_event(
         "event account list"
     );
 
-    if !important_address_kinds.is_empty() {
+    if let Some(important_address_kinds) = important_address_kinds {
         alert_tx
             .send(Alert::new(
                 AlertKind::ImportantAddressTransferEvent {
-                    address_kinds: important_address_kinds.join(", "),
+                    address_kinds: important_address_kinds,
                     event_info: event_info.clone(),
                     // The transfer value shouldn't be missing, but we can't rely on the data
                     // format.

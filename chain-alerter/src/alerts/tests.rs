@@ -64,17 +64,22 @@ const LARGE_TRANSFER_BLOCKS: [(
 ];
 
 /// Some extrinsics and events for important address transfers.
-///
-/// TODO: turn this into a struct
+#[expect(
+    clippy::type_complexity,
+    reason = "this is a test, TODO: turn this into a struct"
+)]
 const IMPORTANT_ADDRESS_BLOCKS: [(
     BlockNumber,
     RawBlockHash,
     ExtrinsicIndex,
     EventIndex,
     &str,
+    // Extrinsic and event transfer values can be different if the extrinsic causes multiple
+    // events.
+    Balance,
     Balance,
     Slot,
-); 3] = [
+); 4] = [
     // <https://autonomys.subscan.io/account/sudqduciRx3fZcNRbW1mmmBAntuZLkwhcXyVctsGJyrjRTPaA>
     (
         4_259_127,
@@ -83,7 +88,8 @@ const IMPORTANT_ADDRESS_BLOCKS: [(
         4,
         // <https://autonomys.subscan.io/event/4259127-8>
         8,
-        "Subspace Foundation Near-Term Treasury",
+        "Guardians of Growth, Subspace Foundation Near-Term Treasury",
+        4_999_990 * AI3,
         4_999_990 * AI3,
         Slot(25_647_927),
     ),
@@ -97,6 +103,7 @@ const IMPORTANT_ADDRESS_BLOCKS: [(
         50,
         "Market Liquidity",
         20_000 * AI3,
+        20_000 * AI3,
         Slot(25_314_662),
     ),
     // <https://autonomys.subscan.io/account/sudqduciRx3fZcNRbW1mmmBAntuZLkwhcXyVctsGJyrjRTPaA>
@@ -109,7 +116,21 @@ const IMPORTANT_ADDRESS_BLOCKS: [(
         28,
         "Operations",
         150 * AI3,
+        150 * AI3,
         Slot(23_187_041),
+    ),
+    // <https://autonomys.subscan.io/account/sugQzjjyAfhzktFDdAkZrcTq5qzMaRoSV2qs1gTcjjuBeybWT>
+    (
+        4_273_214,
+        hex_literal::hex!("0f186a758890e8653e4978064f929ccdc9d134b0abc8dcb04593a8d236bc0bc5"),
+        // <https://autonomys.subscan.io/extrinsic/4273214-4>
+        4,
+        // <https://autonomys.subscan.io/event/4273214-15>
+        15,
+        "Guardians of Growth",
+        499_999_999_999_999_991_611_392,
+        399_999_999_999_999_993_289_114,
+        Slot(25_732_135),
     ),
 ];
 
@@ -277,7 +298,8 @@ async fn test_important_address_alerts() -> anyhow::Result<()> {
         extrinsic_index,
         event_index,
         address_kinds,
-        transfer_value,
+        extrinsic_transfer_value,
+        event_transfer_value,
         slot,
     ) in IMPORTANT_ADDRESS_BLOCKS
     {
@@ -291,14 +313,14 @@ async fn test_important_address_alerts() -> anyhow::Result<()> {
         alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info).await?;
 
         // The order of these alerts is not actually important.
-        if transfer_value >= MIN_BALANCE_CHANGE {
+        if extrinsic_transfer_value >= MIN_BALANCE_CHANGE {
             let alert = alert_rx.try_recv().expect("no extrinsic alert received");
             assert_eq!(
                 alert,
                 Alert::new(
                     AlertKind::LargeBalanceTransfer {
                         extrinsic_info: extrinsic_info.clone(),
-                        transfer_value,
+                        transfer_value: extrinsic_transfer_value,
                     },
                     block_info,
                     BlockCheckMode::Replay,
@@ -313,7 +335,7 @@ async fn test_important_address_alerts() -> anyhow::Result<()> {
                 AlertKind::ImportantAddressTransfer {
                     address_kinds: address_kinds.to_string(),
                     extrinsic_info,
-                    transfer_value: Some(transfer_value),
+                    transfer_value: Some(extrinsic_transfer_value),
                 },
                 block_info,
                 BlockCheckMode::Replay,
@@ -321,14 +343,14 @@ async fn test_important_address_alerts() -> anyhow::Result<()> {
         );
 
         alerts::check_event(BlockCheckMode::Replay, &alert_tx, &event, &block_info).await?;
-        if transfer_value >= MIN_BALANCE_CHANGE {
+        if event_transfer_value >= MIN_BALANCE_CHANGE {
             let alert = alert_rx.try_recv().expect("no event alert received");
             assert_eq!(
                 alert,
                 Alert::new(
                     AlertKind::LargeBalanceTransferEvent {
                         event_info: event_info.clone(),
-                        transfer_value,
+                        transfer_value: event_transfer_value,
                     },
                     block_info,
                     BlockCheckMode::Replay,
@@ -343,7 +365,7 @@ async fn test_important_address_alerts() -> anyhow::Result<()> {
                 AlertKind::ImportantAddressTransferEvent {
                     address_kinds: address_kinds.to_string(),
                     event_info,
-                    transfer_value: Some(transfer_value),
+                    transfer_value: Some(event_transfer_value),
                 },
                 block_info,
                 BlockCheckMode::Replay,
