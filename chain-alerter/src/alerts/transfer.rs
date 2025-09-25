@@ -312,10 +312,12 @@ pub async fn check_transfer_extrinsic(
     // - test force alerts by checking a historic block with that call
     // - do we want to track burn calls? <https://autonomys.subscan.io/extrinsic/137324-31> this is
     //   a low priority because it is already covered by balance events
-    if extrinsic_info.pallet == "Balances" && extrinsic_info.call.starts_with("force") {
+    if let Some(transfer_value) = transfer_value
+        && transfer_value >= MIN_BALANCE_CHANGE
+    {
         alert_tx
             .send(Alert::new(
-                AlertKind::ForceBalanceTransfer {
+                AlertKind::LargeBalanceTransfer {
                     extrinsic_info: extrinsic_info.clone(),
                     transfer_value,
                 },
@@ -323,12 +325,10 @@ pub async fn check_transfer_extrinsic(
                 mode,
             ))
             .await?;
-    } else if let Some(transfer_value) = transfer_value
-        && transfer_value >= MIN_BALANCE_CHANGE
-    {
+    } else if extrinsic_info.pallet == "Balances" && extrinsic_info.call.starts_with("force") {
         alert_tx
             .send(Alert::new(
-                AlertKind::LargeBalanceTransfer {
+                AlertKind::ForceBalanceTransfer {
                     extrinsic_info: extrinsic_info.clone(),
                     transfer_value,
                 },
