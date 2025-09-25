@@ -247,6 +247,24 @@ pub enum AlertKind {
         transfer_value: Option<Balance>,
     },
 
+    /// An extrinsic initiated by an important address has been detected.
+    ImportantAddressExtrinsic {
+        /// The important address kind.
+        address_kind: String,
+
+        /// The extrinsic information.
+        extrinsic_info: ExtrinsicInfo,
+    },
+
+    /// An event initiated by an important address has been detected.
+    ImportantAddressEvent {
+        /// The important address kind.
+        address_kind: String,
+
+        /// The event information.
+        event_info: EventInfo,
+    },
+
     /// A Sudo call has been detected.
     SudoCall {
         /// The sudo call's extrinsic information.
@@ -448,6 +466,30 @@ impl Display for AlertKind {
                 )
             }
 
+            Self::ImportantAddressExtrinsic {
+                address_kind,
+                extrinsic_info,
+            } => {
+                write!(
+                    f,
+                    "**Important address sent an extrinsic**\n\
+                    Kind: {address_kind}\n\
+                    {extrinsic_info}",
+                )
+            }
+
+            Self::ImportantAddressEvent {
+                address_kind,
+                event_info,
+            } => {
+                write!(
+                    f,
+                    "**Important address initiated an event**\n\
+                    Kind: {address_kind}\n\
+                    {event_info}",
+                )
+            }
+
             Self::SudoCall { extrinsic_info } => {
                 write!(
                     f,
@@ -540,6 +582,8 @@ impl AlertKind {
             | Self::LargeBalanceTransferEvent { .. }
             | Self::ImportantAddressTransfer { .. }
             | Self::ImportantAddressTransferEvent { .. }
+            | Self::ImportantAddressExtrinsic { .. }
+            | Self::ImportantAddressEvent { .. }
             | Self::SudoCall { .. }
             | Self::SudoEvent { .. }
             | Self::OperatorSlashed { .. }
@@ -568,6 +612,8 @@ impl AlertKind {
             | Self::LargeBalanceTransferEvent { .. }
             | Self::ImportantAddressTransfer { .. }
             | Self::ImportantAddressTransferEvent { .. }
+            | Self::ImportantAddressExtrinsic { .. }
+            | Self::ImportantAddressEvent { .. }
             | Self::SudoCall { .. }
             | Self::SudoEvent { .. }
             | Self::OperatorSlashed { .. }
@@ -584,6 +630,7 @@ impl AlertKind {
             Self::ForceBalanceTransfer { extrinsic_info, .. }
             | Self::LargeBalanceTransfer { extrinsic_info, .. }
             | Self::ImportantAddressTransfer { extrinsic_info, .. }
+            | Self::ImportantAddressExtrinsic { extrinsic_info, .. }
             | Self::SudoCall { extrinsic_info } => Some(extrinsic_info),
             Self::Startup
             | Self::FarmersDecreasedSuddenly { .. }
@@ -594,6 +641,7 @@ impl AlertKind {
             | Self::SideForkExtended { .. }
             | Self::LargeBalanceTransferEvent { .. }
             | Self::ImportantAddressTransferEvent { .. }
+            | Self::ImportantAddressEvent { .. }
             | Self::Reorg { .. }
             | Self::SudoEvent { .. }
             | Self::OperatorSlashed { .. }
@@ -618,6 +666,8 @@ impl AlertKind {
             | Self::NewSideFork { .. }
             | Self::SideForkExtended { .. }
             | Self::Reorg { .. }
+            | Self::ImportantAddressExtrinsic { .. }
+            | Self::ImportantAddressEvent { .. }
             | Self::SudoCall { .. }
             | Self::SudoEvent { .. }
             | Self::OperatorSlashed { .. }
@@ -632,7 +682,8 @@ impl AlertKind {
             Self::LargeBalanceTransferEvent { event_info, .. }
             | Self::ImportantAddressTransferEvent { event_info, .. }
             | Self::SudoEvent { event_info }
-            | Self::OperatorSlashed { event_info } => Some(event_info),
+            | Self::OperatorSlashed { event_info }
+            | Self::ImportantAddressEvent { event_info, .. } => Some(event_info),
             Self::Startup
             | Self::BlockProductionStall { .. }
             | Self::BlockProductionResumed { .. }
@@ -642,6 +693,7 @@ impl AlertKind {
             | Self::ForceBalanceTransfer { .. }
             | Self::LargeBalanceTransfer { .. }
             | Self::ImportantAddressTransfer { .. }
+            | Self::ImportantAddressExtrinsic { .. }
             | Self::SudoCall { .. }
             | Self::SlotTime { .. }
             | Self::FarmersDecreasedSuddenly { .. }
@@ -799,9 +851,11 @@ pub async fn check_extrinsic(
     let transfer_value = extrinsic_info.transfer_value();
     trace!(?mode, "transfer_value: {:?}", transfer_value);
 
+    let initiator_account_kind = extrinsic_info.initiator_account_kind();
     let important_address_kinds = extrinsic_info.important_address_kinds_str();
     trace!(
         ?mode,
+        ?initiator_account_kind,
         ?important_address_kinds,
         ?extrinsic_info,
         ?block_info,
@@ -809,8 +863,9 @@ pub async fn check_extrinsic(
     );
 
     // The signing account is listed in the extrinsic, therefore:
-    // - Sudo extrinsics override balance transfers by sudo, and
-    // - Large balance transfers override transfers initiated by important addresses.
+    // - Sudo extrinsics override balance transfers by sudo,
+    // - Large balance transfers override transfers initiated by important addresses, and
+    // - An important address alert is only issued if no other alert is triggered.
     if extrinsic_info.pallet == "Sudo" {
         // All sudo calls are alerts.
         // TODO:
@@ -869,6 +924,17 @@ pub async fn check_extrinsic(
                 mode,
             ))
             .await?;
+    } else if let Some(initiator_account_kind) = initiator_account_kind {
+        alert_tx
+            .send(Alert::new(
+                AlertKind::ImportantAddressExtrinsic {
+                    address_kind: initiator_account_kind.to_string(),
+                    extrinsic_info: extrinsic_info.clone(),
+                },
+                *block_info,
+                mode,
+            ))
+            .await?;
     }
 
     if transfer_value.is_none()
@@ -914,11 +980,11 @@ pub async fn check_event(
     let transfer_value = event_info.transfer_value();
     trace!(?mode, "transfer_value: {:?}", transfer_value);
 
-    let accounts = event_info.accounts();
+    let initiator_account_kind = event_info.initiator_account_kind();
     let important_address_kinds = event_info.important_address_kinds_str();
     trace!(
         ?mode,
-        ?accounts,
+        ?initiator_account_kind,
         ?important_address_kinds,
         ?event_info,
         ?block_info,
@@ -942,8 +1008,9 @@ pub async fn check_event(
     }
 
     // The initiating account is listed in the event when it is in the `who` field, therefore:
-    // - Sudo events override balance transfers by sudo, and
-    // - Large balance transfers override transfers initiated by important addresses.
+    // - Sudo events override balance transfers by sudo,
+    // - Large balance transfers override transfers initiated by important addresses, and
+    // - An important address alert is only issued if no other alert is triggered.
     if event_info.pallet == "Sudo" {
         alert_tx
             .send(Alert::new(
@@ -980,6 +1047,17 @@ pub async fn check_event(
                     // The transfer value shouldn't be missing, but we can't rely on the data
                     // format.
                     transfer_value,
+                },
+                *block_info,
+                mode,
+            ))
+            .await?;
+    } else if let Some(initiator_account_kind) = initiator_account_kind {
+        alert_tx
+            .send(Alert::new(
+                AlertKind::ImportantAddressEvent {
+                    address_kind: initiator_account_kind.to_string(),
+                    event_info: event_info.clone(),
                 },
                 *block_info,
                 mode,
