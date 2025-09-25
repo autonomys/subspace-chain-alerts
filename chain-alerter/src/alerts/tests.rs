@@ -311,10 +311,11 @@ async fn test_important_address_alerts() -> anyhow::Result<()> {
         let (event, event_info) = decode_event(&block_info, &events, event_index).await?;
 
         alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info).await?;
+        let alert = alert_rx.try_recv().expect("no extrinsic alert received");
 
-        // The order of these alerts is not actually important.
+        // There should only be one alert per extrinsic, and one per event, because more important
+        // alerts override less important/specific alerts.
         if extrinsic_transfer_value >= MIN_BALANCE_CHANGE {
-            let alert = alert_rx.try_recv().expect("no extrinsic alert received");
             assert_eq!(
                 alert,
                 Alert::new(
@@ -326,25 +327,25 @@ async fn test_important_address_alerts() -> anyhow::Result<()> {
                     BlockCheckMode::Replay,
                 )
             );
+        } else {
+            assert_eq!(
+                alert,
+                Alert::new(
+                    AlertKind::ImportantAddressTransfer {
+                        address_kinds: address_kinds.to_string(),
+                        extrinsic_info,
+                        transfer_value: Some(extrinsic_transfer_value),
+                    },
+                    block_info,
+                    BlockCheckMode::Replay,
+                )
+            );
         }
 
-        let alert = alert_rx.try_recv().expect("no extrinsic alert received");
-        assert_eq!(
-            alert,
-            Alert::new(
-                AlertKind::ImportantAddressTransfer {
-                    address_kinds: address_kinds.to_string(),
-                    extrinsic_info,
-                    transfer_value: Some(extrinsic_transfer_value),
-                },
-                block_info,
-                BlockCheckMode::Replay,
-            )
-        );
-
         alerts::check_event(BlockCheckMode::Replay, &alert_tx, &event, &block_info).await?;
+        let alert = alert_rx.try_recv().expect("no event alert received");
+
         if event_transfer_value >= MIN_BALANCE_CHANGE {
-            let alert = alert_rx.try_recv().expect("no event alert received");
             assert_eq!(
                 alert,
                 Alert::new(
@@ -356,21 +357,20 @@ async fn test_important_address_alerts() -> anyhow::Result<()> {
                     BlockCheckMode::Replay,
                 )
             );
+        } else {
+            assert_eq!(
+                alert,
+                Alert::new(
+                    AlertKind::ImportantAddressTransferEvent {
+                        address_kinds: address_kinds.to_string(),
+                        event_info,
+                        transfer_value: Some(event_transfer_value),
+                    },
+                    block_info,
+                    BlockCheckMode::Replay,
+                )
+            );
         }
-
-        let alert = alert_rx.try_recv().expect("no event alert received");
-        assert_eq!(
-            alert,
-            Alert::new(
-                AlertKind::ImportantAddressTransferEvent {
-                    address_kinds: address_kinds.to_string(),
-                    event_info,
-                    transfer_value: Some(event_transfer_value),
-                },
-                block_info,
-                BlockCheckMode::Replay,
-            )
-        );
 
         // Check block slot parsing works on a known slot value.
         assert_eq!(alert.block_info.slot, Some(slot));

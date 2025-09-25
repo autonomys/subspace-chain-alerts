@@ -305,8 +305,16 @@ pub async fn check_transfer_extrinsic(
     // - track the total of recent transfers, so the threshold can't be bypassed by splitting the
     //   transfer into multiple calls
     let transfer_value = extrinsic_info.transfer_value();
+    trace!(?mode, "transfer_value: {:?}", transfer_value);
 
-    debug!(?mode, "transfer_value: {:?}", transfer_value);
+    let important_address_kinds = extrinsic_info.important_address_kinds_str();
+    trace!(
+        ?mode,
+        ?important_address_kinds,
+        ?extrinsic_info,
+        ?block_info,
+        "extrinsic account list",
+    );
 
     // TODO:
     // - test force alerts by checking a historic block with that call
@@ -336,45 +344,37 @@ pub async fn check_transfer_extrinsic(
                 mode,
             ))
             .await?;
-    } else if transfer_value.is_none()
-        && extrinsic_info.pallet == "Balances"
-        && !["transfer_all", "upgrade_accounts"].contains(&extrinsic_info.call.as_str())
-    {
-        // Every other Balances extrinsic should have an amount.
-        // TODO:
-        // - check transfer_all by accessing account storage to get the value, this is a low
-        //   priority because it is already covered by balance events
-        warn!(
-            ?mode,
-            ?extrinsic_info,
-            "Balance: extrinsic amount unavailable in block",
-        );
-    }
+    } else {
+        if let Some(important_address_kinds) = important_address_kinds {
+            alert_tx
+                .send(Alert::new(
+                    AlertKind::ImportantAddressTransfer {
+                        address_kinds: important_address_kinds,
+                        extrinsic_info: extrinsic_info.clone(),
+                        // The transfer value can be missing for a transfer_all call.
+                        // TODO: check account storage to get the transfer value if it is missing
+                        transfer_value,
+                    },
+                    *block_info,
+                    mode,
+                ))
+                .await?;
+        }
 
-    let important_address_kinds = extrinsic_info.important_address_kinds_str();
-
-    trace!(
-        ?mode,
-        ?important_address_kinds,
-        ?extrinsic_info,
-        ?block_info,
-        "extrinsic account list",
-    );
-
-    if let Some(important_address_kinds) = important_address_kinds {
-        alert_tx
-            .send(Alert::new(
-                AlertKind::ImportantAddressTransfer {
-                    address_kinds: important_address_kinds,
-                    extrinsic_info: extrinsic_info.clone(),
-                    // The transfer value can be missing for a transfer_all call.
-                    // TODO: check account storage to get the transfer value if it is missing
-                    transfer_value,
-                },
-                *block_info,
-                mode,
-            ))
-            .await?;
+        if transfer_value.is_none()
+            && extrinsic_info.pallet == "Balances"
+            && !["transfer_all", "upgrade_accounts"].contains(&extrinsic_info.call.as_str())
+        {
+            // Every other Balances extrinsic should have an amount.
+            // TODO:
+            // - check transfer_all by accessing account storage to get the value, this is a low
+            //   priority because it is already covered by balance events
+            warn!(
+                ?mode,
+                ?extrinsic_info,
+                "Balance: extrinsic amount unavailable in block",
+            );
+        }
     }
 
     Ok(())
@@ -394,7 +394,18 @@ pub async fn check_transfer_event(
     // - track the total of recent events, so the threshold can't be bypassed by splitting the
     //   transfer into multiple calls
     let transfer_value = event_info.transfer_value();
-    debug!(?mode, "transfer_value: {:?}", transfer_value);
+    trace!(?mode, "transfer_value: {:?}", transfer_value);
+
+    let accounts = event_info.accounts();
+    let important_address_kinds = event_info.important_address_kinds_str();
+    trace!(
+        ?mode,
+        ?accounts,
+        ?important_address_kinds,
+        ?event_info,
+        ?block_info,
+        "event account list",
+    );
 
     // TODO:
     // - do we want to track burn calls? <https://autonomys.subscan.io/extrinsic/137324-31>
@@ -411,21 +422,7 @@ pub async fn check_transfer_event(
                 mode,
             ))
             .await?;
-    }
-
-    let accounts = event_info.accounts();
-    let important_address_kinds = event_info.important_address_kinds_str();
-
-    trace!(
-        ?mode,
-        ?accounts,
-        ?important_address_kinds,
-        ?event_info,
-        ?block_info,
-        "event account list"
-    );
-
-    if let Some(important_address_kinds) = important_address_kinds {
+    } else if let Some(important_address_kinds) = important_address_kinds {
         alert_tx
             .send(Alert::new(
                 AlertKind::ImportantAddressTransferEvent {
