@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use std::fmt::{self, Display};
 use std::str::FromStr;
 use subxt::utils::AccountId32;
-use tracing::trace;
+use tracing::{error, trace};
 
 /// A list of known important addresses.
 pub const IMPORTANT_ADDRESSES: &[(&str, &str)] = &[
@@ -154,6 +154,21 @@ impl Display for Account {
 
 /// A trait for accessing the account IDs and account types from an object.
 pub trait Accounts {
+    /// Returns the signer for extrinsics or the `who` for events.
+    fn initiator_account(&self) -> Option<Account>;
+
+    /// Returns the account ID and type for the initiator account, if any.
+    #[expect(dead_code, reason = "included for completeness")]
+    fn initiator_account_str(&self) -> Option<String> {
+        self.initiator_account().map(|account| account.to_string())
+    }
+
+    /// Returns the important address kind for the initiator account, if any.
+    fn initiator_account_kind(&self) -> Option<&'static str> {
+        self.initiator_account()
+            .and_then(|account| account.important_address_kind())
+    }
+
     /// Returns sorted account IDs and types, if present.
     fn accounts(&self) -> BTreeSet<Account>;
 
@@ -202,12 +217,18 @@ pub trait Accounts {
 }
 
 impl Accounts for ExtrinsicInfo {
+    fn initiator_account(&self) -> Option<Account> {
+        self.signing_address
+            .as_ref()
+            .map(|signing_address| Account::Signer(signing_address.clone()))
+    }
+
     fn accounts(&self) -> BTreeSet<Account> {
         let mut account_list = BTreeSet::new();
 
-        if let Some(signing_address) = self.signing_address.as_ref() {
+        if let Some(signing_account) = self.initiator_account() {
             // Handle signer for Balances, Transporter, Domains, etc.
-            account_list.insert(Account::Signer(signing_address.clone()));
+            account_list.insert(signing_account);
         }
 
         if self.pallet == "Balances" {
@@ -226,6 +247,18 @@ impl Accounts for ExtrinsicInfo {
 }
 
 impl Accounts for EventInfo {
+    fn initiator_account(&self) -> Option<Account> {
+        let who = list_accounts(&self.fields, &["who"]);
+
+        if who.len() > 1 {
+            // This is technically possible in the data format, but it should never actually happen.
+            error!("multiple 'who' accounts in event, alerts might have been missed");
+            None
+        } else {
+            who.into_iter().next().map(Account::Signer)
+        }
+    }
+
     fn accounts(&self) -> BTreeSet<Account> {
         let mut account_list = BTreeSet::new();
 
