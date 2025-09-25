@@ -154,6 +154,11 @@ async fn test_startup_alert() -> anyhow::Result<()> {
         Alert::new(AlertKind::Startup, block_info, BlockCheckMode::Startup),
     );
 
+    // There should be no other alerts.
+    alert_rx
+        .try_recv()
+        .expect_err("alert received when none expected");
+
     // Check block slot parsing works on real blocks.
     assert_matches!(alert.block_info.slot, Some(Slot(_)));
 
@@ -216,6 +221,10 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
         Some(("Sudo", "Sudid"))
     );
 
+    alert_rx
+        .try_recv()
+        .expect_err("alert received when none expected");
+
     // Check block slot parsing works on a known slot value.
     assert_eq!(alert.block_info.slot, Some(SUDO_BLOCK.4));
 
@@ -259,6 +268,10 @@ async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
             )
         );
 
+        alert_rx
+            .try_recv()
+            .expect_err("alert received when none expected");
+
         alerts::check_event(BlockCheckMode::Replay, &alert_tx, &event, &block_info).await?;
         let alert = alert_rx.try_recv().expect("no event alert received");
         assert_eq!(
@@ -272,6 +285,10 @@ async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
                 BlockCheckMode::Replay,
             )
         );
+
+        alert_rx
+            .try_recv()
+            .expect_err("alert received when none expected");
 
         // Check block slot parsing works on a known slot value.
         assert_eq!(alert.block_info.slot, Some(slot));
@@ -342,6 +359,10 @@ async fn test_important_address_alerts() -> anyhow::Result<()> {
             );
         }
 
+        alert_rx
+            .try_recv()
+            .expect_err("alert received when none expected");
+
         alerts::check_event(BlockCheckMode::Replay, &alert_tx, &event, &block_info).await?;
         let alert = alert_rx.try_recv().expect("no event alert received");
 
@@ -371,6 +392,10 @@ async fn test_important_address_alerts() -> anyhow::Result<()> {
                 )
             );
         }
+
+        alert_rx
+            .try_recv()
+            .expect_err("alert received when none expected");
 
         // Check block slot parsing works on a known slot value.
         assert_eq!(alert.block_info.slot, Some(slot));
@@ -458,6 +483,10 @@ async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
             BlockCheckMode::Replay,
         )
     );
+
+    alert_rx
+        .try_recv()
+        .expect_err("alert received when none expected");
 
     Ok(())
 }
