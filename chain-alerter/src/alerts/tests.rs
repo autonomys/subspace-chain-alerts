@@ -21,7 +21,7 @@ use subxt::utils::H256;
 /// <https://github.com/autonomys/subspace/releases/tag/runtime-mainnet-2025-jul-31>
 ///
 /// TODO: turn this into a struct
-const SUDO_BLOCK: (BlockNumber, RawBlockHash, ExtrinsicIndex, EventIndex, Slot) = (
+const SUDO_EXTRINSIC_BLOCK: (BlockNumber, RawBlockHash, ExtrinsicIndex, EventIndex, Slot) = (
     3_795_487,
     hex_literal::hex!("18c2f211b752cbc2f06943788ed011ab1fe64fb2e28ffcd1aeb4490c2e8b1baa"),
     5,
@@ -68,7 +68,7 @@ const LARGE_TRANSFER_BLOCKS: [(
     clippy::type_complexity,
     reason = "this is a test, TODO: turn this into a struct"
 )]
-const IMPORTANT_ADDRESS_BLOCKS: [(
+const IMPORTANT_ADDRESS_TRANSFER_BLOCKS: [(
     BlockNumber,
     RawBlockHash,
     ExtrinsicIndex,
@@ -134,6 +134,21 @@ const IMPORTANT_ADDRESS_BLOCKS: [(
     ),
 ];
 
+/// Some extrinsics for important address alerts (which aren't any other higher
+/// priority alert).
+/// TODO: find an event sent by an important address, that isn't a higher priority alert.
+const IMPORTANT_ADDRESS_ONLY_BLOCKS: [(BlockNumber, RawBlockHash, ExtrinsicIndex, &str, Slot); 1] = [
+    // <https://autonomys.subscan.io/account/subKQqsYRyVkugvKQqLXEuhsefa9728PBAqtwxpeM5N4VD6mv>
+    (
+        3_497_809,
+        hex_literal::hex!("bfa548573d1ff035e2009fdaa68499fe74c4ab30a775f5eb35624fdb9f95dc91"),
+        // <https://autonomys.subscan.io/extrinsic/3497809-9>
+        9,
+        "Sudo",
+        Slot(21_070_789),
+    ),
+];
+
 // TODO: force transfer blocks:
 // Failed force_transfer: <https://autonomys.subscan.io/extrinsic/2173351-7>
 // Failed force_set_balance: <https://autonomys.subscan.io/extrinsic/1154587-11>
@@ -177,11 +192,15 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
     let (subspace_client, _, alert_tx, mut alert_rx, update_task) =
         test_setup(node_rpc_url()).await?;
 
-    let (block_info, extrinsics, events) =
-        fetch_block_info(&subspace_client, H256::from(SUDO_BLOCK.1), SUDO_BLOCK.0).await?;
+    let (block_info, extrinsics, events) = fetch_block_info(
+        &subspace_client,
+        H256::from(SUDO_EXTRINSIC_BLOCK.1),
+        SUDO_EXTRINSIC_BLOCK.0,
+    )
+    .await?;
 
     let (extrinsic, extrinsic_info) =
-        decode_extrinsic(&block_info, &extrinsics, SUDO_BLOCK.2).await?;
+        decode_extrinsic(&block_info, &extrinsics, SUDO_EXTRINSIC_BLOCK.2).await?;
 
     alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info).await?;
     let alert = alert_rx.try_recv().expect("no alert received");
@@ -201,7 +220,7 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
         Some(("Sudo", "sudo"))
     );
 
-    let (event, event_info) = decode_event(&block_info, &events, SUDO_BLOCK.3).await?;
+    let (event, event_info) = decode_event(&block_info, &events, SUDO_EXTRINSIC_BLOCK.3).await?;
 
     alerts::check_event(BlockCheckMode::Replay, &alert_tx, &event, &block_info).await?;
     let alert = alert_rx.try_recv().expect("no alert received");
@@ -226,7 +245,7 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
         .expect_err("alert received when none expected");
 
     // Check block slot parsing works on a known slot value.
-    assert_eq!(alert.block_info.slot, Some(SUDO_BLOCK.4));
+    assert_eq!(alert.block_info.slot, Some(SUDO_EXTRINSIC_BLOCK.4));
 
     let result = update_task.now_or_never();
     assert!(
@@ -303,9 +322,9 @@ async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Check that the important address alert works on known important address blocks.
+/// Check that important address transfer alerts work on known important address transfer blocks.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_important_address_alerts() -> anyhow::Result<()> {
+async fn test_important_address_transfer_alerts() -> anyhow::Result<()> {
     let (subspace_client, _, alert_tx, mut alert_rx, update_task) =
         test_setup(node_rpc_url()).await?;
 
@@ -318,7 +337,7 @@ async fn test_important_address_alerts() -> anyhow::Result<()> {
         extrinsic_transfer_value,
         event_transfer_value,
         slot,
-    ) in IMPORTANT_ADDRESS_BLOCKS
+    ) in IMPORTANT_ADDRESS_TRANSFER_BLOCKS
     {
         let (block_info, extrinsics, events) =
             fetch_block_info(&subspace_client, H256::from(block_hash), block_number).await?;
@@ -392,6 +411,53 @@ async fn test_important_address_alerts() -> anyhow::Result<()> {
                 )
             );
         }
+
+        alert_rx
+            .try_recv()
+            .expect_err("alert received when none expected");
+
+        // Check block slot parsing works on a known slot value.
+        assert_eq!(alert.block_info.slot, Some(slot));
+    }
+
+    let result = update_task.now_or_never();
+    assert!(
+        result.is_none(),
+        "metadata update task exited unexpectedly with: {result:?}"
+    );
+
+    Ok(())
+}
+
+/// Check that the important address alert works on known important address blocks.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_important_address_only_alerts() -> anyhow::Result<()> {
+    let (subspace_client, _, alert_tx, mut alert_rx, update_task) =
+        test_setup(node_rpc_url()).await?;
+
+    for (block_number, block_hash, extrinsic_index, address_kind, slot) in
+        IMPORTANT_ADDRESS_ONLY_BLOCKS
+    {
+        let (block_info, extrinsics, _events) =
+            fetch_block_info(&subspace_client, H256::from(block_hash), block_number).await?;
+
+        let (extrinsic, extrinsic_info) =
+            decode_extrinsic(&block_info, &extrinsics, extrinsic_index).await?;
+
+        alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info).await?;
+        let alert = alert_rx.try_recv().expect("no extrinsic alert received");
+
+        assert_eq!(
+            alert,
+            Alert::new(
+                AlertKind::ImportantAddressExtrinsic {
+                    address_kind: address_kind.to_string(),
+                    extrinsic_info: extrinsic_info.clone(),
+                },
+                block_info,
+                BlockCheckMode::Replay,
+            )
+        );
 
         alert_rx
             .try_recv()

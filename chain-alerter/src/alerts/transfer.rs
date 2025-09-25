@@ -62,6 +62,11 @@ pub const IMPORTANT_ADDRESSES: &[(&str, &str)] = &[
         "Guardians of Growth",
         "sugQzjjyAfhzktFDdAkZrcTq5qzMaRoSV2qs1gTcjjuBeybWT",
     ),
+    // <https://polkadot.js.org/apps/?rpc=wss%3A%2F%2Frpc-0.mainnet.autonomys.xyz%2Fws#/chainstate>
+    // sudo.key()
+    // <https://autonomys.subscan.io/account/subKQqsYRyVkugvKQqLXEuhsefa9728PBAqtwxpeM5N4VD6mv>
+    // TODO: dynamically look this up from storage instead of hardcoding it
+    ("Sudo", "subKQqsYRyVkugvKQqLXEuhsefa9728PBAqtwxpeM5N4VD6mv"),
 ];
 
 /// If the address is an important address, returns the kind of important address, otherwise returns
@@ -72,7 +77,14 @@ pub fn important_address_kind(address: &Account) -> Option<&'static str> {
     IMPORTANT_ADDRESSES
         .iter()
         .find(|(_, addr)| {
-            let addr_id = AccountId32::from_str(addr).expect("constants are valid addresses");
+            let addr_id = if let Ok(account) = AccountId32::from_str(addr) {
+                account
+            } else {
+                let bytes = hex::decode(addr).expect("constants are valid ss58check or hex");
+                let array = <[u8; 32]>::try_from(bytes).expect("hex constants are 32 bytes");
+                AccountId32::from(array)
+            };
+
             trace!(?addr_id, ?account_id, "important address kind check");
             &addr_id == account_id
         })
