@@ -4,7 +4,7 @@
 mod tests;
 pub mod transfer;
 
-use crate::alerts::transfer::{check_transfer_event, check_transfer_extrinsic};
+use crate::alerts::transfer::{Accounts, TransferValue};
 use crate::chain_fork_monitor::ChainForkEvent;
 use crate::format::{fmt_amount, fmt_duration, fmt_timestamp};
 use crate::subspace::{
@@ -16,7 +16,7 @@ use std::fmt::{self, Display};
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio::time::sleep;
-use tracing::warn;
+use tracing::{trace, warn};
 
 /// The minimum balance change to alert on.
 const MIN_BALANCE_CHANGE: Balance = 1_000_000 * AI3;
@@ -795,8 +795,6 @@ pub async fn check_extrinsic(
     // - link extrinsic and account to subscan
     // - add extrinsic success/failure to alerts
 
-    check_transfer_extrinsic(mode, alert_tx, &extrinsic_info, block_info).await?;
-
     // All sudo calls are alerts.
     // TODO:
     // - test this alert by checking a historic block with a sudo call
@@ -805,11 +803,91 @@ pub async fn check_extrinsic(
     if extrinsic_info.pallet == "Sudo" {
         alert_tx
             .send(Alert::new(
-                AlertKind::SudoCall { extrinsic_info },
+                AlertKind::SudoCall {
+                    extrinsic_info: extrinsic_info.clone(),
+                },
                 *block_info,
                 mode,
             ))
             .await?;
+    }
+
+    // "force*" calls and large balance changes are alerts.
+
+    // TODO:
+    // - track the total of recent transfers, so the threshold can't be bypassed by splitting the
+    //   transfer into multiple calls
+    let transfer_value = extrinsic_info.transfer_value();
+    trace!(?mode, "transfer_value: {:?}", transfer_value);
+
+    let important_address_kinds = extrinsic_info.important_address_kinds_str();
+    trace!(
+        ?mode,
+        ?important_address_kinds,
+        ?extrinsic_info,
+        ?block_info,
+        "extrinsic account list",
+    );
+
+    // TODO:
+    // - test force alerts by checking a historic block with that call
+    // - do we want to track burn calls? <https://autonomys.subscan.io/extrinsic/137324-31> this is
+    //   a low priority because it is already covered by balance events
+    if let Some(transfer_value) = transfer_value
+        && transfer_value >= MIN_BALANCE_CHANGE
+    {
+        alert_tx
+            .send(Alert::new(
+                AlertKind::LargeBalanceTransfer {
+                    extrinsic_info: extrinsic_info.clone(),
+                    transfer_value,
+                },
+                *block_info,
+                mode,
+            ))
+            .await?;
+    } else if extrinsic_info.pallet == "Balances" && extrinsic_info.call.starts_with("force") {
+        alert_tx
+            .send(Alert::new(
+                AlertKind::ForceBalanceTransfer {
+                    extrinsic_info: extrinsic_info.clone(),
+                    transfer_value,
+                },
+                *block_info,
+                mode,
+            ))
+            .await?;
+    } else {
+        if let Some(important_address_kinds) = important_address_kinds {
+            alert_tx
+                .send(Alert::new(
+                    AlertKind::ImportantAddressTransfer {
+                        address_kinds: important_address_kinds,
+                        extrinsic_info: extrinsic_info.clone(),
+                        // The transfer value can be missing for a transfer_all call.
+                        // TODO: check account storage to get the transfer value if it is missing
+                        transfer_value,
+                    },
+                    *block_info,
+                    mode,
+                ))
+                .await?;
+        }
+
+        if transfer_value.is_none()
+            && extrinsic_info.pallet == "Balances"
+            && !["transfer_all", "upgrade_accounts"].contains(&extrinsic_info.call.as_str())
+        {
+            // Every other Balances extrinsic should have an amount.
+            // TODO:
+            // - check transfer_all by accessing account storage to get the value, this is a low
+            //   priority because it is already covered by balance events
+            warn!(
+                ?mode,
+                ?extrinsic_info,
+                "Balance: extrinsic amount unavailable in block",
+            );
+        }
     }
 
     Ok(())
@@ -835,8 +913,6 @@ pub async fn check_event(
     // - format account IDs as ss58 with prefix 6094
     // - link event and account to subscan
 
-    check_transfer_event(mode, alert_tx, &event_info, block_info).await?;
-
     // All operator slashes are alerts.
     // TODO:
     // - test this alert by checking a historic block with an operator slash event
@@ -844,7 +920,9 @@ pub async fn check_event(
     if event_info.pallet == "Domains" && event_info.kind == "OperatorSlashed" {
         alert_tx
             .send(Alert::new(
-                AlertKind::OperatorSlashed { event_info },
+                AlertKind::OperatorSlashed {
+                    event_info: event_info.clone(),
+                },
                 *block_info,
                 mode,
             ))
@@ -853,7 +931,59 @@ pub async fn check_event(
         // We already alert on sudo calls, so this exists mainly to test events.
         alert_tx
             .send(Alert::new(
-                AlertKind::SudoEvent { event_info },
+                AlertKind::SudoEvent {
+                    event_info: event_info.clone(),
+                },
+                *block_info,
+                mode,
+            ))
+            .await?;
+    }
+
+    // Large balance changes are alerts.
+
+    // TODO:
+    // - track the total of recent events, so the threshold can't be bypassed by splitting the
+    //   transfer into multiple calls
+    let transfer_value = event_info.transfer_value();
+    trace!(?mode, "transfer_value: {:?}", transfer_value);
+
+    let accounts = event_info.accounts();
+    let important_address_kinds = event_info.important_address_kinds_str();
+    trace!(
+        ?mode,
+        ?accounts,
+        ?important_address_kinds,
+        ?event_info,
+        ?block_info,
+        "event account list",
+    );
+
+    // TODO:
+    // - do we want to track burn calls? <https://autonomys.subscan.io/extrinsic/137324-31>
+    if let Some(transfer_value) = transfer_value
+        && transfer_value >= MIN_BALANCE_CHANGE
+    {
+        alert_tx
+            .send(Alert::new(
+                AlertKind::LargeBalanceTransferEvent {
+                    event_info: event_info.clone(),
+                    transfer_value,
+                },
+                *block_info,
+                mode,
+            ))
+            .await?;
+    } else if let Some(important_address_kinds) = important_address_kinds {
+        alert_tx
+            .send(Alert::new(
+                AlertKind::ImportantAddressTransferEvent {
+                    address_kinds: important_address_kinds,
+                    event_info: event_info.clone(),
+                    // The transfer value shouldn't be missing, but we can't rely on the data
+                    // format.
+                    transfer_value,
+                },
                 *block_info,
                 mode,
             ))
