@@ -22,7 +22,11 @@ pub const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_secs(3600);
 /// Interface for slot time monitors that consume blocks and perform checks.
 pub trait SlotTimeMonitor {
     /// Ingest a block and update internal state; may emit alerts.
-    async fn process_block(&mut self, mode: BlockCheckMode, block: &BlockInfo);
+    async fn process_block(
+        &mut self,
+        mode: BlockCheckMode,
+        block: &BlockInfo,
+    ) -> anyhow::Result<()>;
 }
 
 /// Configuration for the slot time monitor.
@@ -83,20 +87,25 @@ impl SlotTimeMonitorConfig {
 
 impl SlotTimeMonitor for MemorySlotTimeMonitor {
     /// Process a new block, updating internal scheduling and sending alerts when needed.
-    async fn process_block(&mut self, mode: BlockCheckMode, block_info: &BlockInfo) {
+    async fn process_block(
+        &mut self,
+        mode: BlockCheckMode,
+        block_info: &BlockInfo,
+    ) -> anyhow::Result<()> {
         let (block_time, block_slot) = match (block_info.time, block_info.slot) {
             (Some(block_time), Some(block_slot)) => (block_time, block_slot),
+            // These errors indicate a chain metadata issue, which should be fixed by restarting.
             (None, None) => {
                 warn!(?mode, "Block time and slot not found");
-                return;
+                return Err(anyhow::anyhow!("block time and slot not found"));
             }
             (None, Some(_)) => {
                 warn!(?mode, "Block time not found");
-                return;
+                return Err(anyhow::anyhow!("block time not found"));
             }
             (Some(_), None) => {
                 warn!(?mode, "Block slot not found");
-                return;
+                return Err(anyhow::anyhow!("block slot not found"));
             }
         };
 
@@ -130,7 +139,7 @@ impl SlotTimeMonitor for MemorySlotTimeMonitor {
                             ?mode,
                             "Time per slot alert triggered, time_per_slot: {time_per_slot}",
                         );
-                        let _ = self.send_alert(time_per_slot, *block_info, mode).await;
+                        self.send_alert(time_per_slot, *block_info, mode).await?;
                     } else {
                         debug!(
                             ?mode,
@@ -138,18 +147,26 @@ impl SlotTimeMonitor for MemorySlotTimeMonitor {
                         );
                     }
                     self.schedule_next_check(block_time, block_slot);
+
+                    Ok(())
                 } else {
                     warn!(
                         ?mode,
                         "Unexpected slot time, earlier than first block in interval: {block_info:?} - {state:?}",
                     );
+                    // This error indicates a chain gap or history consistency issue, or a metadata
+                    // issue, which should be fixed by restarting.
+                    Err(anyhow::anyhow!(
+                        "Unexpected slot time, earlier than first block in interval: {block_info:?} - {state:?}"
+                    ))
                 }
             }
             // do nothing if we are in the interval
-            Some(_) => {}
+            Some(_) => Ok(()),
             // we received a new block, so we init the first check
             None => {
                 self.schedule_next_check(block_time, block_slot);
+                Ok(())
             }
         }
     }

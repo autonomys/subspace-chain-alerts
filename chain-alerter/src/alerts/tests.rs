@@ -162,11 +162,11 @@ async fn test_startup_alert() -> anyhow::Result<()> {
 
     let (block_info, _, _) = fetch_block_info(&subspace_client, None, None).await?;
 
-    alerts::startup_alert(BlockCheckMode::Startup, &alert_tx, &block_info).await?;
+    alerts::startup_alert(BlockCheckMode::Current, &alert_tx, &block_info).await?;
     let alert = alert_rx.try_recv().expect("no alert received");
     assert_eq!(
         alert,
-        Alert::new(AlertKind::Startup, block_info, BlockCheckMode::Startup),
+        Alert::new(AlertKind::Startup, block_info, BlockCheckMode::Current),
     );
 
     // There should be no other alerts.
@@ -494,10 +494,10 @@ async fn no_expected_test_slot_time_alert() -> anyhow::Result<()> {
 
     naive_slot_time_monitor
         .process_block(BlockCheckMode::Replay, &first_block)
-        .await;
+        .await?;
     naive_slot_time_monitor
         .process_block(BlockCheckMode::Replay, &second_block)
-        .await;
+        .await?;
 
     alert_rx
         .try_recv()
@@ -525,10 +525,10 @@ async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
 
     strict_slot_time_monitor
         .process_block(BlockCheckMode::Replay, &first_block)
-        .await;
+        .await?;
     strict_slot_time_monitor
         .process_block(BlockCheckMode::Replay, &second_block)
-        .await;
+        .await?;
 
     let alert = alert_rx
         .try_recv()
@@ -576,10 +576,10 @@ async fn expected_test_slot_time_alert_but_not_yet() -> anyhow::Result<()> {
 
     strict_slot_time_monitor
         .process_block(BlockCheckMode::Replay, &first_block)
-        .await;
+        .await?;
     strict_slot_time_monitor
         .process_block(BlockCheckMode::Replay, &second_block)
-        .await;
+        .await?;
 
     alert_rx
         .try_recv()

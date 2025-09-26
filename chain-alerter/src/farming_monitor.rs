@@ -42,7 +42,7 @@ pub trait FarmingMonitor {
         mode: BlockCheckMode,
         block_info: &BlockInfo,
         events: &[RawEvent],
-    );
+    ) -> anyhow::Result<()>;
 }
 
 #[derive(Debug, Clone)]
@@ -110,7 +110,7 @@ impl FarmingMonitor for MemoryFarmingMonitor {
         mode: BlockCheckMode,
         block_info: &BlockInfo,
         events: &[RawEvent],
-    ) {
+    ) -> anyhow::Result<()> {
         // Update the last voted block for each farmer that voted in this block.
         self.update_last_voted_block(events, block_info.height());
 
@@ -122,8 +122,10 @@ impl FarmingMonitor for MemoryFarmingMonitor {
 
         // Run checks on the number of farmers.
         if self.has_passed_minimum_block_interval() {
-            self.check_farmer_count(block_info, mode).await;
+            self.check_farmer_count(block_info, mode).await?;
         }
+
+        Ok(())
     }
 }
 
@@ -251,21 +253,24 @@ impl MemoryFarmingMonitor {
 
     /// Check the number of farmers with votes in the last `max_block_interval` blocks
     /// and emit alerts if the number of farmers with votes is outside the alert thresholds.
-    async fn check_farmer_count(&mut self, block_info: &BlockInfo, mode: BlockCheckMode) {
+    async fn check_farmer_count(
+        &mut self,
+        block_info: &BlockInfo,
+        mode: BlockCheckMode,
+    ) -> anyhow::Result<()> {
         let Some((
             number_of_farmers_with_votes,
             average_number_of_farmers_with_votes,
             fraction_of_average,
         )) = self.compare_to_average()
         else {
-            return;
+            return Ok(());
         };
 
         // Check if the current number of farmers with votes is greater than the alert threshold.
         if fraction_of_average < self.config.low_end_change_threshold {
             if self.state.status != FarmingMonitorStatus::AlertingDecrease {
-                let _ = self
-                    .config
+                self.config
                     .alert_tx
                     .send(Alert::new(
                         AlertKind::FarmersDecreasedSuddenly {
@@ -279,13 +284,12 @@ impl MemoryFarmingMonitor {
                         *block_info,
                         mode,
                     ))
-                    .await;
+                    .await?;
                 self.state.status = FarmingMonitorStatus::AlertingDecrease;
             }
         } else if fraction_of_average > self.config.high_end_change_threshold {
             if self.state.status != FarmingMonitorStatus::AlertingIncrease {
-                let _ = self
-                    .config
+                self.config
                     .alert_tx
                     .send(Alert::new(
                         AlertKind::FarmersIncreasedSuddenly {
@@ -299,12 +303,14 @@ impl MemoryFarmingMonitor {
                         *block_info,
                         mode,
                     ))
-                    .await;
+                    .await?;
                 self.state.status = FarmingMonitorStatus::AlertingIncrease;
             }
         } else {
             self.state.status = FarmingMonitorStatus::NotAlerting;
         }
+
+        Ok(())
     }
 }
 
@@ -327,7 +333,7 @@ mod tests {
         farming_monitor: &mut MemoryFarmingMonitor,
         block_height: BlockNumber,
         farmers: &[H256],
-    ) {
+    ) -> anyhow::Result<()> {
         // Add farmers to the farming monitor.
         for farmer in farmers {
             farming_monitor
@@ -357,12 +363,14 @@ mod tests {
                     },
                     BlockCheckMode::Current,
                 )
-                .await;
+                .await?;
         }
+
+        Ok(())
     }
 
-    #[tokio::test]
-    async fn test_farmers_going_inactive() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_farmers_going_inactive() -> anyhow::Result<()> {
         let alert_tx = mpsc::channel(100).0;
         let config = FarmingMonitorConfig {
             alert_tx,
@@ -377,11 +385,13 @@ mod tests {
         let farmers = self::farmers();
 
         // First block, all farmers vote.
-        simulate_block_votes(&mut farming_monitor, 0, &farmers).await;
+        simulate_block_votes(&mut farming_monitor, 0, &farmers).await?;
 
         // Next 10 blocks, only the first farmer votes.
         for i in 1..=(DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD + 1) {
-            simulate_block_votes(&mut farming_monitor, i, &[farmers[0]]).await;
+            simulate_block_votes(&mut farming_monitor, i, &[farmers[0]])
+                .await
+                .unwrap_or_else(|error| panic!("unexpected error in block {i}: {error}"));
         }
 
         // Check the number of farmers with votes in the last `max_block_interval` blocks.
@@ -408,11 +418,13 @@ mod tests {
                 .last_block_voted_by_farmer
                 .contains_key(&farmers[2])
         );
+
+        Ok(())
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     /// Test that an alert is emitted when the number of farmers with votes decreases suddenly.
-    async fn test_alert_emitted_on_drop_in_active_farmers() {
+    async fn test_alert_emitted_on_drop_in_active_farmers() -> anyhow::Result<()> {
         let (alert_tx, mut alert_rx) = mpsc::channel(10);
         let config = FarmingMonitorConfig {
             alert_tx,
@@ -446,7 +458,7 @@ mod tests {
         farming_monitor.update_number_of_farmers_with_votes();
         farming_monitor
             .check_farmer_count(&block_info, BlockCheckMode::Current)
-            .await;
+            .await?;
 
         let alert = alert_rx.recv().await.expect("expected decrease alert");
 
@@ -471,14 +483,16 @@ mod tests {
         // Check that no alert is emitted again after the alert has been emitted.
         farming_monitor
             .check_farmer_count(&block_info, BlockCheckMode::Current)
-            .await;
+            .await?;
 
         alert_rx.try_recv().unwrap_err();
+
+        Ok(())
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     /// Test that an alert is emitted when the number of farmers with votes increases suddenly.
-    async fn test_alert_emitted_on_increase_in_active_farmers() {
+    async fn test_alert_emitted_on_increase_in_active_farmers() -> anyhow::Result<()> {
         let (alert_tx, mut alert_rx) = mpsc::channel(10);
         let config = FarmingMonitorConfig {
             alert_tx,
@@ -513,7 +527,7 @@ mod tests {
         farming_monitor.update_number_of_farmers_with_votes();
         farming_monitor
             .check_farmer_count(&mock_block_info, BlockCheckMode::Current)
-            .await;
+            .await?;
 
         let alert = alert_rx.recv().await.expect("expected increase alert");
 
@@ -538,15 +552,17 @@ mod tests {
         // Check that no alert is emitted again after the alert has been emitted.
         farming_monitor
             .check_farmer_count(&mock_block_info, BlockCheckMode::Current)
-            .await;
+            .await?;
 
         alert_rx.try_recv().unwrap_err();
+
+        Ok(())
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     /// Test that no alert is emitted when the number of farmers with votes is within the
     /// thresholds.
-    async fn test_no_alert_within_thresholds() {
+    async fn test_no_alert_within_thresholds() -> anyhow::Result<()> {
         let (alert_tx, mut alert_rx) = mpsc::channel(10);
         let config = FarmingMonitorConfig {
             alert_tx,
@@ -582,9 +598,11 @@ mod tests {
                 },
                 BlockCheckMode::Current,
             )
-            .await;
+            .await?;
 
         // No alert expected
         alert_rx.try_recv().unwrap_err();
+
+        Ok(())
     }
 }

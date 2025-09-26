@@ -66,4 +66,5 @@ rustflags = [
     "-Wclippy::manual_assert",
     "-Wclippy::needless_pass_by_value",
     "-Wclippy::precedence_bits",
+    "-Wclippy::let_underscore_untyped",
 ]

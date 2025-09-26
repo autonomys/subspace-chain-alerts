@@ -4,9 +4,10 @@ use crate::ALERT_BUFFER_SIZE;
 use crate::alerts::Alert;
 use crate::subspace::{
     BlockInfo, BlockNumber, EventIndex, EventInfo, ExtrinsicIndex, ExtrinsicInfo,
-    FOUNDATION_SUBSPACE_NODE_URL, RawEvent, RawEventList, RawExtrinsic, RawExtrinsicList,
-    RawRpcClient, SubspaceClient, create_subspace_client,
+    FOUNDATION_SUBSPACE_NODE_URL, LABS_SUBSPACE_NODE_URL, RawEvent, RawEventList, RawExtrinsic,
+    RawExtrinsicList, RawRpcClient, SubspaceClient, create_subspace_client,
 };
+use rand::{Rng, rng};
 use std::env;
 use subspace_process::{AsyncJoinOnDrop, init_logger};
 use subxt::utils::H256;
@@ -15,8 +16,17 @@ use tracing::info;
 
 /// The default RPC URL for a local Subspace node.
 pub fn node_rpc_url() -> String {
-    let node_url =
-        env::var("NODE_URL").unwrap_or_else(|_| FOUNDATION_SUBSPACE_NODE_URL.to_string());
+    let node_url = env::var("NODE_URL").unwrap_or_else(|_| {
+        // Randomly choose between the foundation and labs nodes.
+        if rng().random_bool(0.5) {
+            info!("using foundation node");
+            FOUNDATION_SUBSPACE_NODE_URL
+        } else {
+            info!("using labs node");
+            LABS_SUBSPACE_NODE_URL
+        }
+        .to_string()
+    });
     info!("using node RPC URL: {node_url}");
 
     node_url
@@ -27,6 +37,10 @@ pub fn node_rpc_url() -> String {
 /// Returns the runtime metadata update task, which will be aborted on drop.
 ///
 /// This needs to be kept in sync with `main::setup()`.
+///
+/// # Panics
+///
+/// If the test setup is called more than once.
 ///
 /// TODO: make this return the same struct as `main::setup()`
 pub async fn test_setup(
@@ -41,8 +55,10 @@ pub async fn test_setup(
     init_logger();
 
     // Avoid a crypto provider conflict: see main::setup() for details.
-    // Ignore any errors, because this function can only be called once.
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    // An error is a bug in the test, because setup should only be called once.
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("failed to install crypto provider, this function should only be called once");
 
     // Create a client that subscribes to the configured Substrate node.
     let (chain_client, raw_rpc_client, update_task) =

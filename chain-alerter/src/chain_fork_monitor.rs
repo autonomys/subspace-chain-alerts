@@ -721,12 +721,9 @@ pub async fn add_blocks_to_chain_fork_state(
                     // TODO: fix this at a lower level in the init, startup, or fork detection code
                     // instead
                     if event.needs_alert() && !mode.is_startup() {
-                        // If we have restarted, the new alerter will replay missed blocks, so we
-                        // can ignore any send errors to dropped channels.
-                        // This also avoids panics during process shutdown.
-                        let _ = alert_tx
+                        alert_tx
                             .send(Alert::from_chain_fork_event(event, block_info, mode))
-                            .await;
+                            .await?;
                     }
 
                     send_best_fork_block(
