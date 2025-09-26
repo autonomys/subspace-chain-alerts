@@ -38,9 +38,11 @@ use std::panic;
 use std::sync::Arc;
 use std::time::Duration;
 use subspace_process::{AsyncJoinOnDrop, init_logger, set_exit_on_panic, shutdown_signal};
-use subxt::ext::futures::FutureExt;
+use subxt::ext::futures::stream::FuturesUnordered;
+use subxt::ext::futures::{FutureExt, StreamExt};
 use subxt::utils::H256;
 use tokio::sync::{mpsc, watch};
+use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tokio::{pin, select, task};
 use tracing::{debug, error, info, trace, warn};
@@ -97,7 +99,7 @@ async fn setup(
     // We expect errors here during reconnections, so we log and ignore them.
     //
     // TODO: remove ring to reduce compile time/size
-    let _ = rustls::crypto::aws_lc_rs::default_provider()
+    let _: Result<(), Arc<rustls::crypto::CryptoProvider>> = rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .inspect_err(|_| {
             warn!(
@@ -426,6 +428,10 @@ async fn check_best_blocks(
         minimum_block_interval: DEFAULT_FARMING_MIN_ALERT_BLOCK_INTERVAL,
     });
 
+    // Tasks spawned by the block stall alert.
+    let mut block_stall_join_handles: FuturesUnordered<JoinHandle<anyhow::Result<()>>> =
+        FuturesUnordered::new();
+
     while let Some((mode, raw_block, raw_extrinsics, block_info)) = best_forks_rx.recv().await {
         // Let the user know we're still alive.
         if block_info
@@ -462,13 +468,15 @@ async fn check_best_blocks(
 
         // We only check for block stalls on current blocks.
         if mode.is_current() {
-            alerts::check_for_block_stall(
+            let stall_task_join_handle = alerts::check_for_block_stall(
                 mode,
                 alert_tx.clone(),
                 block_info,
                 latest_block_tx.subscribe(),
             )
             .await;
+
+            block_stall_join_handles.push(stall_task_join_handle);
         }
 
         // We check for other alerts in any mode.
@@ -486,6 +494,21 @@ async fn check_best_blocks(
 
         // Give spawned tasks another opportunity to run.
         task::yield_now().await;
+
+        // There's no point checking for finished tasks when we're not creating any new ones.
+        if mode.is_current() {
+            trace!(block_stall_join_handles = %block_stall_join_handles.len(), "spawned tasks before joining");
+
+            // Join any spawned block stall tasks that have finished.
+            // When there are no more finished tasks, continue to the next block.
+            while let Some(block_stall_result) =
+                block_stall_join_handles.next().now_or_never().flatten()
+            {
+                block_stall_result??;
+            }
+
+            trace!(block_stall_join_handles = %block_stall_join_handles.len(), "spawned tasks after joining");
+        }
 
         prev_block_info = Some(block_info);
     }
@@ -525,10 +548,10 @@ async fn run_on_best_block(
 
     // Check the block itself for alerts, including stall resumes.
     alerts::check_block(mode, alert_tx, block_info, prev_block_info).await?;
-    slot_time_monitor.process_block(mode, block_info).await;
+    slot_time_monitor.process_block(mode, block_info).await?;
     farming_monitor
         .process_block(mode, block_info, &events)
-        .await;
+        .await?;
 
     // Check each extrinsic and event for alerts.
     for extrinsic in extrinsics.iter() {

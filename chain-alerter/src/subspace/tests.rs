@@ -28,6 +28,10 @@ pub fn node_rpc_url() -> String {
 ///
 /// This needs to be kept in sync with `main::setup()`.
 ///
+/// # Panics
+///
+/// If the test setup is called more than once.
+///
 /// TODO: make this return the same struct as `main::setup()`
 pub async fn test_setup(
     node_rpc_url: impl AsRef<str>,
@@ -41,8 +45,10 @@ pub async fn test_setup(
     init_logger();
 
     // Avoid a crypto provider conflict: see main::setup() for details.
-    // Ignore any errors, because this function can only be called once.
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    // An error is a bug in the test, because setup should only be called once.
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("failed to install crypto provider, this function should only be called once");
 
     // Create a client that subscribes to the configured Substrate node.
     let (chain_client, raw_rpc_client, update_task) =

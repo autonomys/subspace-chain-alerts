@@ -15,6 +15,7 @@ use chrono::Utc;
 use std::fmt::{self, Display};
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
+use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tracing::{trace, warn};
 
@@ -770,27 +771,27 @@ pub async fn check_block(
 /// Spawn a task that waits for `MIN_BLOCK_GAP`, then alerts if there was no block received on
 /// `latest_block_rx` in that gap.
 ///
-/// Doesn't work on replayed blocks, because the chain has already resumed after a replayed block
-/// gap.
+/// Fatal errors will be returned from the spawned task's join handle.
 ///
-/// Fatal errors will panic in the spawned task.
+/// # Panics
+///
+/// On replayed blocks, because the chain has already resumed after a replayed block
+/// gap.
+#[must_use = "the spawned task must be joined"]
 pub async fn check_for_block_stall(
     mode: BlockCheckMode,
     alert_tx: mpsc::Sender<Alert>,
     block_info: BlockInfo,
     latest_block_rx: watch::Receiver<Option<BlockInfo>>,
-) {
+) -> JoinHandle<anyhow::Result<()>> {
     // It doesn't make sense to check the local clock for stalls on replayed blocks, because we
     // already know there's a new current block. It's expensive to spawn a task, so return
     // early.
-    if !mode.is_current() {
-        return;
-    }
+    assert!(mode.is_current(), "should only be called on current blocks");
 
     let old_block_info = block_info;
 
-    // There's no need to check the result of the spawned task, panics are impossible, and other
-    // errors are handled by replaying missed blocks on restart.
+    // We handle channel errors by restarting all tasks.
     tokio::spawn(async move {
         // Stall alerts without a resume are alarming, it looks like either the chain or alerter
         // has stopped. We've seen a spurious stall at exactly 60 seconds, but only once.
@@ -805,21 +806,22 @@ pub async fn check_for_block_stall(
             // There's a new block since we sent our block and spawned our task, so block
             // production hasn't stalled. But the latest block also spawned a task, so it
             // will alert if there is actually a stall.
-            return;
+            return Ok(());
         }
 
         let gap = gap_since_time(Utc::now(), old_block_info);
 
-        // If we have restarted, the new alerter will replay missed blocks, so we can ignore any
-        // send errors to dropped channels. This also avoids panics during process shutdown.
-        let _ = alert_tx
+        // If there is an error, we will restart, and the new alerter will replay missed blocks.
+        alert_tx
             .send(Alert::new(
                 AlertKind::BlockProductionStall { gap },
                 old_block_info,
                 mode,
             ))
-            .await;
-    });
+            .await?;
+
+        Ok(())
+    })
 }
 
 /// Check an extrinsic for alerts.
