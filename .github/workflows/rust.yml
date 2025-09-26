@@ -91,7 +91,7 @@ jobs:
         ]
     runs-on: ${{ matrix.os }}
     # Don't use the full 6 hours if a test hangs
-    timeout-minutes: 120
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -105,6 +105,51 @@ jobs:
       - name: cargo nextest run --locked
         run: |
           cargo nextest run --locked --all-features
+
+  # Runs the chain-alerter process until it sends a startup alert, but with Slack disabled.
+  # This is useful for testing the chain-alerter process setup and main loop.
+  cargo-run:
+    name: cargo-run (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [
+            "ubuntu-24.04",
+            "ubuntu-24.04-arm",
+            "windows-2025",
+            "windows-11-arm",
+            "macos-15",
+        ]
+    runs-on: ${{ matrix.os }}
+    # Unfortunately, this doesn't work at the step level on Windows.
+    defaults:
+      run:
+        shell: bash
+    # Don't use the full 6 hours if this integration test hangs
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+
+      - name: Install ripgrep from crates.io
+        uses: baptiste0928/cargo-install@b687c656bda5733207e629b50a22bf68974a0305 # v3.3.2
+        with:
+          crate: ripgrep
+
+      # Randomly choose between the foundation and labs nodes, then run the integration test,
+      # checking for the startup alert, but printing all the logs to the console.
+      - name: cargo run --locked -- --slack=false --alert-limit=1
+        run: |
+          if [[ $(($RANDOM % 2)) == 0 ]]; then
+            echo "Using foundation node"
+            NODE_URL=wss://rpc.mainnet.subspace.foundation/ws
+          else
+            echo "Using labs node"
+            NODE_URL=wss://rpc-0.mainnet.autonomys.xyz/ws
+          fi
+          cargo run --locked -- --slack=false --alert-limit=1 --node-rpc-url="$NODE_URL" \
+            | rg --fixed-strings --passthru "**Launched and connected to the node**"
 
   # This job checks for incorrectly added dependencies, or dependencies that were made unused by code changes.
   cargo-unused-deps:
@@ -138,6 +183,7 @@ jobs:
       - cargo-clippy
       - cargo-build
       - cargo-test
+      - cargo-run
       - cargo-unused-deps
     steps:
       - name: Check job statuses
@@ -148,4 +194,5 @@ jobs:
           [[ "${{ needs.cargo-clippy.result }}" == "success" ]] || exit 1
           [[ "${{ needs.cargo-build.result }}" == "success" ]] || exit 1
           [[ "${{ needs.cargo-test.result }}" == "success" ]] || exit 1
+          [[ "${{ needs.cargo-run.result }}" == "success" ]] || exit 1
           [[ "${{ needs.cargo-unused-deps.result }}" == "success" ]] || exit 1
