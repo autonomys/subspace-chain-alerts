@@ -32,7 +32,7 @@ use crate::subspace::{
     MAX_RECONNECTION_DELAY, RawBlock, RawBlockHash, RawEvent, RawExtrinsicList, RawRpcClient,
     SubspaceClient, create_subspace_client,
 };
-use clap::{Parser, ValueHint};
+use clap::{ArgAction, Parser, ValueHint};
 use slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor};
 use std::panic;
 use std::sync::Arc;
@@ -57,7 +57,7 @@ const ALERT_BUFFER_SIZE: usize = 100;
 
 /// The name and emoji used by this bot instance.
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
+#[command(version, about, long_about)]
 struct Args {
     /// The name used by the bot when posting alerts to Slack.
     #[arg(long, default_value = "Dev")]
@@ -73,6 +73,10 @@ struct Args {
     /// The RPC URL of the node to connect to.
     #[arg(long, value_hint = ValueHint::Url, default_value = LOCAL_SUBSPACE_NODE_URL)]
     node_rpc_url: String,
+
+    /// Slack message posting.
+    #[arg(long, default_value = "true", action = ArgAction::Set)]
+    slack: bool,
 }
 
 /// Initialize once-off setup for the chain alerter.
@@ -87,7 +91,7 @@ struct Args {
 async fn setup(
     args: &Args,
 ) -> anyhow::Result<(
-    SlackClientInfo,
+    Option<SlackClientInfo>,
     SubspaceClient,
     RawRpcClient,
     AsyncJoinOnDrop<anyhow::Result<()>>,
@@ -108,13 +112,19 @@ async fn setup(
         });
 
     // Connect to Slack and get basic info.
-    let slack_client_info = SlackClientInfo::new(
-        &args.name,
-        args.icon.clone(),
-        &args.node_rpc_url,
-        SLACK_OAUTH_SECRET_PATH,
-    )
-    .await?;
+    let slack_client_info = if args.slack {
+        Some(
+            SlackClientInfo::new(
+                &args.name,
+                args.icon.clone(),
+                &args.node_rpc_url,
+                SLACK_OAUTH_SECRET_PATH,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
 
     let (chain_client, raw_rpc_client, metadata_update_task) =
         create_subspace_client(&args.node_rpc_url).await?;
@@ -130,13 +140,21 @@ async fn setup(
 /// Receives alerts on a channel and posts them to Slack.
 /// This task might pause if the Slack API rate limit is exceeded.
 async fn slack_poster(
-    slack_client: SlackClientInfo,
+    slack_client: Option<SlackClientInfo>,
     mut alert_rx: mpsc::Receiver<Alert>,
 ) -> anyhow::Result<()> {
+    if slack_client.is_none() {
+        warn!("slack posting is disabled, only posting alerts to the terminal");
+    }
+
     while let Some(alert) = alert_rx.recv().await {
-        // We have a large number of retries in the Slack poster, so it is unlikely to fail.
-        let response = slack_client.post_message(alert).await?;
-        trace!(?response, "posted alert to Slack");
+        if let Some(slack_client) = slack_client.as_ref() {
+            // We have a large number of retries in the Slack poster, so it is unlikely to fail.
+            let response = slack_client.post_message(alert).await?;
+            debug!(?response, "posted alert to Slack");
+        } else {
+            info!("{}", alert);
+        }
     }
 
     Ok(())
@@ -147,6 +165,7 @@ async fn slack_poster(
 /// Returns fatal errors like connection failures, but logs and ignores recoverable errors.
 async fn run() -> anyhow::Result<()> {
     let args = Args::parse();
+    info!(?args, "chain-alerter started");
 
     let (slack_client_info, chain_client, raw_rpc_client, metadata_update_task) =
         setup(&args).await?;
@@ -279,17 +298,18 @@ async fn run() -> anyhow::Result<()> {
                }
            }
 
-           // A task that posts alerts to Slack.
+           // A task that posts alerts to Slack, if enabled.
+           // If Slack is disabled, the task is spawned, but only prints alerts to the terminal.
            result = slack_alert_task => {
                match result {
                    Ok(Ok(())) => {
-                       info!("slack alert task finished");
+                       info!(slack_enabled = %args.slack, "slack alert task finished");
                    }
                    Ok(Err(error)) => {
-                       error!(%error, "slack alert task failed");
+                       error!(%error, slack_enabled = %args.slack, "slack alert task failed");
                    }
                    Err(error) => {
-                       error!(%error, "slack alert task panicked or was cancelled");
+                       error!(%error, slack_enabled = %args.slack, "slack alert task panicked or was cancelled");
                    }
                }
            }

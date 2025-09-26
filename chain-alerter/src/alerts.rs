@@ -97,6 +97,16 @@ pub struct Alert {
     pub mode: BlockCheckMode,
 }
 
+impl Display for Alert {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Mode: {:?}", self.mode)?;
+        write!(f, "\n{}", self.alert)?;
+        write!(f, "\nBlock: {}", self.block_info)?;
+
+        Ok(())
+    }
+}
+
 impl Alert {
     /// Create a new alert.
     pub fn new(alert: AlertKind, block_info: BlockInfo, mode: BlockCheckMode) -> Self {
