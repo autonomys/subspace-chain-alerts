@@ -4,9 +4,10 @@ use crate::ALERT_BUFFER_SIZE;
 use crate::alerts::Alert;
 use crate::subspace::{
     BlockInfo, BlockNumber, EventIndex, EventInfo, ExtrinsicIndex, ExtrinsicInfo,
-    FOUNDATION_SUBSPACE_NODE_URL, RawEvent, RawEventList, RawExtrinsic, RawExtrinsicList,
-    RawRpcClient, SubspaceClient, create_subspace_client,
+    FOUNDATION_SUBSPACE_NODE_URL, LABS_SUBSPACE_NODE_URL, RawEvent, RawEventList, RawExtrinsic,
+    RawExtrinsicList, RawRpcClient, SubspaceClient, create_subspace_client,
 };
+use rand::{Rng, rng};
 use std::env;
 use subspace_process::{AsyncJoinOnDrop, init_logger};
 use subxt::utils::H256;
@@ -15,8 +16,17 @@ use tracing::info;
 
 /// The default RPC URL for a local Subspace node.
 pub fn node_rpc_url() -> String {
-    let node_url =
-        env::var("NODE_URL").unwrap_or_else(|_| FOUNDATION_SUBSPACE_NODE_URL.to_string());
+    let node_url = env::var("NODE_URL").unwrap_or_else(|_| {
+        // Randomly choose between the foundation and labs nodes.
+        if rng().random_bool(0.5) {
+            info!("using foundation node");
+            FOUNDATION_SUBSPACE_NODE_URL
+        } else {
+            info!("using labs node");
+            LABS_SUBSPACE_NODE_URL
+        }
+        .to_string()
+    });
     info!("using node RPC URL: {node_url}");
 
     node_url

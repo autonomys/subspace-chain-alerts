@@ -16,6 +16,7 @@ hex-literal = "0.4.1"
 humantime = "2.2.0"
 hyper-rustls = { version = "0.27.7", default-features = false }
 hyper-util = { version = "0.1.16", default-features = false }
+rand = "0.9.2"
 reqwest = { version = "0.12.22", default-features = false }
 rustls = { version = "0.23.31", default-features = false }
 scale-value = { version = "0.18.0", default-features = false }

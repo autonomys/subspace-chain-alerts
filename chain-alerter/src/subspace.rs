@@ -54,7 +54,7 @@ pub const LOCAL_SUBSPACE_NODE_URL: &str = "ws://127.0.0.1:9944";
 pub const FOUNDATION_SUBSPACE_NODE_URL: &str = "wss://rpc.mainnet.subspace.foundation/ws";
 
 /// The RPC URL for the public Autonomys Labs RPC instance.
-#[expect(dead_code, reason = "TODO: run tests against both instances")]
+#[allow(dead_code, reason = "only used in tests")]
 pub const LABS_SUBSPACE_NODE_URL: &str = "wss://rpc-0.mainnet.autonomys.xyz/ws";
 
 /// The Subspace block height type.
