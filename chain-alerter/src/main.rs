@@ -67,16 +67,25 @@ struct Args {
     ///
     /// Uses Short Names (but without the ':') from:
     /// <https://projects.iamcal.com/emoji-data/table.htm>
+    ///
+    /// Uses the approximate country code of the instance external IP address by default.
     #[arg(long)]
     icon: Option<String>,
 
     /// The RPC URL of the node to connect to.
+    /// Uses the local node by default.
     #[arg(long, value_hint = ValueHint::Url, default_value = LOCAL_SUBSPACE_NODE_URL)]
     node_rpc_url: String,
 
-    /// Slack message posting.
+    /// Enable or disable Slack message posting.
+    /// Slack is enabled by default, and required a Slack OAuth secret file named `slack-secret`.
     #[arg(long, default_value = "true", action = ArgAction::Set)]
     slack: bool,
+
+    /// Exit after this many alerts have been posted. Mainly used for testing.
+    /// Default is no limit.
+    #[arg(long)]
+    alert_limit: Option<usize>,
 }
 
 /// Initialize once-off setup for the chain alerter.
@@ -141,19 +150,39 @@ async fn setup(
 /// This task might pause if the Slack API rate limit is exceeded.
 async fn slack_poster(
     slack_client: Option<SlackClientInfo>,
+    alert_limit: Option<usize>,
     mut alert_rx: mpsc::Receiver<Alert>,
 ) -> anyhow::Result<()> {
     if slack_client.is_none() {
-        warn!("slack posting is disabled, only posting alerts to the terminal");
+        warn!(
+            ?alert_limit,
+            "slack posting is disabled, only posting alerts to the terminal",
+        );
     }
 
+    if alert_limit == Some(0) {
+        info!("alert limit is zero, exiting immediately");
+        return Ok(());
+    }
+
+    let mut alert_count = 0;
+
     while let Some(alert) = alert_rx.recv().await {
+        alert_count += 1;
+
         if let Some(slack_client) = slack_client.as_ref() {
             // We have a large number of retries in the Slack poster, so it is unlikely to fail.
             let response = slack_client.post_message(alert).await?;
-            debug!(?response, "posted alert to Slack");
+            debug!(?response, %alert_count, ?alert_limit, "posted alert to Slack");
         } else {
-            info!("{}", alert);
+            info!(%alert_count, ?alert_limit, "{}", alert);
+        }
+
+        if let Some(alert_limit) = alert_limit
+            && alert_count >= alert_limit
+        {
+            info!(%alert_count, ?alert_limit, "alert limit reached, exiting");
+            break;
         }
     }
 
@@ -163,18 +192,17 @@ async fn slack_poster(
 /// Run the chain alerter process.
 ///
 /// Returns fatal errors like connection failures, but logs and ignores recoverable errors.
-async fn run() -> anyhow::Result<()> {
-    let args = Args::parse();
+async fn run(args: &Args) -> anyhow::Result<()> {
     info!(?args, "chain-alerter started");
 
     let (slack_client_info, chain_client, raw_rpc_client, metadata_update_task) =
-        setup(&args).await?;
+        setup(args).await?;
 
     // Spawn a background task to post alerts to Slack.
     // We don't need to wait for the task to finish, because it will panic on failure.
     let (alert_tx, alert_rx) = mpsc::channel(ALERT_BUFFER_SIZE);
     let slack_alert_task: AsyncJoinOnDrop<anyhow::Result<()>> = AsyncJoinOnDrop::new(
-        tokio::spawn(slack_poster(slack_client_info, alert_rx)),
+        tokio::spawn(slack_poster(slack_client_info, args.alert_limit, alert_rx)),
         true,
     );
 
@@ -596,7 +624,16 @@ async fn main() -> anyhow::Result<()> {
     let shutdown_handle = shutdown_signal("chain-alerter").fuse();
     pin!(shutdown_handle);
 
-    for reconnection_attempt in 0..=MAX_RECONNECTION_ATTEMPTS {
+    let args = Args::parse();
+
+    // If we have an alert limit, we don't want to restart when it is reached.
+    let max_reconnection_attempts = if args.alert_limit.is_some() {
+        0
+    } else {
+        MAX_RECONNECTION_ATTEMPTS
+    };
+
+    for reconnection_attempt in 0..=max_reconnection_attempts {
         select! {
             _ = &mut shutdown_handle => {
                 info!(%reconnection_attempt, "chain-alerter exited due to user shutdown");
@@ -606,15 +643,28 @@ async fn main() -> anyhow::Result<()> {
             // TODO:
             // - store the most recent block and pass it to run(), so we restart at the right place
             // - create the RPC client outside this method and re-use it (but this might be more error-prone)
-            result = run() => {
+            result = run(&args) => {
+                let restart_message = if reconnection_attempt < max_reconnection_attempts {
+                    ", restarting..."
+                } else {
+                    ""
+                };
+
                 if let Err(error) = result {
                     error!(
-                        %reconnection_attempt,
                         %error,
-                        "chain-alerter exited with error, restarting..."
+                        alert_limit = ?args.alert_limit,
+                        %reconnection_attempt,
+                        %max_reconnection_attempts,
+                        "chain-alerter exited with error{restart_message}",
                     );
                 } else {
-                    info!(%reconnection_attempt, "chain-alerter exited, restarting...");
+                    info!(
+                        alert_limit = ?args.alert_limit,
+                        %reconnection_attempt,
+                        %max_reconnection_attempts,
+                        "chain-alerter exited{restart_message}",
+                    );
                 }
             }
         }

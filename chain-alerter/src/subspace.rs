@@ -37,9 +37,13 @@ pub const TARGET_BLOCK_INTERVAL: u64 = 6;
 pub const MIN_RECONNECTION_DELAY: u64 = 10;
 
 /// The maximum delay between RPC reconnection attempts, in milliseconds.
+/// Also used as the delay between restarts.
+///
+/// TODO: make this configurable
 pub const MAX_RECONNECTION_DELAY: u64 = 10_000;
 
 /// The maximum number of RPC reconnection attempts before failing and exiting the process.
+/// TODO: make this configurable
 pub const MAX_RECONNECTION_ATTEMPTS: usize = 10;
 
 /// The default RPC URL for a local Subspace node.

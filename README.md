@@ -120,6 +120,7 @@ Other alert kinds are not de-duplicated.
    - `cargo run -- --name "My Test Bot" --icon "warning" --node-rpc-url wss://rpc.mainnet.subspace.foundation/ws`
      - public node URLs are [listed in subspace.rs](https://github.com/autonomys/subspace-chain-alerts/blob/ac33ed7d200a1fdc3b92c1919f7b9cfacfba37c6/chain-alerter/src/subspace.rs#L43-L49)
      - `--slack=false` will disable Slack message posting entirely, and just log alerts to the terminal.
+     - `--alert-limit=5` will exit after 5 alerts have been posted, including the startup alert.
    - On first observed block, you should see a Slack message in `#chain-alerts-test` summarizing connection and block info.
    - All arguments are optional. The default node is `localhost`, and the default icon is the instance external IP address country flag (looked up via an online GeoIP service, which can be wrong).
    - `RUST_LOG` can be used to filter logs, see:
