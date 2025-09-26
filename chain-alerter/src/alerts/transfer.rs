@@ -1,15 +1,13 @@
 //! Balance transfer alerts.
 
-use crate::alerts::{Alert, AlertKind, BlockCheckMode, MIN_BALANCE_CHANGE};
 use crate::subspace::decode::decode_h256_from_composite;
-use crate::subspace::{Balance, BlockInfo, EventInfo, ExtrinsicInfo};
+use crate::subspace::{Balance, EventInfo, ExtrinsicInfo};
 use scale_value::Composite;
 use std::collections::BTreeSet;
 use std::fmt::{self, Display};
 use std::str::FromStr;
 use subxt::utils::AccountId32;
-use tokio::sync::mpsc;
-use tracing::{debug, trace, warn};
+use tracing::{error, trace};
 
 /// A list of known important addresses.
 pub const IMPORTANT_ADDRESSES: &[(&str, &str)] = &[
@@ -64,6 +62,11 @@ pub const IMPORTANT_ADDRESSES: &[(&str, &str)] = &[
         "Guardians of Growth",
         "sugQzjjyAfhzktFDdAkZrcTq5qzMaRoSV2qs1gTcjjuBeybWT",
     ),
+    // <https://polkadot.js.org/apps/?rpc=wss%3A%2F%2Frpc-0.mainnet.autonomys.xyz%2Fws#/chainstate>
+    // sudo.key()
+    // <https://autonomys.subscan.io/account/subKQqsYRyVkugvKQqLXEuhsefa9728PBAqtwxpeM5N4VD6mv>
+    // TODO: dynamically look this up from storage instead of hardcoding it
+    ("Sudo", "subKQqsYRyVkugvKQqLXEuhsefa9728PBAqtwxpeM5N4VD6mv"),
 ];
 
 /// If the address is an important address, returns the kind of important address, otherwise returns
@@ -74,7 +77,14 @@ pub fn important_address_kind(address: &Account) -> Option<&'static str> {
     IMPORTANT_ADDRESSES
         .iter()
         .find(|(_, addr)| {
-            let addr_id = AccountId32::from_str(addr).expect("constants are valid addresses");
+            let addr_id = if let Ok(account) = AccountId32::from_str(addr) {
+                account
+            } else {
+                let bytes = hex::decode(addr).expect("constants are valid ss58check or hex");
+                let array = <[u8; 32]>::try_from(bytes).expect("hex constants are 32 bytes");
+                AccountId32::from(array)
+            };
+
             trace!(?addr_id, ?account_id, "important address kind check");
             &addr_id == account_id
         })
@@ -112,6 +122,8 @@ impl TransferValue for EventInfo {
         None
     }
 }
+
+// TODO: split accounts into a separate file
 
 /// An account ID and attached role type.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -154,6 +166,21 @@ impl Display for Account {
 
 /// A trait for accessing the account IDs and account types from an object.
 pub trait Accounts {
+    /// Returns the signer for extrinsics or the `who` for events.
+    fn initiator_account(&self) -> Option<Account>;
+
+    /// Returns the account ID and type for the initiator account, if any.
+    #[expect(dead_code, reason = "included for completeness")]
+    fn initiator_account_str(&self) -> Option<String> {
+        self.initiator_account().map(|account| account.to_string())
+    }
+
+    /// Returns the important address kind for the initiator account, if any.
+    fn initiator_account_kind(&self) -> Option<&'static str> {
+        self.initiator_account()
+            .and_then(|account| account.important_address_kind())
+    }
+
     /// Returns sorted account IDs and types, if present.
     fn accounts(&self) -> BTreeSet<Account>;
 
@@ -202,12 +229,18 @@ pub trait Accounts {
 }
 
 impl Accounts for ExtrinsicInfo {
+    fn initiator_account(&self) -> Option<Account> {
+        self.signing_address
+            .as_ref()
+            .map(|signing_address| Account::Signer(signing_address.clone()))
+    }
+
     fn accounts(&self) -> BTreeSet<Account> {
         let mut account_list = BTreeSet::new();
 
-        if let Some(signing_address) = self.signing_address.as_ref() {
+        if let Some(signing_account) = self.initiator_account() {
             // Handle signer for Balances, Transporter, Domains, etc.
-            account_list.insert(Account::Signer(signing_address.clone()));
+            account_list.insert(signing_account);
         }
 
         if self.pallet == "Balances" {
@@ -226,6 +259,18 @@ impl Accounts for ExtrinsicInfo {
 }
 
 impl Accounts for EventInfo {
+    fn initiator_account(&self) -> Option<Account> {
+        let who = list_accounts(&self.fields, &["who"]);
+
+        if who.len() > 1 {
+            // This is technically possible in the data format, but it should never actually happen.
+            error!("multiple 'who' accounts in event, alerts might have been missed");
+            None
+        } else {
+            who.into_iter().next().map(Account::Signer)
+        }
+    }
+
     fn accounts(&self) -> BTreeSet<Account> {
         let mut account_list = BTreeSet::new();
 
@@ -289,157 +334,4 @@ pub fn list_accounts(fields: &Composite<u32>, field_names: &[&str]) -> BTreeSet<
     } else {
         BTreeSet::new()
     }
-}
-
-/// Check a Balance extrinsic for alerts.
-/// Does nothing if the extrinsic is any other kind of extrinsic.
-pub async fn check_transfer_extrinsic(
-    mode: BlockCheckMode,
-    alert_tx: &mpsc::Sender<Alert>,
-    extrinsic_info: &ExtrinsicInfo,
-    block_info: &BlockInfo,
-) -> anyhow::Result<()> {
-    // "force*" calls and large balance changes are alerts.
-
-    // TODO:
-    // - track the total of recent transfers, so the threshold can't be bypassed by splitting the
-    //   transfer into multiple calls
-    let transfer_value = extrinsic_info.transfer_value();
-
-    debug!(?mode, "transfer_value: {:?}", transfer_value);
-
-    // TODO:
-    // - test force alerts by checking a historic block with that call
-    // - do we want to track burn calls? <https://autonomys.subscan.io/extrinsic/137324-31> this is
-    //   a low priority because it is already covered by balance events
-    if extrinsic_info.pallet == "Balances" && extrinsic_info.call.starts_with("force") {
-        alert_tx
-            .send(Alert::new(
-                AlertKind::ForceBalanceTransfer {
-                    extrinsic_info: extrinsic_info.clone(),
-                    transfer_value,
-                },
-                *block_info,
-                mode,
-            ))
-            .await?;
-    } else if let Some(transfer_value) = transfer_value
-        && transfer_value >= MIN_BALANCE_CHANGE
-    {
-        alert_tx
-            .send(Alert::new(
-                AlertKind::LargeBalanceTransfer {
-                    extrinsic_info: extrinsic_info.clone(),
-                    transfer_value,
-                },
-                *block_info,
-                mode,
-            ))
-            .await?;
-    } else if transfer_value.is_none()
-        && extrinsic_info.pallet == "Balances"
-        && !["transfer_all", "upgrade_accounts"].contains(&extrinsic_info.call.as_str())
-    {
-        // Every other Balances extrinsic should have an amount.
-        // TODO:
-        // - check transfer_all by accessing account storage to get the value, this is a low
-        //   priority because it is already covered by balance events
-        warn!(
-            ?mode,
-            ?extrinsic_info,
-            "Balance: extrinsic amount unavailable in block",
-        );
-    }
-
-    let important_address_kinds = extrinsic_info.important_address_kinds_str();
-
-    trace!(
-        ?mode,
-        ?important_address_kinds,
-        ?extrinsic_info,
-        ?block_info,
-        "extrinsic account list",
-    );
-
-    if let Some(important_address_kinds) = important_address_kinds {
-        alert_tx
-            .send(Alert::new(
-                AlertKind::ImportantAddressTransfer {
-                    address_kinds: important_address_kinds,
-                    extrinsic_info: extrinsic_info.clone(),
-                    // The transfer value can be missing for a transfer_all call.
-                    // TODO: check account storage to get the transfer value if it is missing
-                    transfer_value,
-                },
-                *block_info,
-                mode,
-            ))
-            .await?;
-    }
-
-    Ok(())
-}
-
-/// Check a Balance event for alerts.
-/// Does nothing if the event is any other kind of event.
-pub async fn check_transfer_event(
-    mode: BlockCheckMode,
-    alert_tx: &mpsc::Sender<Alert>,
-    event_info: &EventInfo,
-    block_info: &BlockInfo,
-) -> anyhow::Result<()> {
-    // Large balance changes are alerts.
-
-    // TODO:
-    // - track the total of recent events, so the threshold can't be bypassed by splitting the
-    //   transfer into multiple calls
-    let transfer_value = event_info.transfer_value();
-    debug!(?mode, "transfer_value: {:?}", transfer_value);
-
-    // TODO:
-    // - do we want to track burn calls? <https://autonomys.subscan.io/extrinsic/137324-31>
-    if let Some(transfer_value) = transfer_value
-        && transfer_value >= MIN_BALANCE_CHANGE
-    {
-        alert_tx
-            .send(Alert::new(
-                AlertKind::LargeBalanceTransferEvent {
-                    event_info: event_info.clone(),
-                    transfer_value,
-                },
-                *block_info,
-                mode,
-            ))
-            .await?;
-    }
-
-    let accounts = event_info.accounts();
-    let important_address_kinds = event_info.important_address_kinds_str();
-
-    trace!(
-        ?mode,
-        ?accounts,
-        ?important_address_kinds,
-        ?event_info,
-        ?block_info,
-        "event account list"
-    );
-
-    if let Some(important_address_kinds) = important_address_kinds {
-        alert_tx
-            .send(Alert::new(
-                AlertKind::ImportantAddressTransferEvent {
-                    address_kinds: important_address_kinds,
-                    event_info: event_info.clone(),
-                    // The transfer value shouldn't be missing, but we can't rely on the data
-                    // format.
-                    transfer_value,
-                },
-                *block_info,
-                mode,
-            ))
-            .await?;
-    }
-
-    Ok(())
 }

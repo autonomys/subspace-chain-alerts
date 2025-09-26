@@ -4,7 +4,7 @@
 mod tests;
 pub mod transfer;
 
-use crate::alerts::transfer::{check_transfer_event, check_transfer_extrinsic};
+use crate::alerts::transfer::{Accounts, TransferValue};
 use crate::chain_fork_monitor::ChainForkEvent;
 use crate::format::{fmt_amount, fmt_duration, fmt_timestamp};
 use crate::subspace::{
@@ -16,7 +16,7 @@ use std::fmt::{self, Display};
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio::time::sleep;
-use tracing::warn;
+use tracing::{trace, warn};
 
 /// The minimum balance change to alert on.
 const MIN_BALANCE_CHANGE: Balance = 1_000_000 * AI3;
@@ -247,6 +247,24 @@ pub enum AlertKind {
         transfer_value: Option<Balance>,
     },
 
+    /// An extrinsic initiated by an important address has been detected.
+    ImportantAddressExtrinsic {
+        /// The important address kind.
+        address_kind: String,
+
+        /// The extrinsic information.
+        extrinsic_info: ExtrinsicInfo,
+    },
+
+    /// An event initiated by an important address has been detected.
+    ImportantAddressEvent {
+        /// The important address kind.
+        address_kind: String,
+
+        /// The event information.
+        event_info: EventInfo,
+    },
+
     /// A Sudo call has been detected.
     SudoCall {
         /// The sudo call's extrinsic information.
@@ -448,6 +466,30 @@ impl Display for AlertKind {
                 )
             }
 
+            Self::ImportantAddressExtrinsic {
+                address_kind,
+                extrinsic_info,
+            } => {
+                write!(
+                    f,
+                    "**Important address sent an extrinsic**\n\
+                    Kind: {address_kind}\n\
+                    {extrinsic_info}",
+                )
+            }
+
+            Self::ImportantAddressEvent {
+                address_kind,
+                event_info,
+            } => {
+                write!(
+                    f,
+                    "**Important address initiated an event**\n\
+                    Kind: {address_kind}\n\
+                    {event_info}",
+                )
+            }
+
             Self::SudoCall { extrinsic_info } => {
                 write!(
                     f,
@@ -540,6 +582,8 @@ impl AlertKind {
             | Self::LargeBalanceTransferEvent { .. }
             | Self::ImportantAddressTransfer { .. }
             | Self::ImportantAddressTransferEvent { .. }
+            | Self::ImportantAddressExtrinsic { .. }
+            | Self::ImportantAddressEvent { .. }
             | Self::SudoCall { .. }
             | Self::SudoEvent { .. }
             | Self::OperatorSlashed { .. }
@@ -568,6 +612,8 @@ impl AlertKind {
             | Self::LargeBalanceTransferEvent { .. }
             | Self::ImportantAddressTransfer { .. }
             | Self::ImportantAddressTransferEvent { .. }
+            | Self::ImportantAddressExtrinsic { .. }
+            | Self::ImportantAddressEvent { .. }
             | Self::SudoCall { .. }
             | Self::SudoEvent { .. }
             | Self::OperatorSlashed { .. }
@@ -584,6 +630,7 @@ impl AlertKind {
             Self::ForceBalanceTransfer { extrinsic_info, .. }
             | Self::LargeBalanceTransfer { extrinsic_info, .. }
             | Self::ImportantAddressTransfer { extrinsic_info, .. }
+            | Self::ImportantAddressExtrinsic { extrinsic_info, .. }
             | Self::SudoCall { extrinsic_info } => Some(extrinsic_info),
             Self::Startup
             | Self::FarmersDecreasedSuddenly { .. }
@@ -594,6 +641,7 @@ impl AlertKind {
             | Self::SideForkExtended { .. }
             | Self::LargeBalanceTransferEvent { .. }
             | Self::ImportantAddressTransferEvent { .. }
+            | Self::ImportantAddressEvent { .. }
             | Self::Reorg { .. }
             | Self::SudoEvent { .. }
             | Self::OperatorSlashed { .. }
@@ -618,6 +666,8 @@ impl AlertKind {
             | Self::NewSideFork { .. }
             | Self::SideForkExtended { .. }
             | Self::Reorg { .. }
+            | Self::ImportantAddressExtrinsic { .. }
+            | Self::ImportantAddressEvent { .. }
             | Self::SudoCall { .. }
             | Self::SudoEvent { .. }
             | Self::OperatorSlashed { .. }
@@ -632,7 +682,8 @@ impl AlertKind {
             Self::LargeBalanceTransferEvent { event_info, .. }
             | Self::ImportantAddressTransferEvent { event_info, .. }
             | Self::SudoEvent { event_info }
-            | Self::OperatorSlashed { event_info } => Some(event_info),
+            | Self::OperatorSlashed { event_info }
+            | Self::ImportantAddressEvent { event_info, .. } => Some(event_info),
             Self::Startup
             | Self::BlockProductionStall { .. }
             | Self::BlockProductionResumed { .. }
@@ -642,6 +693,7 @@ impl AlertKind {
             | Self::ForceBalanceTransfer { .. }
             | Self::LargeBalanceTransfer { .. }
             | Self::ImportantAddressTransfer { .. }
+            | Self::ImportantAddressExtrinsic { .. }
             | Self::SudoCall { .. }
             | Self::SlotTime { .. }
             | Self::FarmersDecreasedSuddenly { .. }
@@ -789,27 +841,115 @@ pub async fn check_extrinsic(
     };
 
     // TODO:
-    // - extract each alert into a pallet-specific function or trait object
     // - add tests to make sure we can parse the extrinsics for each alert
-    // - format account IDs as ss58 with prefix 6094
     // - link extrinsic and account to subscan
     // - add extrinsic success/failure to alerts
 
-    check_transfer_extrinsic(mode, alert_tx, &extrinsic_info, block_info).await?;
-
-    // All sudo calls are alerts.
     // TODO:
-    // - test this alert by checking a historic block with a sudo call
-    // - check if the call is from the sudo account
-    // - decode the inner call
+    // - track the total of recent transfers, so the threshold can't be bypassed by splitting the
+    //   transfer into multiple calls
+    let transfer_value = extrinsic_info.transfer_value();
+    trace!(?mode, "transfer_value: {:?}", transfer_value);
+
+    let initiator_account_kind = extrinsic_info.initiator_account_kind();
+    let important_address_kinds = extrinsic_info.important_address_kinds_str();
+    trace!(
+        ?mode,
+        ?initiator_account_kind,
+        ?important_address_kinds,
+        ?extrinsic_info,
+        ?block_info,
+        "extrinsic account list",
+    );
+
+    // The signing account is listed in the extrinsic, therefore:
+    // - Sudo extrinsics override balance transfers by sudo,
+    // - Large balance transfers override transfers initiated by important addresses, and
+    // - An important address alert is only issued if no other alert is triggered.
     if extrinsic_info.pallet == "Sudo" {
+        // All sudo calls are alerts.
+        // TODO:
+        // - test this alert by checking a historic block with a sudo call
+        // - check if the call is from the sudo account
+        // - decode the inner call
         alert_tx
             .send(Alert::new(
-                AlertKind::SudoCall { extrinsic_info },
+                AlertKind::SudoCall {
+                    extrinsic_info: extrinsic_info.clone(),
+                },
                 *block_info,
                 mode,
             ))
             .await?;
+    } else if let Some(transfer_value) = transfer_value
+        && transfer_value >= MIN_BALANCE_CHANGE
+    {
+        alert_tx
+            .send(Alert::new(
+                AlertKind::LargeBalanceTransfer {
+                    extrinsic_info: extrinsic_info.clone(),
+                    transfer_value,
+                },
+                *block_info,
+                mode,
+            ))
+            .await?;
+    } else if extrinsic_info.pallet == "Balances" && extrinsic_info.call.starts_with("force") {
+        // TODO:
+        // - test force alerts by checking a historic block with that call
+        // - do we want to track burn calls? <https://autonomys.subscan.io/extrinsic/137324-31>
+        //   - this is a low priority because it is already covered by balance events
+        alert_tx
+            .send(Alert::new(
+                AlertKind::ForceBalanceTransfer {
+                    extrinsic_info: extrinsic_info.clone(),
+                    transfer_value,
+                },
+                *block_info,
+                mode,
+            ))
+            .await?;
+    } else if (extrinsic_info.pallet == "Balances" || transfer_value.is_some())
+        && let Some(important_address_kinds) = important_address_kinds
+    {
+        alert_tx
+            .send(Alert::new(
+                AlertKind::ImportantAddressTransfer {
+                    address_kinds: important_address_kinds,
+                    extrinsic_info: extrinsic_info.clone(),
+                    // The transfer value can be missing for a transfer_all call.
+                    transfer_value,
+                },
+                *block_info,
+                mode,
+            ))
+            .await?;
+    } else if let Some(initiator_account_kind) = initiator_account_kind {
+        alert_tx
+            .send(Alert::new(
+                AlertKind::ImportantAddressExtrinsic {
+                    address_kind: initiator_account_kind.to_string(),
+                    extrinsic_info: extrinsic_info.clone(),
+                },
+                *block_info,
+                mode,
+            ))
+            .await?;
+    }
+
+    if transfer_value.is_none()
+        && extrinsic_info.pallet == "Balances"
+        && !["transfer_all", "upgrade_accounts"].contains(&extrinsic_info.call.as_str())
+    {
+        // Every other Balances extrinsic should have an amount.
+        // TODO:
+        // - check transfer_all by accessing account storage to get the value, this is a low
+        //   priority because it is already covered by balance events
+        warn!(
+            ?mode,
+            ?extrinsic_info,
+            "Balance: extrinsic amount unavailable in block",
+        );
     }
 
     Ok(())
@@ -830,30 +970,95 @@ pub async fn check_event(
     let event_info = EventInfo::new(event, block_info);
 
     // TODO:
-    // - extract each alert into a pallet-specific function or trait object
+    // - combine extrinsics and events, but only if they are redundant (for example: sudo/sudid)
     // - add tests to make sure we can parse the events for each alert
-    // - format account IDs as ss58 with prefix 6094
     // - link event and account to subscan
 
-    check_transfer_event(mode, alert_tx, &event_info, block_info).await?;
+    // TODO:
+    // - track the total of recent events, so the threshold can't be bypassed by splitting the
+    //   transfer into multiple calls
+    let transfer_value = event_info.transfer_value();
+    trace!(?mode, "transfer_value: {:?}", transfer_value);
 
-    // All operator slashes are alerts.
+    let initiator_account_kind = event_info.initiator_account_kind();
+    let important_address_kinds = event_info.important_address_kinds_str();
+    trace!(
+        ?mode,
+        ?initiator_account_kind,
+        ?important_address_kinds,
+        ?event_info,
+        ?block_info,
+        "event account list",
+    );
+
+    // All operator slashes are alerts, and they don't override any other alerts.
     // TODO:
     // - test this alert by checking a historic block with an operator slash event
     // - check the case of these names
     if event_info.pallet == "Domains" && event_info.kind == "OperatorSlashed" {
         alert_tx
             .send(Alert::new(
-                AlertKind::OperatorSlashed { event_info },
+                AlertKind::OperatorSlashed {
+                    event_info: event_info.clone(),
+                },
                 *block_info,
                 mode,
             ))
             .await?;
-    } else if event_info.pallet == "Sudo" {
-        // We already alert on sudo calls, so this exists mainly to test events.
+    }
+
+    // The initiating account is listed in the event when it is in the `who` field, therefore:
+    // - Sudo events override balance transfers by sudo,
+    // - Large balance transfers override transfers initiated by important addresses, and
+    // - An important address alert is only issued if no other alert is triggered.
+    if event_info.pallet == "Sudo" {
         alert_tx
             .send(Alert::new(
-                AlertKind::SudoEvent { event_info },
+                AlertKind::SudoEvent {
+                    event_info: event_info.clone(),
+                },
+                *block_info,
+                mode,
+            ))
+            .await?;
+    } else if let Some(transfer_value) = transfer_value
+        && transfer_value >= MIN_BALANCE_CHANGE
+    {
+        // TODO:
+        // - do we want to track burned events? <https://autonomys.subscan.io/event/137324-62>
+        alert_tx
+            .send(Alert::new(
+                AlertKind::LargeBalanceTransferEvent {
+                    event_info: event_info.clone(),
+                    transfer_value,
+                },
+                *block_info,
+                mode,
+            ))
+            .await?;
+    } else if transfer_value.is_some()
+        && let Some(important_address_kinds) = important_address_kinds
+    {
+        alert_tx
+            .send(Alert::new(
+                AlertKind::ImportantAddressTransferEvent {
+                    address_kinds: important_address_kinds,
+                    event_info: event_info.clone(),
+                    // The transfer value shouldn't be missing, but we can't rely on the data
+                    // format.
+                    transfer_value,
+                },
+                *block_info,
+                mode,
+            ))
+            .await?;
+    } else if let Some(initiator_account_kind) = initiator_account_kind {
+        alert_tx
+            .send(Alert::new(
+                AlertKind::ImportantAddressEvent {
+                    address_kind: initiator_account_kind.to_string(),
+                    event_info: event_info.clone(),
+                },
                 *block_info,
                 mode,
             ))

@@ -66,6 +66,18 @@ if the solution range after an era transition is significantly different on the 
 
 For details of the fork choice algorithm, see [the subspace protocol specification](https://subspace.github.io/protocol-specs/docs/decex/workflow#fork-choice-rule).
 
+## Alert De-duplication
+
+Alerts about the same extrinsic or event are deduplicated, using this priority order:
+
+- sudo/sudid
+- large balance transfer
+- force balance transfer
+- important address transfer
+- important address (any other extrinsic or event)
+
+Other alert kinds are not de-duplicated.
+
 ## Security notes
 
 - The Slack OAuth token is loaded from a file and must be readable only by the current user.
@@ -77,7 +89,8 @@ For details of the fork choice algorithm, see [the subspace protocol specificati
 
 - Hardcoded Slack channel, workspace ID, and thresholds.
 - Minimal decoding/validation for extrinsics and events; fields are parsed best-effort.
-- Minimal stateful aggregation (e.g., summing multiple related transfers)
+- Minimal stateful aggregation (e.g., summing multiple related transfers).
+- Alerts are partly de-duplicated on the same instance, but extrinsic and event alerts are not combined yet.
 - No alert deduplication when multiple instances are running.
 - Limited CLI configuration.
 - No persistent storage, no metrics, no dashboards.
