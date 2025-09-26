@@ -461,7 +461,7 @@ async fn check_best_blocks(
             debug!(?block_info, "Processed block from fork monitor");
         }
 
-        if first_block {
+        if first_block && mode.is_current() {
             alerts::startup_alert(mode, &alert_tx, &block_info).await?;
             first_block = false;
         } else if block_info

@@ -721,7 +721,11 @@ pub async fn startup_alert(
     alert_tx: &mpsc::Sender<Alert>,
     block_info: &BlockInfo,
 ) -> anyhow::Result<()> {
-    assert!(mode.is_startup(), "should only be called at startup");
+    // We could check this is only called once, but that's a low priority.
+    assert!(
+        mode.is_current(),
+        "should only be called on the first current block",
+    );
 
     // TODO:
     // - always post this to the test channel, because it's not a real "alert"
