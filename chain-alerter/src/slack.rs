@@ -23,7 +23,7 @@ use std::ops::Deref;
 use std::time::Duration;
 use tokio::fs;
 use tokio::time::timeout;
-use tracing::info;
+use tracing::{info, trace};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// The path of the file that stores the Slack OAuth secret.
@@ -345,7 +345,7 @@ impl SlackClientInfo {
         .with_username(format!("{} {ALERTS_BOT_NAME_SUFFIX}", self.bot_name));
         let post_chat_resp = slack_session.chat_post_message(&post_chat_req).await?;
 
-        info!("message posted: {post_chat_req:?} response: {post_chat_resp:?}");
+        trace!("message posted: {post_chat_req:?} response: {post_chat_resp:?}");
 
         Ok(post_chat_resp)
     }

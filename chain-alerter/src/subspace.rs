@@ -37,9 +37,13 @@ pub const TARGET_BLOCK_INTERVAL: u64 = 6;
 pub const MIN_RECONNECTION_DELAY: u64 = 10;
 
 /// The maximum delay between RPC reconnection attempts, in milliseconds.
+/// Also used as the delay between restarts.
+///
+/// TODO: make this configurable
 pub const MAX_RECONNECTION_DELAY: u64 = 10_000;
 
 /// The maximum number of RPC reconnection attempts before failing and exiting the process.
+/// TODO: make this configurable
 pub const MAX_RECONNECTION_ATTEMPTS: usize = 10;
 
 /// The default RPC URL for a local Subspace node.
@@ -50,7 +54,7 @@ pub const LOCAL_SUBSPACE_NODE_URL: &str = "ws://127.0.0.1:9944";
 pub const FOUNDATION_SUBSPACE_NODE_URL: &str = "wss://rpc.mainnet.subspace.foundation/ws";
 
 /// The RPC URL for the public Autonomys Labs RPC instance.
-#[expect(dead_code, reason = "TODO: run tests against both instances")]
+#[allow(dead_code, reason = "only used in tests")]
 pub const LABS_SUBSPACE_NODE_URL: &str = "wss://rpc-0.mainnet.autonomys.xyz/ws";
 
 /// The Subspace block height type.

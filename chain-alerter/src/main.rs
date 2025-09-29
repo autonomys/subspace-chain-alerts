@@ -32,15 +32,17 @@ use crate::subspace::{
     MAX_RECONNECTION_DELAY, RawBlock, RawBlockHash, RawEvent, RawExtrinsicList, RawRpcClient,
     SubspaceClient, create_subspace_client,
 };
-use clap::{Parser, ValueHint};
+use clap::{ArgAction, Parser, ValueHint};
 use slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor};
 use std::panic;
 use std::sync::Arc;
 use std::time::Duration;
 use subspace_process::{AsyncJoinOnDrop, init_logger, set_exit_on_panic, shutdown_signal};
-use subxt::ext::futures::FutureExt;
+use subxt::ext::futures::stream::FuturesUnordered;
+use subxt::ext::futures::{FutureExt, StreamExt};
 use subxt::utils::H256;
 use tokio::sync::{mpsc, watch};
+use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tokio::{pin, select, task};
 use tracing::{debug, error, info, trace, warn};
@@ -55,7 +57,7 @@ const ALERT_BUFFER_SIZE: usize = 100;
 
 /// The name and emoji used by this bot instance.
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
+#[command(version, about, long_about)]
 struct Args {
     /// The name used by the bot when posting alerts to Slack.
     #[arg(long, default_value = "Dev")]
@@ -65,12 +67,25 @@ struct Args {
     ///
     /// Uses Short Names (but without the ':') from:
     /// <https://projects.iamcal.com/emoji-data/table.htm>
+    ///
+    /// Uses the approximate country code of the instance external IP address by default.
     #[arg(long)]
     icon: Option<String>,
 
     /// The RPC URL of the node to connect to.
+    /// Uses the local node by default.
     #[arg(long, value_hint = ValueHint::Url, default_value = LOCAL_SUBSPACE_NODE_URL)]
     node_rpc_url: String,
+
+    /// Enable or disable Slack message posting.
+    /// Slack is enabled by default, and required a Slack OAuth secret file named `slack-secret`.
+    #[arg(long, default_value = "true", action = ArgAction::Set)]
+    slack: bool,
+
+    /// Exit after this many alerts have been posted. Mainly used for testing.
+    /// Default is no limit.
+    #[arg(long)]
+    alert_limit: Option<usize>,
 }
 
 /// Initialize once-off setup for the chain alerter.
@@ -85,7 +100,7 @@ struct Args {
 async fn setup(
     args: &Args,
 ) -> anyhow::Result<(
-    SlackClientInfo,
+    Option<SlackClientInfo>,
     SubspaceClient,
     RawRpcClient,
     AsyncJoinOnDrop<anyhow::Result<()>>,
@@ -97,7 +112,7 @@ async fn setup(
     // We expect errors here during reconnections, so we log and ignore them.
     //
     // TODO: remove ring to reduce compile time/size
-    let _ = rustls::crypto::aws_lc_rs::default_provider()
+    let _: Result<(), Arc<rustls::crypto::CryptoProvider>> = rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .inspect_err(|_| {
             warn!(
@@ -106,13 +121,19 @@ async fn setup(
         });
 
     // Connect to Slack and get basic info.
-    let slack_client_info = SlackClientInfo::new(
-        &args.name,
-        args.icon.clone(),
-        &args.node_rpc_url,
-        SLACK_OAUTH_SECRET_PATH,
-    )
-    .await?;
+    let slack_client_info = if args.slack {
+        Some(
+            SlackClientInfo::new(
+                &args.name,
+                args.icon.clone(),
+                &args.node_rpc_url,
+                SLACK_OAUTH_SECRET_PATH,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
 
     let (chain_client, raw_rpc_client, metadata_update_task) =
         create_subspace_client(&args.node_rpc_url).await?;
@@ -128,13 +149,41 @@ async fn setup(
 /// Receives alerts on a channel and posts them to Slack.
 /// This task might pause if the Slack API rate limit is exceeded.
 async fn slack_poster(
-    slack_client: SlackClientInfo,
+    slack_client: Option<SlackClientInfo>,
+    alert_limit: Option<usize>,
     mut alert_rx: mpsc::Receiver<Alert>,
 ) -> anyhow::Result<()> {
+    if slack_client.is_none() {
+        warn!(
+            ?alert_limit,
+            "slack posting is disabled, only posting alerts to the terminal",
+        );
+    }
+
+    if alert_limit == Some(0) {
+        info!("alert limit is zero, exiting immediately");
+        return Ok(());
+    }
+
+    let mut alert_count = 0;
+
     while let Some(alert) = alert_rx.recv().await {
-        // We have a large number of retries in the Slack poster, so it is unlikely to fail.
-        let response = slack_client.post_message(alert).await?;
-        trace!(?response, "posted alert to Slack");
+        alert_count += 1;
+
+        if let Some(slack_client) = slack_client.as_ref() {
+            // We have a large number of retries in the Slack poster, so it is unlikely to fail.
+            let response = slack_client.post_message(alert).await?;
+            debug!(?response, %alert_count, ?alert_limit, "posted alert to Slack");
+        } else {
+            info!(%alert_count, ?alert_limit, "{}", alert);
+        }
+
+        if let Some(alert_limit) = alert_limit
+            && alert_count >= alert_limit
+        {
+            info!(%alert_count, ?alert_limit, "alert limit reached, exiting");
+            break;
+        }
     }
 
     Ok(())
@@ -143,17 +192,17 @@ async fn slack_poster(
 /// Run the chain alerter process.
 ///
 /// Returns fatal errors like connection failures, but logs and ignores recoverable errors.
-async fn run() -> anyhow::Result<()> {
-    let args = Args::parse();
+async fn run(args: &Args) -> anyhow::Result<()> {
+    info!(?args, "chain-alerter started");
 
     let (slack_client_info, chain_client, raw_rpc_client, metadata_update_task) =
-        setup(&args).await?;
+        setup(args).await?;
 
     // Spawn a background task to post alerts to Slack.
     // We don't need to wait for the task to finish, because it will panic on failure.
     let (alert_tx, alert_rx) = mpsc::channel(ALERT_BUFFER_SIZE);
     let slack_alert_task: AsyncJoinOnDrop<anyhow::Result<()>> = AsyncJoinOnDrop::new(
-        tokio::spawn(slack_poster(slack_client_info, alert_rx)),
+        tokio::spawn(slack_poster(slack_client_info, args.alert_limit, alert_rx)),
         true,
     );
 
@@ -277,17 +326,18 @@ async fn run() -> anyhow::Result<()> {
                }
            }
 
-           // A task that posts alerts to Slack.
+           // A task that posts alerts to Slack, if enabled.
+           // If Slack is disabled, the task is spawned, but only prints alerts to the terminal.
            result = slack_alert_task => {
                match result {
                    Ok(Ok(())) => {
-                       info!("slack alert task finished");
+                       info!(slack_enabled = %args.slack, "slack alert task finished");
                    }
                    Ok(Err(error)) => {
-                       error!(%error, "slack alert task failed");
+                       error!(%error, slack_enabled = %args.slack, "slack alert task failed");
                    }
                    Err(error) => {
-                       error!(%error, "slack alert task panicked or was cancelled");
+                       error!(%error, slack_enabled = %args.slack, "slack alert task panicked or was cancelled");
                    }
                }
            }
@@ -426,6 +476,10 @@ async fn check_best_blocks(
         minimum_block_interval: DEFAULT_FARMING_MIN_ALERT_BLOCK_INTERVAL,
     });
 
+    // Tasks spawned by the block stall alert.
+    let mut block_stall_join_handles: FuturesUnordered<JoinHandle<anyhow::Result<()>>> =
+        FuturesUnordered::new();
+
     while let Some((mode, raw_block, raw_extrinsics, block_info)) = best_forks_rx.recv().await {
         // Let the user know we're still alive.
         if block_info
@@ -435,7 +489,7 @@ async fn check_best_blocks(
             debug!(?block_info, "Processed block from fork monitor");
         }
 
-        if first_block {
+        if first_block && mode.is_current() {
             alerts::startup_alert(mode, &alert_tx, &block_info).await?;
             first_block = false;
         } else if block_info
@@ -462,13 +516,15 @@ async fn check_best_blocks(
 
         // We only check for block stalls on current blocks.
         if mode.is_current() {
-            alerts::check_for_block_stall(
+            let stall_task_join_handle = alerts::check_for_block_stall(
                 mode,
                 alert_tx.clone(),
                 block_info,
                 latest_block_tx.subscribe(),
             )
             .await;
+
+            block_stall_join_handles.push(stall_task_join_handle);
         }
 
         // We check for other alerts in any mode.
@@ -486,6 +542,21 @@ async fn check_best_blocks(
 
         // Give spawned tasks another opportunity to run.
         task::yield_now().await;
+
+        // There's no point checking for finished tasks when we're not creating any new ones.
+        if mode.is_current() {
+            trace!(block_stall_join_handles = %block_stall_join_handles.len(), "spawned tasks before joining");
+
+            // Join any spawned block stall tasks that have finished.
+            // When there are no more finished tasks, continue to the next block.
+            while let Some(block_stall_result) =
+                block_stall_join_handles.next().now_or_never().flatten()
+            {
+                block_stall_result??;
+            }
+
+            trace!(block_stall_join_handles = %block_stall_join_handles.len(), "spawned tasks after joining");
+        }
 
         prev_block_info = Some(block_info);
     }
@@ -525,10 +596,10 @@ async fn run_on_best_block(
 
     // Check the block itself for alerts, including stall resumes.
     alerts::check_block(mode, alert_tx, block_info, prev_block_info).await?;
-    slot_time_monitor.process_block(mode, block_info).await;
+    slot_time_monitor.process_block(mode, block_info).await?;
     farming_monitor
         .process_block(mode, block_info, &events)
-        .await;
+        .await?;
 
     // Check each extrinsic and event for alerts.
     for extrinsic in extrinsics.iter() {
@@ -553,7 +624,16 @@ async fn main() -> anyhow::Result<()> {
     let shutdown_handle = shutdown_signal("chain-alerter").fuse();
     pin!(shutdown_handle);
 
-    for reconnection_attempt in 0..=MAX_RECONNECTION_ATTEMPTS {
+    let args = Args::parse();
+
+    // If we have an alert limit, we don't want to restart when it is reached.
+    let max_reconnection_attempts = if args.alert_limit.is_some() {
+        0
+    } else {
+        MAX_RECONNECTION_ATTEMPTS
+    };
+
+    for reconnection_attempt in 0..=max_reconnection_attempts {
         select! {
             _ = &mut shutdown_handle => {
                 info!(%reconnection_attempt, "chain-alerter exited due to user shutdown");
@@ -563,15 +643,28 @@ async fn main() -> anyhow::Result<()> {
             // TODO:
             // - store the most recent block and pass it to run(), so we restart at the right place
             // - create the RPC client outside this method and re-use it (but this might be more error-prone)
-            result = run() => {
+            result = run(&args) => {
+                let restart_message = if reconnection_attempt < max_reconnection_attempts {
+                    ", restarting..."
+                } else {
+                    ""
+                };
+
                 if let Err(error) = result {
                     error!(
-                        %reconnection_attempt,
                         %error,
-                        "chain-alerter exited with error, restarting..."
+                        alert_limit = ?args.alert_limit,
+                        %reconnection_attempt,
+                        %max_reconnection_attempts,
+                        "chain-alerter exited with error{restart_message}",
                     );
                 } else {
-                    info!(%reconnection_attempt, "chain-alerter exited, restarting...");
+                    info!(
+                        alert_limit = ?args.alert_limit,
+                        %reconnection_attempt,
+                        %max_reconnection_attempts,
+                        "chain-alerter exited{restart_message}",
+                    );
                 }
             }
         }
