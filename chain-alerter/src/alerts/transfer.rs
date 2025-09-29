@@ -1,12 +1,11 @@
 //! Balance transfer alerts.
 
 use crate::subspace::decode::decode_h256_from_composite;
-use crate::subspace::{Balance, EventInfo, ExtrinsicInfo};
+use crate::subspace::{AccountId, Balance, EventInfo, ExtrinsicInfo};
 use scale_value::Composite;
 use std::collections::BTreeSet;
 use std::fmt::{self, Display};
 use std::str::FromStr;
-use subxt::utils::AccountId32;
 use tracing::{error, trace};
 
 /// A list of known important addresses.
@@ -77,12 +76,12 @@ pub fn important_address_kind(address: &Account) -> Option<&'static str> {
     IMPORTANT_ADDRESSES
         .iter()
         .find(|(_, addr)| {
-            let addr_id = if let Ok(account) = AccountId32::from_str(addr) {
+            let addr_id = if let Ok(account) = AccountId::from_str(addr) {
                 account
             } else {
                 let bytes = hex::decode(addr).expect("constants are valid ss58check or hex");
                 let array = <[u8; 32]>::try_from(bytes).expect("hex constants are 32 bytes");
-                AccountId32::from(array)
+                AccountId::from(array)
             };
 
             trace!(?addr_id, ?account_id, "important address kind check");
@@ -129,18 +128,18 @@ impl TransferValue for EventInfo {
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum Account {
     /// The signer of an extrinsic.
-    Signer(AccountId32),
+    Signer(AccountId),
 
     /// A transfer sender account ID.
-    Sender(AccountId32),
+    Sender(AccountId),
 
     /// A transfer receiver account ID.
-    Receiver(AccountId32),
+    Receiver(AccountId),
 }
 
 impl Account {
     /// Returns the account ID.
-    pub fn account_id(&self) -> &AccountId32 {
+    pub fn account_id(&self) -> &AccountId {
         match self {
             Account::Signer(id) => id,
             Account::Sender(id) => id,
@@ -156,6 +155,8 @@ impl Account {
 
 impl Display for Account {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // At startup, we set the correct SS58 prefix, so this Display impl shows Subspace
+        // addresses.
         match self {
             Account::Signer(id) => write!(f, "Signer: {id}"),
             Account::Sender(id) => write!(f, "Sender: {id}"),
@@ -323,7 +324,7 @@ pub fn total_transfer_value(fields: &Composite<u32>, field_names: &[&str]) -> Op
 /// If there are no fields with those names, returns an empty list.
 ///
 /// Accounts can be duplicated if they perform different roles in the extrinsic or event.
-pub fn list_accounts(fields: &Composite<u32>, field_names: &[&str]) -> BTreeSet<AccountId32> {
+pub fn list_accounts(fields: &Composite<u32>, field_names: &[&str]) -> BTreeSet<AccountId> {
     if let Composite::Named(named_fields) = fields {
         named_fields
             .iter()

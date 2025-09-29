@@ -22,6 +22,7 @@ rustls = { version = "0.23.31", default-features = false }
 scale-value = { version = "0.18.0", default-features = false }
 serde_json = { version = "1.0.142", default-features = false }
 slack-morphism = "2.14.0"
+sp-core = "38.0.0"
 static_assertions = "1.1.0"
 # TODO: update to the main branch after https://github.com/autonomys/subspace/pull/3678 is merged
 subspace-process = { version = "0.0.1", git = "https://github.com/autonomys/subspace", rev = "2bf9b49f9a4aadb0b3286c5a62fa1997171f55c9" }

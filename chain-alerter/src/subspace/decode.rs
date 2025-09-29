@@ -46,7 +46,7 @@ pub fn decode_h256_from_composite(item: &Value<u32>) -> Option<H256> {
             };
 
             // Remove the leading SCALE variant byte if present.
-            // This can happen for types like `Option<H256>` and `MultiAddress<AccountId32>`.
+            // This can happen for types like `Option<H256>` and `MultiAddress`.
             if bytes.len() == 33 {
                 bytes.remove(0);
             }

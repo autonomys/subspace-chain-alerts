@@ -9,6 +9,7 @@ use crate::format::{fmt_amount, fmt_fields, fmt_timestamp};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use scale_value::Composite;
+use sp_core::crypto::AccountId32;
 use std::fmt::{self, Display};
 use std::ops::Sub;
 use std::time::Duration;
@@ -18,7 +19,7 @@ use subxt::blocks::{Block, ExtrinsicDetails, Extrinsics};
 use subxt::config::substrate::DigestItem;
 use subxt::events::{EventDetails, Events, Phase};
 use subxt::ext::subxt_rpcs::client::ReconnectingRpcClient;
-use subxt::utils::{AccountId32, H256};
+use subxt::utils::H256;
 use subxt::{OnlineClient, SubstrateConfig};
 use tracing::{debug, info, trace, warn};
 
@@ -56,6 +57,9 @@ pub const FOUNDATION_SUBSPACE_NODE_URL: &str = "wss://rpc.mainnet.subspace.found
 /// The RPC URL for the public Autonomys Labs RPC instance.
 #[allow(dead_code, reason = "only used in tests")]
 pub const LABS_SUBSPACE_NODE_URL: &str = "wss://rpc-0.mainnet.autonomys.xyz/ws";
+
+/// The Subspace consensus account ID type.
+pub type AccountId = AccountId32;
 
 /// The Subspace block height type.
 /// Copied from subspace-core-primitives.
@@ -476,7 +480,7 @@ pub struct ExtrinsicInfo {
     pub hash: H256,
 
     /// The extrinsic signing address, if it exists.
-    pub signing_address: Option<AccountId32>,
+    pub signing_address: Option<AccountId>,
 
     /// The extrinsic fields, with the extrinsic index as a context.
     pub fields: Composite<ExtrinsicIndex>,
@@ -554,7 +558,7 @@ impl ExtrinsicInfo {
         let signing_address = extrinsic
             .address_bytes()
             .and_then(|addr| addr.split_at_checked(1)?.1.try_into().ok())
-            .map(AccountId32);
+            .map(<[u8; 32]>::into);
 
         Some(ExtrinsicInfo {
             pallet: meta.pallet.name().to_string(),
