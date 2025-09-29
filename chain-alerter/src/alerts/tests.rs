@@ -3,6 +3,7 @@
 //! Set the `NODE_URL` env var to the RPC URL of a Subspace node to override the default public
 //! instance.
 
+use crate::alerts::account::ImportantAccountRole;
 use crate::alerts::{self, Alert, AlertKind, BlockCheckMode, MIN_BALANCE_CHANGE};
 use crate::slot_time_monitor::test_utils::mock_block_info;
 use crate::slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor, SlotTimeMonitorConfig};
@@ -73,6 +74,9 @@ const IMPORTANT_ADDRESS_TRANSFER_BLOCKS: [(
     RawBlockHash,
     ExtrinsicIndex,
     EventIndex,
+    // Extrinsic and event important accounts or roles can be different if the event has more or
+    // less detail than the extrinsic.
+    &str,
     &str,
     // Extrinsic and event transfer values can be different if the extrinsic causes multiple
     // events.
@@ -89,6 +93,7 @@ const IMPORTANT_ADDRESS_TRANSFER_BLOCKS: [(
         // <https://autonomys.subscan.io/event/4259127-8>
         8,
         "Guardians of Growth, Subspace Foundation Near-Term Treasury",
+        "Guardians of Growth, Subspace Foundation Near-Term Treasury",
         4_999_990 * AI3,
         4_999_990 * AI3,
         Slot(25_647_927),
@@ -101,7 +106,8 @@ const IMPORTANT_ADDRESS_TRANSFER_BLOCKS: [(
         25,
         // <https://autonomys.subscan.io/event/4204424-50>
         50,
-        "Market Liquidity",
+        "Signer: Market Liquidity",
+        "Signer: Market Liquidity, Sender: Market Liquidity",
         20_000 * AI3,
         20_000 * AI3,
         Slot(25_314_662),
@@ -114,7 +120,8 @@ const IMPORTANT_ADDRESS_TRANSFER_BLOCKS: [(
         13,
         // <https://autonomys.subscan.io/event/3850288-28>
         28,
-        "Operations",
+        "Signer: Operations",
+        "Sender: Operations",
         150 * AI3,
         150 * AI3,
         Slot(23_187_041),
@@ -127,7 +134,8 @@ const IMPORTANT_ADDRESS_TRANSFER_BLOCKS: [(
         4,
         // <https://autonomys.subscan.io/event/4273214-15>
         15,
-        "Guardians of Growth",
+        "Signer: Guardians of Growth",
+        "Sender: Guardians of Growth",
         499_999_999_999_999_991_611_392,
         399_999_999_999_999_993_289_114,
         Slot(25_732_135),
@@ -137,14 +145,20 @@ const IMPORTANT_ADDRESS_TRANSFER_BLOCKS: [(
 /// Some extrinsics for important address alerts (which aren't any other higher
 /// priority alert).
 /// TODO: find an event sent by an important address, that isn't a higher priority alert.
-const IMPORTANT_ADDRESS_ONLY_BLOCKS: [(BlockNumber, RawBlockHash, ExtrinsicIndex, &str, Slot); 1] = [
+const IMPORTANT_ADDRESS_ONLY_BLOCKS: [(
+    BlockNumber,
+    RawBlockHash,
+    ExtrinsicIndex,
+    ImportantAccountRole,
+    Slot,
+); 1] = [
     // <https://autonomys.subscan.io/account/subKQqsYRyVkugvKQqLXEuhsefa9728PBAqtwxpeM5N4VD6mv>
     (
         3_497_809,
         hex_literal::hex!("bfa548573d1ff035e2009fdaa68499fe74c4ab30a775f5eb35624fdb9f95dc91"),
         // <https://autonomys.subscan.io/extrinsic/3497809-9>
         9,
-        "Sudo",
+        ImportantAccountRole::Signer("Sudo"),
         Slot(21_070_789),
     ),
 ];
@@ -333,7 +347,8 @@ async fn test_important_address_transfer_alerts() -> anyhow::Result<()> {
         block_hash,
         extrinsic_index,
         event_index,
-        address_kinds,
+        extrinsic_address_kinds,
+        event_address_kinds,
         extrinsic_transfer_value,
         event_transfer_value,
         slot,
@@ -368,7 +383,7 @@ async fn test_important_address_transfer_alerts() -> anyhow::Result<()> {
                 alert,
                 Alert::new(
                     AlertKind::ImportantAddressTransfer {
-                        address_kinds: address_kinds.to_string(),
+                        address_kinds: extrinsic_address_kinds.to_string(),
                         extrinsic_info,
                         transfer_value: Some(extrinsic_transfer_value),
                     },
@@ -402,7 +417,7 @@ async fn test_important_address_transfer_alerts() -> anyhow::Result<()> {
                 alert,
                 Alert::new(
                     AlertKind::ImportantAddressTransferEvent {
-                        address_kinds: address_kinds.to_string(),
+                        address_kinds: event_address_kinds.to_string(),
                         event_info,
                         transfer_value: Some(event_transfer_value),
                     },
