@@ -4,7 +4,8 @@ pub mod decode;
 #[cfg(test)]
 pub mod tests;
 
-use crate::alerts::transfer::{Accounts, TransferValue};
+use crate::alerts::account::Accounts;
+use crate::alerts::transfer::TransferValue;
 use crate::format::{fmt_amount, fmt_fields, fmt_timestamp};
 use anyhow::Result;
 use chrono::{DateTime, Utc};

@@ -1,10 +1,13 @@
 //! Specific chain alerts.
 
-#[cfg(test)]
-mod tests;
+pub mod account;
 pub mod transfer;
 
-use crate::alerts::transfer::{Accounts, TransferValue};
+#[cfg(test)]
+mod tests;
+
+use crate::alerts::account::Accounts;
+use crate::alerts::transfer::TransferValue;
 use crate::chain_fork_monitor::ChainForkEvent;
 use crate::format::{fmt_amount, fmt_duration, fmt_timestamp};
 use crate::subspace::{
