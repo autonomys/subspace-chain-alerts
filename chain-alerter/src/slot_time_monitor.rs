@@ -17,7 +17,7 @@ use tracing::{debug, info, warn};
 pub const DEFAULT_SLOT_TIME_ALERT_THRESHOLD: f64 = 1.05;
 
 /// The default check interval for the slot time monitor.
-pub const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_secs(3600);
+pub const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_secs(600);
 
 /// Interface for slot time monitors that consume blocks and perform checks.
 pub trait SlotTimeMonitor {
