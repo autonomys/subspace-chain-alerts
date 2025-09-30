@@ -34,6 +34,7 @@ use crate::subspace::{
 };
 use clap::{ArgAction, Parser, ValueHint};
 use slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor};
+use sp_core::crypto::{Ss58AddressFormatRegistry, set_default_ss58_version};
 use std::panic;
 use std::sync::Arc;
 use std::time::Duration;
@@ -105,6 +106,10 @@ async fn setup(
     RawRpcClient,
     AsyncJoinOnDrop<anyhow::Result<()>>,
 )> {
+    // Display addresses in Subspace format.
+    // This only applies to `sp_core::AccountId32`, not `subxt::utils::AccountId32`.
+    set_default_ss58_version(Ss58AddressFormatRegistry::AutonomysAccount.into());
+
     // Avoid a crypto provider conflict: jsonrpsee activates ring, and hyper-rustls activates
     // aws-lc, but there can only be one per process. We use the library with more formal
     // verification.

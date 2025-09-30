@@ -8,6 +8,7 @@ use crate::subspace::{
     RawExtrinsicList, RawRpcClient, SubspaceClient, create_subspace_client,
 };
 use rand::{Rng, rng};
+use sp_core::crypto::{Ss58AddressFormatRegistry, set_default_ss58_version};
 use std::env;
 use subspace_process::{AsyncJoinOnDrop, init_logger};
 use subxt::utils::H256;
@@ -53,6 +54,10 @@ pub async fn test_setup(
     AsyncJoinOnDrop<anyhow::Result<()>>,
 )> {
     init_logger();
+
+    // Display addresses in Subspace format.
+    // This only applies to `sp_core::AccountId32`, not `subxt::utils::AccountId32`.
+    set_default_ss58_version(Ss58AddressFormatRegistry::AutonomysAccount.into());
 
     // Avoid a crypto provider conflict: see main::setup() for details.
     // An error is a bug in the test, because setup should only be called once.
