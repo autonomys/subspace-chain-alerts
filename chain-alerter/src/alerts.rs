@@ -421,6 +421,8 @@ impl Display for AlertKind {
                     write!(f, "\nBackwards reorg depth: {backwards_reorg_depth}")?;
                 }
 
+                write!(f, "\n\n__Check Subscan 'finalized' blocks for changes__\n")?;
+
                 Ok(())
             }
 

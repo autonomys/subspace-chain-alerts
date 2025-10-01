@@ -16,6 +16,15 @@ Important event alerts for Subspace blockchains.
 - After filling in gaps and rationalising forks, runs alert detection on the best fork (or all forks).
 - Posts applicable alerts to a Slack channel.
 
+### Known issues
+
+- [Subscan.io](https://autonomys.subscan.io/block) shows blocks as "finalized" when they are 6 blocks behind the best tip. This is not the same as the Subspace network "finalized" status.
+  - Block data should not be trusted until the block is shown as "finalized" on Subscan.
+- Subscan only indexes the best chain, and [deletes blocks](https://github.com/subscan-explorer/subscan-issue-tracker/issues/156#issuecomment-3355554868)
+  that are reorged away from.
+  - Links to blocks that have been reorged away from will give a "No related data found" error on Subscan.
+  - If "finalized" blocks are likely to have changed, the alerter will issue a reorg alert, and any open Subscan links should be refreshed.
+
 ### How fork detection works
 
 Blocks can be received in any order, and block notifications can be skipped, particularly during bulk syncing.

@@ -23,14 +23,17 @@ use tracing::{debug, info, trace, warn};
 pub const CHAIN_FORK_BUFFER_SIZE: usize = 50;
 
 /// The minimum fork depth to alert on.
-/// TODO: make this configurable
-pub const MIN_FORK_DEPTH: usize = 7;
+///
+/// This is set to match subscan.io's "unfinalized" status. It is possible for subscan.io to show a
+/// block as "finalized" when it really isn't, so we want to trigger an alert when a subscan.io
+/// "finalized" block is reorged away from.
+pub const MIN_FORK_DEPTH: usize = 6;
 
 /// The minimum fork depth to log as info.
 pub const MIN_FORK_DEPTH_FOR_WARN_LOG: usize = 5;
 
 /// The minimum fork depth to log as info.
-pub const MIN_FORK_DEPTH_FOR_INFO_LOG: usize = 3;
+pub const MIN_FORK_DEPTH_FOR_INFO_LOG: usize = 4;
 
 /// The minimum number of blocks to alert on for backwards reorgs.
 /// Currently we alert on all backwards reorgs.
