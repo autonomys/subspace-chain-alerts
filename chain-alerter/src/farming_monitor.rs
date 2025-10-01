@@ -174,9 +174,9 @@ impl MemoryFarmingMonitor {
 
             if let Some(public_key_hash) = public_key_hash {
                 let public_key_hash_str = hex::encode(public_key_hash.as_bytes());
-                debug!(
+                trace!(
                     "Inserting farmer 0x{} into last voted by farmer",
-                    public_key_hash_str
+                    public_key_hash_str,
                 );
                 self.state
                     .last_block_voted_by_farmer

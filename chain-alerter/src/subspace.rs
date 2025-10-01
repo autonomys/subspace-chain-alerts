@@ -22,7 +22,7 @@ use subxt::events::{EventDetails, Events, Phase};
 use subxt::ext::subxt_rpcs::client::ReconnectingRpcClient;
 use subxt::utils::H256;
 use subxt::{OnlineClient, SubstrateConfig};
-use tracing::{debug, info, trace, warn};
+use tracing::{info, trace, warn};
 
 /// The placeholder hash for the parent of the genesis block.
 /// Well-known value.
@@ -766,9 +766,9 @@ impl Slot {
             })
             .ok()?;
 
-        debug!(
+        trace!(
             "Found pre runtime digest with slot number {:?}",
-            hex::encode(slot_bytes)
+            hex::encode(slot_bytes),
         );
         Some(Slot(u64::from_le_bytes(slot_bytes)))
     }
