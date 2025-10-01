@@ -118,7 +118,7 @@ impl SlotTimeMonitor for MemorySlotTimeMonitor {
 
         match self.state {
             // slot available, we should check if we are in the interval
-            Some(state) if state.next_check_time <= block_time => {
+            Some(state) if state.next_check_time <= block_time && !mode.is_startup() => {
                 debug!(?mode, "Checking slot time alert in interval...");
 
                 let slot_diff = block_slot - state.first_slot_in_interval;
@@ -161,7 +161,7 @@ impl SlotTimeMonitor for MemorySlotTimeMonitor {
                     ))
                 }
             }
-            // do nothing if we are in the interval
+            // do nothing if we are in the interval, or during startup
             Some(_) => Ok(()),
             // we received a new block, so we init the first check
             None => {
