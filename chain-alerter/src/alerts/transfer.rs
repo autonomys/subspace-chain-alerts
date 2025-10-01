@@ -13,7 +13,7 @@ impl TransferValue for ExtrinsicInfo {
     fn transfer_value(&self) -> Option<Balance> {
         if self.pallet == "Balances" {
             // subxt knows the field names, so we can search for the transfer value by name.
-            return total_transfer_value(&self.fields, &["value", "amount", "new_free", "delta"]);
+            return total_transfer_value(&self.fields, &["amount", "delta", "new_free", "value"]);
         } else if self.pallet == "Transporter" || self.pallet == "Domains" {
             // Operator nomination is a kind of transfer to an operator stake.
             return total_transfer_value(&self.fields, &["amount"]);
@@ -25,9 +25,11 @@ impl TransferValue for ExtrinsicInfo {
 
 impl TransferValue for EventInfo {
     fn transfer_value(&self) -> Option<Balance> {
-        if self.pallet == "Balances" || self.pallet == "Transporter" || self.pallet == "Domains" {
+        if self.pallet == "Balances" {
+            return total_transfer_value(&self.fields, &["amount", "free_balance"]);
+        } else if self.pallet == "Transporter" || self.pallet == "Domains" {
             return total_transfer_value(&self.fields, &["amount"]);
-        } else if self.pallet == "Transactionpayment" {
+        } else if self.pallet == "TransactionPayment" {
             return total_transfer_value(&self.fields, &["actual_fee", "tip"]);
         }
 
