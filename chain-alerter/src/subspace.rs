@@ -13,6 +13,7 @@ use scale_value::Composite;
 use sp_core::crypto::AccountId32;
 use std::fmt::{self, Display};
 use std::ops::Sub;
+use std::sync::Arc;
 use std::time::Duration;
 use subspace_process::AsyncJoinOnDrop;
 use subxt::backend::rpc::reconnecting_rpc_client::ExponentialBackoff;
@@ -519,7 +520,7 @@ impl Display for ExtrinsicInfo {
 
 impl ExtrinsicInfo {
     /// Check and collect an extrinsic's info.
-    pub fn new(extrinsic: &RawExtrinsic, block_info: &BlockInfo) -> Option<ExtrinsicInfo> {
+    pub fn new(extrinsic: &RawExtrinsic, block_info: &BlockInfo) -> Option<Arc<ExtrinsicInfo>> {
         let Ok(meta) = extrinsic.extrinsic_metadata() else {
             // If we can't get the extrinsic pallet and call name, there's nothing we can do.
             // Just log it and move on.
@@ -561,14 +562,14 @@ impl ExtrinsicInfo {
             .and_then(|addr| addr.split_at_checked(1)?.1.try_into().ok())
             .map(<[u8; 32]>::into);
 
-        Some(ExtrinsicInfo {
+        Some(Arc::new(ExtrinsicInfo {
             pallet: meta.pallet.name().to_string(),
             call: meta.variant.name.to_string(),
             index: extrinsic.index(),
             hash: extrinsic.hash(),
             signing_address,
             fields,
-        })
+        }))
     }
 
     /// Format the extrinsic's fields as a string, truncating it if it is too long.
@@ -593,6 +594,9 @@ pub struct EventInfo {
     /// The phase the event was emitted in.
     pub phase: Phase,
 
+    /// The extrinsic that emitted this event, if there was one.
+    pub extrinsic_info: Option<Arc<ExtrinsicInfo>>,
+
     /// The event fields, with the event index as a context.
     pub fields: Composite<EventIndex>,
 }
@@ -604,6 +608,8 @@ impl Display for EventInfo {
             kind,
             index,
             phase,
+            // TODO: link to the extrinsic on Subscan.io
+            extrinsic_info: _,
             fields,
         } = self;
 
@@ -625,7 +631,11 @@ impl Display for EventInfo {
 
 impl EventInfo {
     /// Check and collect an event's info.
-    pub fn new(event: &RawEvent, block_info: &BlockInfo) -> EventInfo {
+    pub fn new(
+        event: &RawEvent,
+        block_info: &BlockInfo,
+        extrinsic_info: Option<Arc<ExtrinsicInfo>>,
+    ) -> EventInfo {
         let meta = event.event_metadata();
 
         // We can usually get the event fields, but we don't need the fields for some
@@ -644,8 +654,9 @@ impl EventInfo {
         EventInfo {
             pallet: meta.pallet.name().to_string(),
             kind: meta.variant.name.to_string(),
-            phase: event.phase(),
             index: event.index(),
+            phase: event.phase(),
+            extrinsic_info,
             fields,
         }
     }

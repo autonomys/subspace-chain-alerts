@@ -300,6 +300,7 @@ impl SlackClientInfo {
 
         info!(
             ?alert,
+            is_duplicate = %alert.alert.is_duplicate(),
             channel_id = ?self.channel_id,
             "posting message to '{TEST_CHANNEL_NAME}'",
         );

@@ -35,10 +35,12 @@ use crate::subspace::{
 use clap::{ArgAction, Parser, ValueHint};
 use slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor};
 use sp_core::crypto::{Ss58AddressFormatRegistry, set_default_ss58_version};
+use std::collections::HashMap;
 use std::panic;
 use std::sync::Arc;
 use std::time::Duration;
 use subspace_process::{AsyncJoinOnDrop, init_logger, set_exit_on_panic, shutdown_signal};
+use subxt::events::Phase;
 use subxt::ext::futures::stream::FuturesUnordered;
 use subxt::ext::futures::{FutureExt, StreamExt};
 use subxt::utils::H256;
@@ -173,7 +175,14 @@ async fn slack_poster(
     let mut alert_count = 0;
 
     while let Some(alert) = alert_rx.recv().await {
+        // Since we use the alert limit for testing, we always want to increment it, even if the
+        // Slack alert would be duplicate or skipped. (We often disable Slack for testing.)
         alert_count += 1;
+
+        if alert.alert.is_duplicate() {
+            info!(%alert_count, ?alert_limit, "skipping posting duplicate alert message:\n{alert}");
+            continue;
+        }
 
         if let Some(slack_client) = slack_client.as_ref() {
             // We have a large number of retries in the Slack poster, so it is unlikely to fail.
@@ -607,12 +616,23 @@ async fn run_on_best_block(
         .await?;
 
     // Check each extrinsic and event for alerts.
+    let mut extrinsic_infos = HashMap::new();
     for extrinsic in extrinsics.iter() {
-        alerts::check_extrinsic(mode, alert_tx, &extrinsic, block_info).await?;
+        let extrinsic_info =
+            alerts::check_extrinsic(mode, alert_tx, &extrinsic, block_info).await?;
+        if let Some(extrinsic_info) = extrinsic_info {
+            extrinsic_infos.insert(extrinsic.index(), extrinsic_info);
+        }
     }
 
     for event in events.iter() {
-        alerts::check_event(mode, alert_tx, event, block_info).await?;
+        let extrinsic_info = if let Phase::ApplyExtrinsic(extrinsic_index) = event.phase() {
+            extrinsic_infos.get(&extrinsic_index).cloned()
+        } else {
+            None
+        };
+
+        alerts::check_event(mode, alert_tx, event, block_info, extrinsic_info).await?;
     }
 
     Ok(())

@@ -216,12 +216,21 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
     let (extrinsic, extrinsic_info) =
         decode_extrinsic(&block_info, &extrinsics, SUDO_EXTRINSIC_BLOCK.2).await?;
 
-    alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info).await?;
+    let checked_extrinsic_info =
+        alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info).await?;
+    assert_eq!(
+        Some(&extrinsic_info),
+        checked_extrinsic_info.as_ref(),
+        "extrinsic info mismatch",
+    );
+
     let alert = alert_rx.try_recv().expect("no alert received");
     assert_eq!(
         alert,
         Alert::new(
-            AlertKind::SudoCall { extrinsic_info },
+            AlertKind::SudoCall {
+                extrinsic_info: extrinsic_info.clone(),
+            },
             block_info,
             BlockCheckMode::Replay,
         )
@@ -234,9 +243,22 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
         Some(("Sudo", "sudo"))
     );
 
-    let (event, event_info) = decode_event(&block_info, &events, SUDO_EXTRINSIC_BLOCK.3).await?;
+    let (event, event_info) = decode_event(
+        &block_info,
+        Some(extrinsic_info.clone()),
+        &events,
+        SUDO_EXTRINSIC_BLOCK.3,
+    )
+    .await?;
 
-    alerts::check_event(BlockCheckMode::Replay, &alert_tx, &event, &block_info).await?;
+    alerts::check_event(
+        BlockCheckMode::Replay,
+        &alert_tx,
+        &event,
+        &block_info,
+        Some(extrinsic_info),
+    )
+    .await?;
     let alert = alert_rx.try_recv().expect("no alert received");
     assert_eq!(
         alert,
@@ -284,16 +306,29 @@ async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
 
         let (extrinsic, extrinsic_info) =
             decode_extrinsic(&block_info, &extrinsics, extrinsic_index).await?;
-        let (event, event_info) = decode_event(&block_info, &events, event_index).await?;
+        let (event, event_info) = decode_event(
+            &block_info,
+            Some(extrinsic_info.clone()),
+            &events,
+            event_index,
+        )
+        .await?;
 
-        alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info).await?;
+        let checked_extrinsic_info =
+            alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info)
+                .await?;
+        assert_eq!(
+            Some(&extrinsic_info),
+            checked_extrinsic_info.as_ref(),
+            "extrinsic info mismatch",
+        );
 
         let alert = alert_rx.try_recv().expect("no extrinsic alert received");
         assert_eq!(
             alert,
             Alert::new(
                 AlertKind::LargeBalanceTransfer {
-                    extrinsic_info,
+                    extrinsic_info: extrinsic_info.clone(),
                     transfer_value,
                 },
                 block_info,
@@ -305,7 +340,14 @@ async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
             .try_recv()
             .expect_err("alert received when none expected");
 
-        alerts::check_event(BlockCheckMode::Replay, &alert_tx, &event, &block_info).await?;
+        alerts::check_event(
+            BlockCheckMode::Replay,
+            &alert_tx,
+            &event,
+            &block_info,
+            Some(extrinsic_info),
+        )
+        .await?;
         let alert = alert_rx.try_recv().expect("no event alert received");
         assert_eq!(
             alert,
@@ -359,9 +401,23 @@ async fn test_important_address_transfer_alerts() -> anyhow::Result<()> {
 
         let (extrinsic, extrinsic_info) =
             decode_extrinsic(&block_info, &extrinsics, extrinsic_index).await?;
-        let (event, event_info) = decode_event(&block_info, &events, event_index).await?;
+        let (event, event_info) = decode_event(
+            &block_info,
+            Some(extrinsic_info.clone()),
+            &events,
+            event_index,
+        )
+        .await?;
 
-        alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info).await?;
+        let checked_extrinsic_info =
+            alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info)
+                .await?;
+        assert_eq!(
+            Some(&extrinsic_info),
+            checked_extrinsic_info.as_ref(),
+            "extrinsic info mismatch",
+        );
+
         let alert = alert_rx.try_recv().expect("no extrinsic alert received");
 
         // There should only be one alert per extrinsic, and one per event, because more important
@@ -384,7 +440,7 @@ async fn test_important_address_transfer_alerts() -> anyhow::Result<()> {
                 Alert::new(
                     AlertKind::ImportantAddressTransfer {
                         address_kinds: extrinsic_address_kinds.to_string(),
-                        extrinsic_info,
+                        extrinsic_info: extrinsic_info.clone(),
                         transfer_value: Some(extrinsic_transfer_value),
                     },
                     block_info,
@@ -397,7 +453,14 @@ async fn test_important_address_transfer_alerts() -> anyhow::Result<()> {
             .try_recv()
             .expect_err("alert received when none expected");
 
-        alerts::check_event(BlockCheckMode::Replay, &alert_tx, &event, &block_info).await?;
+        alerts::check_event(
+            BlockCheckMode::Replay,
+            &alert_tx,
+            &event,
+            &block_info,
+            Some(extrinsic_info),
+        )
+        .await?;
         let alert = alert_rx.try_recv().expect("no event alert received");
 
         if event_transfer_value >= MIN_BALANCE_CHANGE {
@@ -459,7 +522,15 @@ async fn test_important_address_only_alerts() -> anyhow::Result<()> {
         let (extrinsic, extrinsic_info) =
             decode_extrinsic(&block_info, &extrinsics, extrinsic_index).await?;
 
-        alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info).await?;
+        let checked_extrinsic_info =
+            alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info)
+                .await?;
+        assert_eq!(
+            Some(&extrinsic_info),
+            checked_extrinsic_info.as_ref(),
+            "extrinsic info mismatch",
+        );
+
         let alert = alert_rx.try_recv().expect("no extrinsic alert received");
 
         assert_eq!(

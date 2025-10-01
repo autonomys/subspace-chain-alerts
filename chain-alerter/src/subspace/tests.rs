@@ -10,6 +10,7 @@ use crate::subspace::{
 use rand::{Rng, rng};
 use sp_core::crypto::{Ss58AddressFormatRegistry, set_default_ss58_version};
 use std::env;
+use std::sync::Arc;
 use subspace_process::{AsyncJoinOnDrop, init_logger};
 use subxt::utils::H256;
 use tokio::sync::mpsc;
@@ -124,7 +125,7 @@ pub async fn decode_extrinsic(
     block_info: &BlockInfo,
     extrinsics: &RawExtrinsicList,
     extrinsic_index: ExtrinsicIndex,
-) -> anyhow::Result<(RawExtrinsic, ExtrinsicInfo)> {
+) -> anyhow::Result<(RawExtrinsic, Arc<ExtrinsicInfo>)> {
     let extrinsic = extrinsics
         .iter()
         .nth(
@@ -143,6 +144,7 @@ pub async fn decode_extrinsic(
 /// Extract and decode an event from a block.
 pub async fn decode_event(
     block_info: &BlockInfo,
+    extrinsic_info: Option<Arc<ExtrinsicInfo>>,
     events: &RawEventList,
     event_index: EventIndex,
 ) -> anyhow::Result<(RawEvent, EventInfo)> {
@@ -152,7 +154,7 @@ pub async fn decode_event(
         .nth(event_index.try_into().expect("EventIndex fits in usize"))
         .ok_or_else(|| anyhow::anyhow!("event not found"))??;
 
-    let event_info = EventInfo::new(&event, block_info);
+    let event_info = EventInfo::new(&event, block_info, extrinsic_info);
 
     Ok((event, event_info))
 }

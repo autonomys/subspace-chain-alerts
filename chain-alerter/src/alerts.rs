@@ -16,6 +16,7 @@ use crate::subspace::{
 };
 use chrono::Utc;
 use std::fmt::{self, Display};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -228,7 +229,7 @@ pub enum AlertKind {
     /// A `force_*` Balances call has been detected.
     ForceBalanceTransfer {
         /// The Balance call's extrinsic information.
-        extrinsic_info: ExtrinsicInfo,
+        extrinsic_info: Arc<ExtrinsicInfo>,
 
         /// The transfer value.
         transfer_value: Option<Balance>,
@@ -237,7 +238,7 @@ pub enum AlertKind {
     /// A large Balance transfer extrinsic has been detected.
     LargeBalanceTransfer {
         /// The Balance call's extrinsic information.
-        extrinsic_info: ExtrinsicInfo,
+        extrinsic_info: Arc<ExtrinsicInfo>,
 
         /// The transfer value.
         transfer_value: Balance,
@@ -258,7 +259,7 @@ pub enum AlertKind {
         address_kinds: String,
 
         /// The Balance call's extrinsic information.
-        extrinsic_info: ExtrinsicInfo,
+        extrinsic_info: Arc<ExtrinsicInfo>,
 
         /// The transfer value.
         transfer_value: Option<Balance>,
@@ -282,7 +283,7 @@ pub enum AlertKind {
         address_kind: String,
 
         /// The extrinsic information.
-        extrinsic_info: ExtrinsicInfo,
+        extrinsic_info: Arc<ExtrinsicInfo>,
     },
 
     /// An event initiated by an important address has been detected.
@@ -297,7 +298,7 @@ pub enum AlertKind {
     /// A Sudo call has been detected.
     SudoCall {
         /// The sudo call's extrinsic information.
-        extrinsic_info: ExtrinsicInfo,
+        extrinsic_info: Arc<ExtrinsicInfo>,
     },
 
     /// A Sudo call event has been detected.
@@ -592,6 +593,40 @@ impl Display for AlertKind {
 }
 
 impl AlertKind {
+    /// Returns true if this alert is always a duplicate of another alert.
+    pub fn is_duplicate(&self) -> bool {
+        match self {
+            // Always a duplicate of ImportantAddress*, because all extrinsics for important
+            // addresses get an alert.
+            Self::ImportantAddressTransferEvent { .. } | Self::ImportantAddressEvent { .. }
+            // Always a duplicate of Sudo, because all sudo extrinsics get an alert.
+            | Self::SudoEvent { .. }=> true,
+            // Usually a duplicate, but not for transfer_all, because transfer_all doesn't have an
+            // amount.
+            // TODO: get the transfer_all amount from storage during the extrinsic check.
+            Self::LargeBalanceTransferEvent { event_info, .. } => if let Some(extrinsic) = event_info.extrinsic_info.as_ref() {
+                extrinsic.call != "transfer_all"
+            } else {
+                true
+            },
+            Self::Startup
+            | Self::BlockProductionStall { .. }
+            | Self::BlockProductionResumed { .. }
+            | Self::NewSideFork { .. }
+            | Self::SideForkExtended { .. }
+            | Self::Reorg { .. }
+            | Self::ForceBalanceTransfer { .. }
+            | Self::LargeBalanceTransfer { .. }
+            | Self::ImportantAddressTransfer { .. }
+            | Self::ImportantAddressExtrinsic { .. }
+            | Self::SudoCall { .. }
+            | Self::OperatorSlashed { .. }
+            | Self::SlotTime { .. }
+            | Self::FarmersDecreasedSuddenly { .. }
+            | Self::FarmersIncreasedSuddenly { .. } => false,
+        }
+    }
+
     /// Extract the previous block info from the alert, if present.
     /// The Reorg alert doesn't have a previous block info, but it does have a previous block
     /// position.
@@ -656,7 +691,7 @@ impl AlertKind {
 
     /// Extract the extrinsic from the alert, if present.
     #[cfg_attr(not(test), allow(dead_code, reason = "only used in tests"))]
-    pub fn extrinsic_info(&self) -> Option<&ExtrinsicInfo> {
+    pub fn extrinsic_info(&self) -> Option<&Arc<ExtrinsicInfo>> {
         match self {
             Self::ForceBalanceTransfer { extrinsic_info, .. }
             | Self::LargeBalanceTransfer { extrinsic_info, .. }
@@ -871,9 +906,10 @@ pub async fn check_extrinsic(
     alert_tx: &mpsc::Sender<Alert>,
     extrinsic: &RawExtrinsic,
     block_info: &BlockInfo,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<Arc<ExtrinsicInfo>>> {
     let Some(extrinsic_info) = ExtrinsicInfo::new(extrinsic, block_info) else {
-        return Ok(());
+        // Invalid extrinsic, skip it.
+        return Ok(None);
     };
 
     // TODO:
@@ -988,7 +1024,7 @@ pub async fn check_extrinsic(
         );
     }
 
-    Ok(())
+    Ok(Some(extrinsic_info))
 }
 
 /// Check an event for alerts.
@@ -1002,8 +1038,9 @@ pub async fn check_event(
     alert_tx: &mpsc::Sender<Alert>,
     event: &RawEvent,
     block_info: &BlockInfo,
+    extrinsic_info: Option<Arc<ExtrinsicInfo>>,
 ) -> anyhow::Result<()> {
-    let event_info = EventInfo::new(event, block_info);
+    let event_info = EventInfo::new(event, block_info, extrinsic_info);
 
     // TODO:
     // - combine extrinsics and events, but only if they are redundant (for example: sudo/sudid)
