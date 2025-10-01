@@ -5,6 +5,7 @@ pub mod decode;
 pub mod tests;
 
 use crate::alerts::account::Accounts;
+use crate::alerts::subscan::{BlockUrl, EventUrl, ExtrinsicUrl};
 use crate::alerts::transfer::TransferValue;
 use crate::format::{fmt_amount, fmt_fields, fmt_timestamp};
 use anyhow::Result;
@@ -305,6 +306,7 @@ impl BlockLink {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Ord, PartialOrd)]
 pub struct BlockInfo {
     /// The block height, hash, and parent hash.
+    /// TODO: if we add other non-Copy fields, change this to `Arc<BlockLink>`.
     pub link: BlockLink,
 
     /// The time extrinsic in the block, if it exists.
@@ -333,7 +335,7 @@ impl Display for BlockInfo {
 
         writeln!(f, "Block Height: {height}")?;
         // Show full block hash but truncated genesis hash.
-        writeln!(f, "Hash: {hash:?}")?;
+        writeln!(f, "Hash: [{hash}]({})", hash.block_url())?;
         writeln!(
             f,
             "Time: {}",
@@ -491,6 +493,10 @@ pub struct ExtrinsicInfo {
     /// The extrinsic signing address, if it exists.
     pub signing_address: Option<AccountId>,
 
+    /// The block the extrinsic is in.
+    /// TODO: if we add other non-Copy fields to BlockInfo, change this to `Arc<BlockLink>`.
+    pub block: BlockLink,
+
     /// The extrinsic fields, with the extrinsic index as a context.
     pub fields: Composite<ExtrinsicIndex>,
 }
@@ -503,11 +509,14 @@ impl Display for ExtrinsicInfo {
             index,
             hash,
             signing_address,
-            fields,
+            // Already displayed by the block info.
+            block: _,
+            // Too detailed for an alert, can be seen on Subscan.
+            fields: _,
         } = self;
 
         writeln!(f, "Extrinsic {pallet}::{call} (index {index})")?;
-        writeln!(f, "Hash: {hash:?}")?;
+        writeln!(f, "Hash: [{hash}]({})", hash.extrinsic_url())?;
 
         if let Some(signing_address) = signing_address {
             writeln!(f, "Signing Address: {signing_address}")?;
@@ -518,8 +527,6 @@ impl Display for ExtrinsicInfo {
         if let Some(accounts) = self.accounts_str() {
             writeln!(f, "Accounts: {accounts}")?;
         }
-
-        write!(f, "{}", fmt_fields(fields))?;
 
         Ok(())
     }
@@ -575,6 +582,7 @@ impl ExtrinsicInfo {
             index: extrinsic.index(),
             hash: extrinsic.hash(),
             signing_address,
+            block: block_info.link,
             fields,
         }))
     }
@@ -601,6 +609,10 @@ pub struct EventInfo {
     /// The phase the event was emitted in.
     pub phase: Phase,
 
+    /// The block the event is in.
+    /// TODO: if we add other non-Copy fields to BlockInfo, change this to `Arc<BlockLink>`.
+    pub block: BlockLink,
+
     /// The extrinsic that emitted this event, if there was one.
     pub extrinsic_info: Option<Arc<ExtrinsicInfo>>,
 
@@ -615,13 +627,25 @@ impl Display for EventInfo {
             kind,
             index,
             phase,
-            // TODO: link to the extrinsic on Subscan.io
-            extrinsic_info: _,
+            // Already displayed by the block info.
+            block: _,
+            // Available via links to Subscan.
+            extrinsic_info,
             fields,
         } = self;
 
-        writeln!(f, "Event {pallet}::{kind} (index {index})")?;
-        writeln!(f, "Phase: {phase:?}")?;
+        writeln!(
+            f,
+            "Event {pallet}::{kind} ([index {index}]({}))",
+            self.event_url(),
+        )?;
+
+        if let Some(extrinsic_info) = extrinsic_info {
+            // This links `ApplyExtrinsic(N)` to the extrinsic.
+            writeln!(f, "Phase: [{phase:?}]({})", extrinsic_info.extrinsic_url())?;
+        } else {
+            writeln!(f, "Phase: {phase:?}")?;
+        }
 
         if let Some(transfer_value) = self.transfer_value() {
             writeln!(f, "Transfer Value: {}", fmt_amount(transfer_value))?;
@@ -663,6 +687,7 @@ impl EventInfo {
             kind: meta.variant.name.to_string(),
             index: event.index(),
             phase: event.phase(),
+            block: block_info.link,
             extrinsic_info,
             fields,
         }

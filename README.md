@@ -14,7 +14,7 @@ Important event alerts for Subspace blockchains.
 - Keeps runtime metadata up to date via a background updater.
 - Detects block gaps and forks, filling in missing blocks as needed.
 - After filling in gaps and rationalising forks, runs alert detection on the best fork (or all forks).
-- Posts applicable alerts to a Slack channel.
+- Posts applicable alerts to a Slack channel, with links to [subscan.io](https://autonomys.subscan.io)
 
 ### Known issues
 

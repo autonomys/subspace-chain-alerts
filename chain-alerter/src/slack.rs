@@ -8,8 +8,7 @@ use slack_morphism::api::{
     SlackApiConversationsListRequest,
 };
 use slack_morphism::blocks::{
-    SlackBlock, SlackBlockMarkDownText, SlackBlockPlainText, SlackContextBlock, SlackDividerBlock,
-    SlackMarkdownBlock,
+    SlackBlock, SlackBlockMarkDownText, SlackContextBlock, SlackDividerBlock, SlackMarkdownBlock,
 };
 use slack_morphism::prelude::{
     SlackApiRateControlConfig, SlackApiResponseScrollerExt, SlackClientHyperConnector,
@@ -316,12 +315,12 @@ impl SlackClientInfo {
         let mut message_blocks: Vec<SlackBlock> = vec![];
         message_blocks.push(SlackMarkdownBlock::new(format!("{alert}")).into());
         message_blocks.push(SlackDividerBlock::new().into());
-        message_blocks.push(
-            SlackContextBlock::new(vec![
-                SlackBlockPlainText::new(format!("{mode:?}\n{block_info}")).into(),
-            ])
-            .into(),
-        );
+
+        // "verbatim" is documented as "process markdown correctly", but it actually means "don't
+        // process markdown at all" in a context block. So we can't use a context block here.
+        // TODO: make the font smaller and text greyer anyway
+        let block_context = SlackMarkdownBlock::new(format!("{mode:?}\n{block_info}"));
+        message_blocks.push(block_context.into());
 
         // Add the alerter location, RPC instance, and version as context.
         let mut context = if let Some(ip_cc) = self.bot_ip_cc.as_ref() {
