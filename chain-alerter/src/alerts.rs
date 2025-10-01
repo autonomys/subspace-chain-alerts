@@ -130,23 +130,38 @@ impl Alert {
 
         let alert_kind = match event {
             // The new block is always the same as block_info, so we ignore it.
-            ChainForkEvent::NewSideFork { tip: _, fork_depth } => {
+            ChainForkEvent::NewSideFork { tip, fork_depth } => {
+                assert_eq!(
+                    *tip, block_info.link,
+                    "block_info must be the tip of the new side fork",
+                );
                 AlertKind::NewSideFork { fork_depth }
             }
-            ChainForkEvent::SideForkExtended { tip: _, fork_depth } => {
+            ChainForkEvent::SideForkExtended { tip, fork_depth } => {
+                assert_eq!(
+                    *tip, block_info.link,
+                    "block_info must be the tip of the side fork",
+                );
                 AlertKind::SideForkExtended { fork_depth }
             }
             ChainForkEvent::Reorg {
-                new_best_block: _,
+                new_best_block,
                 old_best_block,
                 old_fork_depth,
                 new_fork_depth,
-            } => AlertKind::Reorg {
-                old_best_block: old_best_block.position,
-                old_fork_depth,
-                new_fork_depth,
-                backwards_reorg_depth,
-            },
+            } => {
+                assert_eq!(
+                    *new_best_block, block_info.link,
+                    "block_info must be the new best block",
+                );
+
+                AlertKind::Reorg {
+                    old_best_block: old_best_block.position,
+                    old_fork_depth,
+                    new_fork_depth,
+                    backwards_reorg_depth,
+                }
+            }
         };
 
         Self::new(alert_kind, block_info, mode)

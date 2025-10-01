@@ -435,6 +435,8 @@ impl ChainForkState {
     ) -> Result<Option<ChainForkEvent>, AddBlockError> {
         self.can_add_block(block)?;
 
+        let old_best_block = self.best_tip.clone();
+
         // Add the block link to the chain.
         self.blocks_by_hash.insert(block.hash(), block.clone());
         self.blocks_by_parent
@@ -514,9 +516,9 @@ impl ChainForkState {
         let event = if is_reorg {
             Some(ChainForkEvent::Reorg {
                 new_best_block: block.clone(),
-                old_best_block: self.best_tip.clone(),
-                old_fork_depth: self.fork_depth(&self.best_tip, mode),
+                old_fork_depth: self.fork_depth(&old_best_block, mode),
                 new_fork_depth: self.fork_depth(block, mode),
+                old_best_block,
             })
         } else if is_new_side_fork {
             // TODO: check new and extended side forks above a threshold amount for stealing attacks
