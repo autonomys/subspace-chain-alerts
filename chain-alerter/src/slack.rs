@@ -319,19 +319,19 @@ impl SlackClientInfo {
         // "verbatim" is documented as "process markdown correctly", but it actually means "don't
         // process markdown at all" in a context block. So we can't use a context block here.
         // TODO: make the font smaller and text greyer anyway
-        let block_context = SlackMarkdownBlock::new(format!("{mode:?}\n{block_info}"));
+        let block_context = SlackMarkdownBlock::new(format!("{mode:?} {block_info}"));
         message_blocks.push(block_context.into());
 
         // Add the alerter location, RPC instance, and version as context.
         let mut context = if let Some(ip_cc) = self.bot_ip_cc.as_ref() {
-            format!("🌐 Alerter: {ip_cc}\n")
+            format!("🌐 {ip_cc} ")
         } else {
             String::new()
         };
 
-        context.push_str(&format!("📞 RPC: {}\n", self.node_rpc_url));
+        context.push_str(&format!("📞 {} ", self.node_rpc_url));
         // TODO: add git commit hash here
-        context.push_str(&format!("🔗 Version: {}\n", env!("CARGO_PKG_VERSION")));
+        context.push_str(&format!("🔗 {}", env!("CARGO_PKG_VERSION")));
 
         let mut context_block = SlackBlockMarkDownText::from(context);
         context_block.verbatim = Some(true);

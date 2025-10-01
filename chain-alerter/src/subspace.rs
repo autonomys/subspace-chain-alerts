@@ -330,12 +330,12 @@ impl Display for BlockInfo {
                 },
             time,
             slot,
-            genesis_hash,
+            // Available via links to Subscan.
+            genesis_hash: _,
         } = self;
 
-        writeln!(f, "Block Height: {height}")?;
-        // Show full block hash but truncated genesis hash.
-        writeln!(f, "Hash: [{hash}]({})", hash.block_url())?;
+        // Show truncated block hash, link to Subscan with full hash.
+        writeln!(f, "Block: [{hash}]({}) ({height})", hash.block_url())?;
         writeln!(
             f,
             "Time: {}",
@@ -349,7 +349,6 @@ impl Display for BlockInfo {
             slot.map(|bs| bs.to_string())
                 .unwrap_or_else(|| "unknown".to_string())
         )?;
-        write!(f, "Genesis: {genesis_hash}")?;
 
         Ok(())
     }
@@ -508,19 +507,20 @@ impl Display for ExtrinsicInfo {
             call,
             index,
             hash,
-            signing_address,
+            // Already displayed in the accounts list.
+            signing_address: _,
             // Already displayed by the block info.
             block: _,
             // Too detailed for an alert, can be seen on Subscan.
             fields: _,
         } = self;
 
-        writeln!(f, "Extrinsic {pallet}::{call} (index {index})")?;
-        writeln!(f, "Hash: [{hash}]({})", hash.extrinsic_url())?;
+        writeln!(
+            f,
+            "Extrinsic {pallet}::{call}({index}) [{hash}]({})",
+            hash.extrinsic_url(),
+        )?;
 
-        if let Some(signing_address) = signing_address {
-            writeln!(f, "Signing Address: {signing_address}")?;
-        }
         if let Some(transfer_value) = self.transfer_value() {
             writeln!(f, "Transfer Value: {}", fmt_amount(transfer_value))?;
         }
@@ -634,11 +634,7 @@ impl Display for EventInfo {
             fields,
         } = self;
 
-        writeln!(
-            f,
-            "Event {pallet}::{kind} ([index {index}]({}))",
-            self.event_url(),
-        )?;
+        writeln!(f, "Event {pallet}::{kind}([{index}]({}))", self.event_url(),)?;
 
         if let Some(extrinsic_info) = extrinsic_info {
             // This links `ApplyExtrinsic(N)` to the extrinsic.

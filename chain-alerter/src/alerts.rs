@@ -430,41 +430,39 @@ impl Display for AlertKind {
 
             Self::ForceBalanceTransfer {
                 extrinsic_info,
-                transfer_value,
+                // Already printed in the extrinsic info.
+                transfer_value: _,
             } => {
                 write!(
                     f,
                     "**Force Balances call detected**\n\
-                    Transfer value: {}\n\
                     {extrinsic_info}",
-                    fmt_amount(*transfer_value),
                 )
             }
 
             Self::LargeBalanceTransfer {
                 extrinsic_info,
-                transfer_value,
+                transfer_value: _,
             } => {
                 write!(
                     f,
                     "**Large Balances call detected**\n\
-                    Transfer value: {} (above {})\n\
+                    Transfer above {}\n\
                     {extrinsic_info}",
-                    fmt_amount(*transfer_value),
                     fmt_amount(MIN_BALANCE_CHANGE),
                 )
             }
 
             Self::LargeBalanceTransferEvent {
                 event_info,
-                transfer_value,
+                // Already printed in the event info.
+                transfer_value: _,
             } => {
                 write!(
                     f,
                     "**Large Balances event detected**\n\
-                    Transfer value: {} (above {})\n\
+                    Transfer above {}\n\
                     {event_info}",
-                    fmt_amount(*transfer_value),
                     fmt_amount(MIN_BALANCE_CHANGE),
                 )
             }
@@ -472,30 +470,26 @@ impl Display for AlertKind {
             Self::ImportantAddressTransfer {
                 address_kinds,
                 extrinsic_info,
-                transfer_value,
+                transfer_value: _,
             } => {
                 write!(
                     f,
                     "**Important address transfer detected**\n\
                     Kind(s): {address_kinds}\n\
-                    Transfer value: {}\n\
                     {extrinsic_info}",
-                    fmt_amount(*transfer_value),
                 )
             }
 
             Self::ImportantAddressTransferEvent {
                 address_kinds,
                 event_info,
-                transfer_value,
+                transfer_value: _,
             } => {
                 write!(
                     f,
                     "**Important address transfer detected**\n\
                     Kind(s): {address_kinds}\n\
-                    Transfer value: {}\n\
                     {event_info}",
-                    fmt_amount(*transfer_value),
                 )
             }
 
