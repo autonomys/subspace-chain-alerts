@@ -28,9 +28,9 @@ use crate::slot_time_monitor::{
     DEFAULT_CHECK_INTERVAL, DEFAULT_SLOT_TIME_ALERT_THRESHOLD, SlotTimeMonitorConfig,
 };
 use crate::subspace::{
-    BlockInfo, BlockLink, BlockNumber, LOCAL_SUBSPACE_NODE_URL, MAX_RECONNECTION_ATTEMPTS,
-    MAX_RECONNECTION_DELAY, RawBlock, RawBlockHash, RawEvent, RawExtrinsicList, RawRpcClient,
-    SubspaceClient, create_subspace_client,
+    BlockHash, BlockInfo, BlockLink, BlockNumber, LOCAL_SUBSPACE_NODE_URL,
+    MAX_RECONNECTION_ATTEMPTS, MAX_RECONNECTION_DELAY, RawBlock, RawBlockHash, RawEvent,
+    RawExtrinsicList, RawRpcClient, SubspaceClient, create_subspace_client,
 };
 use clap::{ArgAction, Parser, ValueHint};
 use slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor};
@@ -43,7 +43,6 @@ use subspace_process::{AsyncJoinOnDrop, init_logger, set_exit_on_panic, shutdown
 use subxt::events::Phase;
 use subxt::ext::futures::stream::FuturesUnordered;
 use subxt::ext::futures::{FutureExt, StreamExt};
-use subxt::utils::H256;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
@@ -433,7 +432,7 @@ async fn run_on_best_blocks_subscription(
 }
 
 /// Get the hash of the best block from the node RPCs.
-pub async fn node_best_block_hash(raw_rpc_client: &RawRpcClient) -> anyhow::Result<H256> {
+pub async fn node_best_block_hash(raw_rpc_client: &RawRpcClient) -> anyhow::Result<BlockHash> {
     // Check if this is the best block.
     let best_block_hash = raw_rpc_client
         .request("chain_getBlockHash".to_string(), None)
@@ -449,7 +448,7 @@ pub async fn node_best_block_hash(raw_rpc_client: &RawRpcClient) -> anyhow::Resu
     let best_block_hash: RawBlockHash = hex::decode(best_block_hash)?
         .try_into()
         .map_err(|e| anyhow::anyhow!("failed to parse best block hash: {}", hex::encode(e)))?;
-    let best_block_hash = H256::from(best_block_hash);
+    let best_block_hash = BlockHash::from(best_block_hash);
 
     Ok(best_block_hash)
 }

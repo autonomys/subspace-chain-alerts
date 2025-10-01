@@ -2,7 +2,7 @@
 
 use crate::alerts::{Alert, BlockCheckMode};
 use crate::subspace::{
-    BlockInfo, BlockLink, BlockNumber, BlockPosition, PARENT_OF_GENESIS, RawBlock,
+    BlockHash, BlockInfo, BlockLink, BlockNumber, BlockPosition, PARENT_OF_GENESIS, RawBlock,
     RawExtrinsicList, SubspaceClient,
 };
 use static_assertions::const_assert;
@@ -11,7 +11,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::{self, Display, FormattingOptions};
 use std::mem;
 use std::sync::Arc;
-use subxt::utils::H256;
 use tokio::sync::mpsc;
 use tracing::{debug, info, trace, warn};
 
@@ -214,7 +213,7 @@ impl ChainForkEvent {
 pub struct ChainForkState {
     /// A list of block links by block hash.
     /// This lets us walk the chain backwards using parent hashes.
-    pub blocks_by_hash: HashMap<H256, Arc<BlockLink>>,
+    pub blocks_by_hash: HashMap<BlockHash, Arc<BlockLink>>,
 
     /// A list of block links by parent height and hash.
     /// This lets us walk the chain forwards using block heights/hashes.
@@ -222,12 +221,12 @@ pub struct ChainForkState {
     pub blocks_by_parent: BTreeMap<BlockPosition, BTreeSet<Arc<BlockLink>>>,
 
     /// The tips of each chain fork.
-    pub tips_by_hash: HashMap<H256, Arc<BlockLink>>,
+    pub tips_by_hash: HashMap<BlockHash, Arc<BlockLink>>,
 
     /// The most recent best block, used to detect reorgs.
     /// If there are missed blocks, the first child of the best tip is assumed to be the new best
     /// block.
-    // TODO: this could become a H256 index into tips_by_hash
+    // TODO: this could become a BlockHash index into tips_by_hash
     pub best_tip: Arc<BlockLink>,
 }
 

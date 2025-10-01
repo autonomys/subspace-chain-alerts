@@ -11,12 +11,13 @@ use crate::subspace::tests::{
     alert_channel_only_setup, decode_event, decode_extrinsic, fetch_block_info, node_rpc_url,
     test_setup,
 };
-use crate::subspace::{AI3, Balance, BlockNumber, EventIndex, ExtrinsicIndex, RawBlockHash, Slot};
+use crate::subspace::{
+    AI3, Balance, BlockHash, BlockNumber, EventIndex, ExtrinsicIndex, RawBlockHash, Slot,
+};
 use anyhow::Ok;
 use std::assert_matches::assert_matches;
 use std::time::Duration;
 use subxt::ext::futures::FutureExt;
-use subxt::utils::H256;
 
 /// The extrinsic and event for a recent sudo call.
 /// <https://github.com/autonomys/subspace/releases/tag/runtime-mainnet-2025-jul-31>
@@ -208,7 +209,7 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
 
     let (block_info, extrinsics, events) = fetch_block_info(
         &subspace_client,
-        H256::from(SUDO_EXTRINSIC_BLOCK.1),
+        BlockHash::from(SUDO_EXTRINSIC_BLOCK.1),
         SUDO_EXTRINSIC_BLOCK.0,
     )
     .await?;
@@ -302,7 +303,7 @@ async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
         LARGE_TRANSFER_BLOCKS
     {
         let (block_info, extrinsics, events) =
-            fetch_block_info(&subspace_client, H256::from(block_hash), block_number).await?;
+            fetch_block_info(&subspace_client, BlockHash::from(block_hash), block_number).await?;
 
         let (extrinsic, extrinsic_info) =
             decode_extrinsic(&block_info, &extrinsics, extrinsic_index).await?;
@@ -397,7 +398,7 @@ async fn test_important_address_transfer_alerts() -> anyhow::Result<()> {
     ) in IMPORTANT_ADDRESS_TRANSFER_BLOCKS
     {
         let (block_info, extrinsics, events) =
-            fetch_block_info(&subspace_client, H256::from(block_hash), block_number).await?;
+            fetch_block_info(&subspace_client, BlockHash::from(block_hash), block_number).await?;
 
         let (extrinsic, extrinsic_info) =
             decode_extrinsic(&block_info, &extrinsics, extrinsic_index).await?;
@@ -517,7 +518,7 @@ async fn test_important_address_only_alerts() -> anyhow::Result<()> {
         IMPORTANT_ADDRESS_ONLY_BLOCKS
     {
         let (block_info, extrinsics, _events) =
-            fetch_block_info(&subspace_client, H256::from(block_hash), block_number).await?;
+            fetch_block_info(&subspace_client, BlockHash::from(block_hash), block_number).await?;
 
         let (extrinsic, extrinsic_info) =
             decode_extrinsic(&block_info, &extrinsics, extrinsic_index).await?;

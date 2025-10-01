@@ -21,13 +21,12 @@ use subxt::blocks::{Block, ExtrinsicDetails, Extrinsics};
 use subxt::config::substrate::DigestItem;
 use subxt::events::{EventDetails, Events, Phase};
 use subxt::ext::subxt_rpcs::client::ReconnectingRpcClient;
-use subxt::utils::H256;
 use subxt::{OnlineClient, SubstrateConfig};
 use tracing::{info, trace, warn};
 
 /// The placeholder hash for the parent of the genesis block.
 /// Well-known value.
-pub const PARENT_OF_GENESIS: H256 = H256([0; 32]);
+pub const PARENT_OF_GENESIS: BlockHash = subxt::utils::H256([0; 32]);
 
 /// One Subspace Credit.
 /// Copied from subspace-runtime-primitives.
@@ -66,6 +65,14 @@ pub type AccountId = AccountId32;
 /// The Subspace block height type.
 /// Copied from subspace-core-primitives.
 pub type BlockNumber = u32;
+
+/// The Subspace block hash type.
+/// TODO: turn this into a wrapper type so we don't get it confused with other hashes.
+pub type BlockHash = subxt::utils::H256;
+
+/// The Subspace extrinsic hash type.
+/// TODO: turn this into a wrapper type so we don't get it confused with other hashes.
+pub type ExtrinsicHash = subxt::utils::H256;
 
 /// The Subspace balance amount type.
 /// Copied from subspace-runtime-primitives.
@@ -176,7 +183,7 @@ pub struct BlockPosition {
     pub height: BlockNumber,
 
     /// The block hash.
-    pub hash: H256,
+    pub hash: BlockHash,
 }
 
 impl Display for BlockPosition {
@@ -189,7 +196,7 @@ impl Display for BlockPosition {
 
 impl BlockPosition {
     /// Create a new block position from a block height and hash.
-    pub fn new(height: BlockNumber, hash: H256) -> Self {
+    pub fn new(height: BlockNumber, hash: BlockHash) -> Self {
         BlockPosition { height, hash }
     }
 
@@ -204,7 +211,7 @@ impl BlockPosition {
     /// Create a block position, given its hash.
     #[expect(dead_code, reason = "included for completeness")]
     pub async fn with_block_hash(
-        block_hash: H256,
+        block_hash: BlockHash,
         chain_client: &SubspaceClient,
     ) -> anyhow::Result<Self> {
         let block = chain_client.blocks().at(block_hash).await?;
@@ -217,7 +224,7 @@ impl BlockPosition {
     pub fn min_for_height_range(height: BlockNumber) -> Self {
         BlockPosition {
             height,
-            hash: H256::zero(),
+            hash: BlockHash::zero(),
         }
     }
 
@@ -227,7 +234,7 @@ impl BlockPosition {
     pub fn max_for_height_range(height: BlockNumber) -> Self {
         BlockPosition {
             height,
-            hash: H256::repeat_byte(0xff),
+            hash: BlockHash::repeat_byte(0xff),
         }
     }
 }
@@ -239,7 +246,7 @@ pub struct BlockLink {
     pub position: BlockPosition,
 
     /// The block's parent hash.
-    pub parent_hash: H256,
+    pub parent_hash: BlockHash,
 }
 
 impl Display for BlockLink {
@@ -250,7 +257,7 @@ impl Display for BlockLink {
 
 impl BlockLink {
     /// Create a new block link from a block position and parent hash.
-    pub fn new(position: BlockPosition, parent_hash: H256) -> Self {
+    pub fn new(position: BlockPosition, parent_hash: BlockHash) -> Self {
         Self {
             position,
             parent_hash,
@@ -270,7 +277,7 @@ impl BlockLink {
 
     /// Create a block link, given its hash.
     pub async fn with_block_hash(
-        block_hash: H256,
+        block_hash: BlockHash,
         chain_client: &SubspaceClient,
     ) -> anyhow::Result<Self> {
         let block = chain_client.blocks().at(block_hash).await?;
@@ -279,7 +286,7 @@ impl BlockLink {
     }
 
     /// Returns the block hash.
-    pub fn hash(&self) -> H256 {
+    pub fn hash(&self) -> BlockHash {
         self.position.hash
     }
 
@@ -307,7 +314,7 @@ pub struct BlockInfo {
     pub slot: Option<Slot>,
 
     /// The genesis block hash for this network.
-    pub genesis_hash: H256,
+    pub genesis_hash: BlockHash,
 }
 
 impl Display for BlockInfo {
@@ -348,7 +355,7 @@ impl Display for BlockInfo {
 
 impl BlockInfo {
     /// Create a block info from a block and its extrinsics.
-    pub fn new(block: &RawBlock, extrinsics: &RawExtrinsicList, genesis_hash: &H256) -> Self {
+    pub fn new(block: &RawBlock, extrinsics: &RawExtrinsicList, genesis_hash: &BlockHash) -> Self {
         Self {
             link: BlockLink::from_block(block),
             time: BlockTime::new(extrinsics),
@@ -375,7 +382,7 @@ impl BlockInfo {
 
     /// Create a block info, given its hash.
     pub async fn with_block_hash(
-        block_hash: H256,
+        block_hash: BlockHash,
         chain_client: &SubspaceClient,
     ) -> anyhow::Result<Self> {
         let block = chain_client.blocks().at(block_hash).await?;
@@ -389,7 +396,7 @@ impl BlockInfo {
     }
 
     /// Returns the block hash.
-    pub fn hash(&self) -> H256 {
+    pub fn hash(&self) -> BlockHash {
         self.link.hash()
     }
 
@@ -399,7 +406,7 @@ impl BlockInfo {
     }
 
     /// Returns the parent block hash.
-    pub fn parent_hash(&self) -> H256 {
+    pub fn parent_hash(&self) -> BlockHash {
         self.link.parent_hash
     }
 }
@@ -479,7 +486,7 @@ pub struct ExtrinsicInfo {
     pub index: ExtrinsicIndex,
 
     /// The extrinsic hash.
-    pub hash: H256,
+    pub hash: ExtrinsicHash,
 
     /// The extrinsic signing address, if it exists.
     pub signing_address: Option<AccountId>,

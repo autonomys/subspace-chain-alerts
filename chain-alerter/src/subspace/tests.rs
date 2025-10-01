@@ -3,7 +3,7 @@
 use crate::ALERT_BUFFER_SIZE;
 use crate::alerts::Alert;
 use crate::subspace::{
-    BlockInfo, BlockNumber, EventIndex, EventInfo, ExtrinsicIndex, ExtrinsicInfo,
+    BlockHash, BlockInfo, BlockNumber, EventIndex, EventInfo, ExtrinsicIndex, ExtrinsicInfo,
     FOUNDATION_SUBSPACE_NODE_URL, LABS_SUBSPACE_NODE_URL, RawEvent, RawEventList, RawExtrinsic,
     RawExtrinsicList, RawRpcClient, SubspaceClient, create_subspace_client,
 };
@@ -12,7 +12,6 @@ use sp_core::crypto::{Ss58AddressFormatRegistry, set_default_ss58_version};
 use std::env;
 use std::sync::Arc;
 use subspace_process::{AsyncJoinOnDrop, init_logger};
-use subxt::utils::H256;
 use tokio::sync::mpsc;
 use tracing::info;
 
@@ -99,7 +98,7 @@ pub fn alert_channel_only_setup() -> (mpsc::Sender<Alert>, mpsc::Receiver<Alert>
 /// - add a method that takes a raw RPC client, and uses it to fetch the block info by block height
 pub async fn fetch_block_info(
     subspace_client: &SubspaceClient,
-    block_hash: impl Into<Option<H256>>,
+    block_hash: impl Into<Option<BlockHash>>,
     expected_block_height: impl Into<Option<BlockNumber>>,
 ) -> anyhow::Result<(BlockInfo, RawExtrinsicList, RawEventList)> {
     let block = if let Some(block_hash) = block_hash.into() {
