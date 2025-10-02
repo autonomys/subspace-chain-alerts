@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 
+# Bump the version of the alerter crate.
+
 # http://redsymbol.net/articles/unofficial-bash-strict-mode/
 set -euo pipefail
 
-if [[ "$#" -ne 3 ]] || ([[ "$1" != "client" ]]); then
-  echo "Usage: $0 client <old-version> <new-version>"
+if [[ "$#" -ne 3 ]] || ([[ "$1" != "alerter" ]]); then
+  echo "Usage: $0 alerter <old-version> <new-version>"
   exit 1
 fi
 

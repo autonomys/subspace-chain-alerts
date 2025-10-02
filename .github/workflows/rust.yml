@@ -141,15 +141,7 @@ jobs:
       # checking for the startup alert, but printing all the logs to the console.
       - name: cargo run --locked -- --slack=false --alert-limit=1
         run: |
-          if [[ $(($RANDOM % 2)) == 0 ]]; then
-            echo "Using foundation node"
-            NODE_URL=wss://rpc.mainnet.subspace.foundation/ws
-          else
-            echo "Using labs node"
-            NODE_URL=wss://rpc-0.mainnet.autonomys.xyz/ws
-          fi
-          cargo run --locked -- --slack=false --alert-limit=1 --node-rpc-url="$NODE_URL" \
-            | rg --fixed-strings --passthru "**Launched and connected to the node**"
+          ./scripts/check-startup.sh
 
   # This job checks for incorrectly added dependencies, or dependencies that were made unused by code changes.
   cargo-unused-deps:

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+# Find unused dependencies in the repository.
+
 # http://redsymbol.net/articles/unofficial-bash-strict-mode/
 set -euo pipefail
 
