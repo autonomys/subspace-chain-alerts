@@ -11,12 +11,14 @@ use crate::subspace::tests::{
     alert_channel_only_setup, decode_event, decode_extrinsic, fetch_block_info, node_rpc_url,
     test_setup,
 };
-use crate::subspace::{AI3, Balance, BlockNumber, EventIndex, ExtrinsicIndex, RawBlockHash, Slot};
+use crate::subspace::{
+    AI3, Balance, BlockHash, BlockNumber, EventIndex, ExtrinsicIndex, RawBlockHash, Slot,
+};
 use anyhow::Ok;
 use std::assert_matches::assert_matches;
+use std::sync::Arc;
 use std::time::Duration;
 use subxt::ext::futures::FutureExt;
-use subxt::utils::H256;
 
 /// The extrinsic and event for a recent sudo call.
 /// <https://github.com/autonomys/subspace/releases/tag/runtime-mainnet-2025-jul-31>
@@ -191,11 +193,13 @@ async fn test_startup_alert() -> anyhow::Result<()> {
     // Check block slot parsing works on real blocks.
     assert_matches!(alert.block_info.slot, Some(Slot(_)));
 
-    let result = update_task.now_or_never();
-    assert!(
-        result.is_none(),
-        "metadata update task exited unexpectedly with: {result:?}"
-    );
+    if let Some(update_task) = Arc::into_inner(update_task) {
+        let result = update_task.now_or_never();
+        assert!(
+            result.is_none(),
+            "metadata update task exited unexpectedly with: {result:?}"
+        );
+    }
 
     Ok(())
 }
@@ -208,7 +212,7 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
 
     let (block_info, extrinsics, events) = fetch_block_info(
         &subspace_client,
-        H256::from(SUDO_EXTRINSIC_BLOCK.1),
+        BlockHash::from(SUDO_EXTRINSIC_BLOCK.1),
         SUDO_EXTRINSIC_BLOCK.0,
     )
     .await?;
@@ -216,12 +220,21 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
     let (extrinsic, extrinsic_info) =
         decode_extrinsic(&block_info, &extrinsics, SUDO_EXTRINSIC_BLOCK.2).await?;
 
-    alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info).await?;
+    let checked_extrinsic_info =
+        alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info).await?;
+    assert_eq!(
+        Some(&extrinsic_info),
+        checked_extrinsic_info.as_ref(),
+        "extrinsic info mismatch",
+    );
+
     let alert = alert_rx.try_recv().expect("no alert received");
     assert_eq!(
         alert,
         Alert::new(
-            AlertKind::SudoCall { extrinsic_info },
+            AlertKind::SudoCall {
+                extrinsic_info: extrinsic_info.clone(),
+            },
             block_info,
             BlockCheckMode::Replay,
         )
@@ -234,9 +247,22 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
         Some(("Sudo", "sudo"))
     );
 
-    let (event, event_info) = decode_event(&block_info, &events, SUDO_EXTRINSIC_BLOCK.3).await?;
+    let (event, event_info) = decode_event(
+        &block_info,
+        Some(extrinsic_info.clone()),
+        &events,
+        SUDO_EXTRINSIC_BLOCK.3,
+    )
+    .await?;
 
-    alerts::check_event(BlockCheckMode::Replay, &alert_tx, &event, &block_info).await?;
+    alerts::check_event(
+        BlockCheckMode::Replay,
+        &alert_tx,
+        &event,
+        &block_info,
+        Some(extrinsic_info),
+    )
+    .await?;
     let alert = alert_rx.try_recv().expect("no alert received");
     assert_eq!(
         alert,
@@ -261,11 +287,13 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
     // Check block slot parsing works on a known slot value.
     assert_eq!(alert.block_info.slot, Some(SUDO_EXTRINSIC_BLOCK.4));
 
-    let result = update_task.now_or_never();
-    assert!(
-        result.is_none(),
-        "metadata update task exited unexpectedly with: {result:?}"
-    );
+    if let Some(update_task) = Arc::into_inner(update_task) {
+        let result = update_task.now_or_never();
+        assert!(
+            result.is_none(),
+            "metadata update task exited unexpectedly with: {result:?}"
+        );
+    }
 
     Ok(())
 }
@@ -280,20 +308,33 @@ async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
         LARGE_TRANSFER_BLOCKS
     {
         let (block_info, extrinsics, events) =
-            fetch_block_info(&subspace_client, H256::from(block_hash), block_number).await?;
+            fetch_block_info(&subspace_client, BlockHash::from(block_hash), block_number).await?;
 
         let (extrinsic, extrinsic_info) =
             decode_extrinsic(&block_info, &extrinsics, extrinsic_index).await?;
-        let (event, event_info) = decode_event(&block_info, &events, event_index).await?;
+        let (event, event_info) = decode_event(
+            &block_info,
+            Some(extrinsic_info.clone()),
+            &events,
+            event_index,
+        )
+        .await?;
 
-        alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info).await?;
+        let checked_extrinsic_info =
+            alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info)
+                .await?;
+        assert_eq!(
+            Some(&extrinsic_info),
+            checked_extrinsic_info.as_ref(),
+            "extrinsic info mismatch",
+        );
 
         let alert = alert_rx.try_recv().expect("no extrinsic alert received");
         assert_eq!(
             alert,
             Alert::new(
                 AlertKind::LargeBalanceTransfer {
-                    extrinsic_info,
+                    extrinsic_info: extrinsic_info.clone(),
                     transfer_value,
                 },
                 block_info,
@@ -305,7 +346,14 @@ async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
             .try_recv()
             .expect_err("alert received when none expected");
 
-        alerts::check_event(BlockCheckMode::Replay, &alert_tx, &event, &block_info).await?;
+        alerts::check_event(
+            BlockCheckMode::Replay,
+            &alert_tx,
+            &event,
+            &block_info,
+            Some(extrinsic_info),
+        )
+        .await?;
         let alert = alert_rx.try_recv().expect("no event alert received");
         assert_eq!(
             alert,
@@ -327,11 +375,13 @@ async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
         assert_eq!(alert.block_info.slot, Some(slot));
     }
 
-    let result = update_task.now_or_never();
-    assert!(
-        result.is_none(),
-        "metadata update task exited unexpectedly with: {result:?}"
-    );
+    if let Some(update_task) = Arc::into_inner(update_task) {
+        let result = update_task.now_or_never();
+        assert!(
+            result.is_none(),
+            "metadata update task exited unexpectedly with: {result:?}"
+        );
+    }
 
     Ok(())
 }
@@ -355,13 +405,27 @@ async fn test_important_address_transfer_alerts() -> anyhow::Result<()> {
     ) in IMPORTANT_ADDRESS_TRANSFER_BLOCKS
     {
         let (block_info, extrinsics, events) =
-            fetch_block_info(&subspace_client, H256::from(block_hash), block_number).await?;
+            fetch_block_info(&subspace_client, BlockHash::from(block_hash), block_number).await?;
 
         let (extrinsic, extrinsic_info) =
             decode_extrinsic(&block_info, &extrinsics, extrinsic_index).await?;
-        let (event, event_info) = decode_event(&block_info, &events, event_index).await?;
+        let (event, event_info) = decode_event(
+            &block_info,
+            Some(extrinsic_info.clone()),
+            &events,
+            event_index,
+        )
+        .await?;
 
-        alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info).await?;
+        let checked_extrinsic_info =
+            alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info)
+                .await?;
+        assert_eq!(
+            Some(&extrinsic_info),
+            checked_extrinsic_info.as_ref(),
+            "extrinsic info mismatch",
+        );
+
         let alert = alert_rx.try_recv().expect("no extrinsic alert received");
 
         // There should only be one alert per extrinsic, and one per event, because more important
@@ -384,7 +448,7 @@ async fn test_important_address_transfer_alerts() -> anyhow::Result<()> {
                 Alert::new(
                     AlertKind::ImportantAddressTransfer {
                         address_kinds: extrinsic_address_kinds.to_string(),
-                        extrinsic_info,
+                        extrinsic_info: extrinsic_info.clone(),
                         transfer_value: Some(extrinsic_transfer_value),
                     },
                     block_info,
@@ -397,7 +461,14 @@ async fn test_important_address_transfer_alerts() -> anyhow::Result<()> {
             .try_recv()
             .expect_err("alert received when none expected");
 
-        alerts::check_event(BlockCheckMode::Replay, &alert_tx, &event, &block_info).await?;
+        alerts::check_event(
+            BlockCheckMode::Replay,
+            &alert_tx,
+            &event,
+            &block_info,
+            Some(extrinsic_info),
+        )
+        .await?;
         let alert = alert_rx.try_recv().expect("no event alert received");
 
         if event_transfer_value >= MIN_BALANCE_CHANGE {
@@ -435,11 +506,13 @@ async fn test_important_address_transfer_alerts() -> anyhow::Result<()> {
         assert_eq!(alert.block_info.slot, Some(slot));
     }
 
-    let result = update_task.now_or_never();
-    assert!(
-        result.is_none(),
-        "metadata update task exited unexpectedly with: {result:?}"
-    );
+    if let Some(update_task) = Arc::into_inner(update_task) {
+        let result = update_task.now_or_never();
+        assert!(
+            result.is_none(),
+            "metadata update task exited unexpectedly with: {result:?}"
+        );
+    }
 
     Ok(())
 }
@@ -454,12 +527,20 @@ async fn test_important_address_only_alerts() -> anyhow::Result<()> {
         IMPORTANT_ADDRESS_ONLY_BLOCKS
     {
         let (block_info, extrinsics, _events) =
-            fetch_block_info(&subspace_client, H256::from(block_hash), block_number).await?;
+            fetch_block_info(&subspace_client, BlockHash::from(block_hash), block_number).await?;
 
         let (extrinsic, extrinsic_info) =
             decode_extrinsic(&block_info, &extrinsics, extrinsic_index).await?;
 
-        alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info).await?;
+        let checked_extrinsic_info =
+            alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info)
+                .await?;
+        assert_eq!(
+            Some(&extrinsic_info),
+            checked_extrinsic_info.as_ref(),
+            "extrinsic info mismatch",
+        );
+
         let alert = alert_rx.try_recv().expect("no extrinsic alert received");
 
         assert_eq!(
@@ -482,11 +563,13 @@ async fn test_important_address_only_alerts() -> anyhow::Result<()> {
         assert_eq!(alert.block_info.slot, Some(slot));
     }
 
-    let result = update_task.now_or_never();
-    assert!(
-        result.is_none(),
-        "metadata update task exited unexpectedly with: {result:?}"
-    );
+    if let Some(update_task) = Arc::into_inner(update_task) {
+        let result = update_task.now_or_never();
+        assert!(
+            result.is_none(),
+            "metadata update task exited unexpectedly with: {result:?}"
+        );
+    }
 
     Ok(())
 }

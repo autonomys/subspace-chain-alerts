@@ -3,17 +3,41 @@
 use crate::ALERT_BUFFER_SIZE;
 use crate::alerts::Alert;
 use crate::subspace::{
-    BlockInfo, BlockNumber, EventIndex, EventInfo, ExtrinsicIndex, ExtrinsicInfo,
+    BlockHash, BlockInfo, BlockNumber, EventIndex, EventInfo, ExtrinsicIndex, ExtrinsicInfo,
     FOUNDATION_SUBSPACE_NODE_URL, LABS_SUBSPACE_NODE_URL, RawEvent, RawEventList, RawExtrinsic,
     RawExtrinsicList, RawRpcClient, SubspaceClient, create_subspace_client,
 };
+use async_once::AsyncOnce;
+use lazy_static::lazy_static;
 use rand::{Rng, rng};
 use sp_core::crypto::{Ss58AddressFormatRegistry, set_default_ss58_version};
 use std::env;
+use std::sync::Arc;
 use subspace_process::{AsyncJoinOnDrop, init_logger};
-use subxt::utils::H256;
 use tokio::sync::mpsc;
 use tracing::info;
+
+/// The type of the sharedfoundation and labs subspace clients.
+type SubspaceSetup = (
+    SubspaceClient,
+    RawRpcClient,
+    Arc<AsyncJoinOnDrop<anyhow::Result<()>>>,
+);
+
+lazy_static! {
+    /// Fallback Foundation Subspace Client to avoid test failures from pruned blocks.
+    /// TODO: move the Arc inside AsyncJoinOnDrop and derive Clone for it
+    static ref FOUNDATION_SUBSPACE_CLIENT: AsyncOnce<SubspaceSetup> = AsyncOnce::new(async {
+        create_test_subspace_client(FOUNDATION_SUBSPACE_NODE_URL).await.expect("failed to create foundation subspace client")
+    });
+
+    /// Fallback Labs Subspace Client to avoid test failures from pruned blocks.
+    static ref LABS_SUBSPACE_CLIENT: AsyncOnce<SubspaceSetup> = AsyncOnce::new(async {
+        create_test_subspace_client(LABS_SUBSPACE_NODE_URL)
+            .await
+            .expect("failed to create labs subspace client")
+    });
+}
 
 /// The default RPC URL for a local Subspace node.
 pub fn node_rpc_url() -> String {
@@ -31,6 +55,16 @@ pub fn node_rpc_url() -> String {
     info!("using node RPC URL: {node_url}");
 
     node_url
+}
+
+/// Create a subspace client and wrap the update task in an Arc.
+/// This function is required because some rust-analyzer versions don't support complex syntax in
+/// lazy_static.
+pub async fn create_test_subspace_client(
+    node_rpc_url: impl AsRef<str>,
+) -> anyhow::Result<SubspaceSetup> {
+    let (client, raw_rpc_client, update_task) = create_subspace_client(node_rpc_url).await?;
+    Ok((client, raw_rpc_client, Arc::new(update_task)))
 }
 
 /// Set up a test environment for subspace node connections.
@@ -51,7 +85,7 @@ pub async fn test_setup(
     RawRpcClient,
     mpsc::Sender<Alert>,
     mpsc::Receiver<Alert>,
-    AsyncJoinOnDrop<anyhow::Result<()>>,
+    Arc<AsyncJoinOnDrop<anyhow::Result<()>>>,
 )> {
     init_logger();
 
@@ -67,7 +101,16 @@ pub async fn test_setup(
 
     // Create a client that subscribes to the configured Substrate node.
     let (chain_client, raw_rpc_client, update_task) =
-        create_subspace_client(node_rpc_url.as_ref()).await?;
+        if node_rpc_url.as_ref() == FOUNDATION_SUBSPACE_NODE_URL {
+            let (client, raw_rpc_client, update_task) = FOUNDATION_SUBSPACE_CLIENT.get().await;
+            (client.clone(), raw_rpc_client.clone(), update_task.clone())
+        } else if node_rpc_url.as_ref() == LABS_SUBSPACE_NODE_URL {
+            let (client, raw_rpc_client, update_task) = LABS_SUBSPACE_CLIENT.get().await;
+            (client.clone(), raw_rpc_client.clone(), update_task.clone())
+        } else {
+            // For custom URLs we don't share the instance between tests.
+            create_test_subspace_client(node_rpc_url).await?
+        };
 
     // Create a channel to receive alerts.
     let (alert_tx, alert_rx) = alert_channel_only_setup();
@@ -98,19 +141,32 @@ pub fn alert_channel_only_setup() -> (mpsc::Sender<Alert>, mpsc::Receiver<Alert>
 /// - add a method that takes a raw RPC client, and uses it to fetch the block info by block height
 pub async fn fetch_block_info(
     subspace_client: &SubspaceClient,
-    block_hash: impl Into<Option<H256>>,
+    block_hash: impl Into<Option<BlockHash>>,
     expected_block_height: impl Into<Option<BlockNumber>>,
 ) -> anyhow::Result<(BlockInfo, RawExtrinsicList, RawEventList)> {
-    let block = if let Some(block_hash) = block_hash.into() {
-        subspace_client.blocks().at(block_hash).await?
-    } else {
-        subspace_client.blocks().at_latest().await?
-    };
+    let block_hash = block_hash.into();
 
-    let extrinsics = block.extrinsics().await?;
-    let events = block.events().await?;
-    let genesis_hash = subspace_client.genesis_hash();
-    let block_info = BlockInfo::new(&block, &extrinsics, &genesis_hash);
+    // Local RPC servers are faster, but they might not have all the blocks.
+    let (block_info, extrinsics, events) = if let Ok(block_extras) =
+        get_block(block_hash, subspace_client).await
+    {
+        info!(?block_hash, "got block from original RPC server");
+        block_extras
+    } else if let Ok(block_extras) =
+        get_block(block_hash, &FOUNDATION_SUBSPACE_CLIENT.get().await.0).await
+    {
+        info!(
+            ?block_hash,
+            "getting block from original RPC server failed, got block from fallback foundation server",
+        );
+        block_extras
+    } else {
+        info!(
+            ?block_hash,
+            "getting block from other servers failed, trying fallback labs RPC server",
+        );
+        get_block(block_hash, &LABS_SUBSPACE_CLIENT.get().await.0).await?
+    };
 
     if let Some(expected_block_height) = expected_block_height.into() {
         assert_eq!(block_info.height(), expected_block_height);
@@ -119,12 +175,35 @@ pub async fn fetch_block_info(
     Ok((block_info, extrinsics, events))
 }
 
+/// Get a single block using the supplied client.
+async fn get_block(
+    block_hash: Option<BlockHash>,
+    client: &SubspaceClient,
+) -> Result<(BlockInfo, RawExtrinsicList, RawEventList), subxt::Error> {
+    let genesis_hash = client.genesis_hash();
+
+    let block = if let Some(block_hash) = block_hash {
+        client.blocks().at(block_hash).await?
+    } else {
+        client.blocks().at_latest().await?
+    };
+
+    let extrinsics = block.extrinsics().await?;
+    let events = block.events().await?;
+
+    Ok((
+        BlockInfo::new(&block, &extrinsics, &genesis_hash),
+        extrinsics,
+        events,
+    ))
+}
+
 /// Extract and decode an extrinsic from a block.
 pub async fn decode_extrinsic(
     block_info: &BlockInfo,
     extrinsics: &RawExtrinsicList,
     extrinsic_index: ExtrinsicIndex,
-) -> anyhow::Result<(RawExtrinsic, ExtrinsicInfo)> {
+) -> anyhow::Result<(RawExtrinsic, Arc<ExtrinsicInfo>)> {
     let extrinsic = extrinsics
         .iter()
         .nth(
@@ -143,6 +222,7 @@ pub async fn decode_extrinsic(
 /// Extract and decode an event from a block.
 pub async fn decode_event(
     block_info: &BlockInfo,
+    extrinsic_info: Option<Arc<ExtrinsicInfo>>,
     events: &RawEventList,
     event_index: EventIndex,
 ) -> anyhow::Result<(RawEvent, EventInfo)> {
@@ -152,7 +232,7 @@ pub async fn decode_event(
         .nth(event_index.try_into().expect("EventIndex fits in usize"))
         .ok_or_else(|| anyhow::anyhow!("event not found"))??;
 
-    let event_info = EventInfo::new(&event, block_info);
+    let event_info = EventInfo::new(&event, block_info, extrinsic_info);
 
     Ok((event, event_info))
 }

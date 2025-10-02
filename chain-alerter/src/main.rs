@@ -28,20 +28,21 @@ use crate::slot_time_monitor::{
     DEFAULT_CHECK_INTERVAL, DEFAULT_SLOT_TIME_ALERT_THRESHOLD, SlotTimeMonitorConfig,
 };
 use crate::subspace::{
-    BlockInfo, BlockLink, BlockNumber, LOCAL_SUBSPACE_NODE_URL, MAX_RECONNECTION_ATTEMPTS,
-    MAX_RECONNECTION_DELAY, RawBlock, RawBlockHash, RawEvent, RawExtrinsicList, RawRpcClient,
-    SubspaceClient, create_subspace_client,
+    BlockHash, BlockInfo, BlockLink, BlockNumber, LOCAL_SUBSPACE_NODE_URL,
+    MAX_RECONNECTION_ATTEMPTS, MAX_RECONNECTION_DELAY, RawBlock, RawBlockHash, RawEvent,
+    RawExtrinsicList, RawRpcClient, SubspaceClient, create_subspace_client,
 };
 use clap::{ArgAction, Parser, ValueHint};
 use slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor};
 use sp_core::crypto::{Ss58AddressFormatRegistry, set_default_ss58_version};
+use std::collections::HashMap;
 use std::panic;
 use std::sync::Arc;
 use std::time::Duration;
 use subspace_process::{AsyncJoinOnDrop, init_logger, set_exit_on_panic, shutdown_signal};
+use subxt::events::Phase;
 use subxt::ext::futures::stream::FuturesUnordered;
 use subxt::ext::futures::{FutureExt, StreamExt};
-use subxt::utils::H256;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
@@ -173,7 +174,14 @@ async fn slack_poster(
     let mut alert_count = 0;
 
     while let Some(alert) = alert_rx.recv().await {
+        // Since we use the alert limit for testing, we always want to increment it, even if the
+        // Slack alert would be duplicate or skipped. (We often disable Slack for testing.)
         alert_count += 1;
+
+        if alert.alert.is_duplicate() {
+            info!(%alert_count, ?alert_limit, "skipping posting duplicate alert message:\n{alert}");
+            continue;
+        }
 
         if let Some(slack_client) = slack_client.as_ref() {
             // We have a large number of retries in the Slack poster, so it is unlikely to fail.
@@ -424,7 +432,7 @@ async fn run_on_best_blocks_subscription(
 }
 
 /// Get the hash of the best block from the node RPCs.
-pub async fn node_best_block_hash(raw_rpc_client: &RawRpcClient) -> anyhow::Result<H256> {
+pub async fn node_best_block_hash(raw_rpc_client: &RawRpcClient) -> anyhow::Result<BlockHash> {
     // Check if this is the best block.
     let best_block_hash = raw_rpc_client
         .request("chain_getBlockHash".to_string(), None)
@@ -440,7 +448,7 @@ pub async fn node_best_block_hash(raw_rpc_client: &RawRpcClient) -> anyhow::Resu
     let best_block_hash: RawBlockHash = hex::decode(best_block_hash)?
         .try_into()
         .map_err(|e| anyhow::anyhow!("failed to parse best block hash: {}", hex::encode(e)))?;
-    let best_block_hash = H256::from(best_block_hash);
+    let best_block_hash = BlockHash::from(best_block_hash);
 
     Ok(best_block_hash)
 }
@@ -607,12 +615,23 @@ async fn run_on_best_block(
         .await?;
 
     // Check each extrinsic and event for alerts.
+    let mut extrinsic_infos = HashMap::new();
     for extrinsic in extrinsics.iter() {
-        alerts::check_extrinsic(mode, alert_tx, &extrinsic, block_info).await?;
+        let extrinsic_info =
+            alerts::check_extrinsic(mode, alert_tx, &extrinsic, block_info).await?;
+        if let Some(extrinsic_info) = extrinsic_info {
+            extrinsic_infos.insert(extrinsic.index(), extrinsic_info);
+        }
     }
 
     for event in events.iter() {
-        alerts::check_event(mode, alert_tx, event, block_info).await?;
+        let extrinsic_info = if let Phase::ApplyExtrinsic(extrinsic_index) = event.phase() {
+            extrinsic_infos.get(&extrinsic_index).cloned()
+        } else {
+            None
+        };
+
+        alerts::check_event(mode, alert_tx, event, block_info, extrinsic_info).await?;
     }
 
     Ok(())

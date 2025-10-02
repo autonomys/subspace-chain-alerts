@@ -373,7 +373,7 @@ impl Accounts for EventInfo {
 
         if self.pallet == "Balances" {
             let sender_accounts = list_accounts(&self.fields, &["from"]);
-            let receiver_accounts = list_accounts(&self.fields, &["to"]);
+            let receiver_accounts = list_accounts(&self.fields, &["to", "account"]);
 
             if let Some(who_accounts) = who_accounts {
                 if ["Burned", "Withdraw"].contains(&self.kind.as_str()) {

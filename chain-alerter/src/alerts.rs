@@ -1,6 +1,7 @@
 //! Specific chain alerts.
 
 pub mod account;
+pub mod subscan;
 pub mod transfer;
 
 #[cfg(test)]
@@ -16,6 +17,7 @@ use crate::subspace::{
 };
 use chrono::Utc;
 use std::fmt::{self, Display};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -130,23 +132,38 @@ impl Alert {
 
         let alert_kind = match event {
             // The new block is always the same as block_info, so we ignore it.
-            ChainForkEvent::NewSideFork { tip: _, fork_depth } => {
+            ChainForkEvent::NewSideFork { tip, fork_depth } => {
+                assert_eq!(
+                    *tip, block_info.link,
+                    "block_info must be the tip of the new side fork",
+                );
                 AlertKind::NewSideFork { fork_depth }
             }
-            ChainForkEvent::SideForkExtended { tip: _, fork_depth } => {
+            ChainForkEvent::SideForkExtended { tip, fork_depth } => {
+                assert_eq!(
+                    *tip, block_info.link,
+                    "block_info must be the tip of the side fork",
+                );
                 AlertKind::SideForkExtended { fork_depth }
             }
             ChainForkEvent::Reorg {
-                new_best_block: _,
+                new_best_block,
                 old_best_block,
                 old_fork_depth,
                 new_fork_depth,
-            } => AlertKind::Reorg {
-                old_best_block: old_best_block.position,
-                old_fork_depth,
-                new_fork_depth,
-                backwards_reorg_depth,
-            },
+            } => {
+                assert_eq!(
+                    *new_best_block, block_info.link,
+                    "block_info must be the new best block",
+                );
+
+                AlertKind::Reorg {
+                    old_best_block: old_best_block.position,
+                    old_fork_depth,
+                    new_fork_depth,
+                    backwards_reorg_depth,
+                }
+            }
         };
 
         Self::new(alert_kind, block_info, mode)
@@ -213,7 +230,7 @@ pub enum AlertKind {
     /// A `force_*` Balances call has been detected.
     ForceBalanceTransfer {
         /// The Balance call's extrinsic information.
-        extrinsic_info: ExtrinsicInfo,
+        extrinsic_info: Arc<ExtrinsicInfo>,
 
         /// The transfer value.
         transfer_value: Option<Balance>,
@@ -222,7 +239,7 @@ pub enum AlertKind {
     /// A large Balance transfer extrinsic has been detected.
     LargeBalanceTransfer {
         /// The Balance call's extrinsic information.
-        extrinsic_info: ExtrinsicInfo,
+        extrinsic_info: Arc<ExtrinsicInfo>,
 
         /// The transfer value.
         transfer_value: Balance,
@@ -243,7 +260,7 @@ pub enum AlertKind {
         address_kinds: String,
 
         /// The Balance call's extrinsic information.
-        extrinsic_info: ExtrinsicInfo,
+        extrinsic_info: Arc<ExtrinsicInfo>,
 
         /// The transfer value.
         transfer_value: Option<Balance>,
@@ -267,7 +284,7 @@ pub enum AlertKind {
         address_kind: String,
 
         /// The extrinsic information.
-        extrinsic_info: ExtrinsicInfo,
+        extrinsic_info: Arc<ExtrinsicInfo>,
     },
 
     /// An event initiated by an important address has been detected.
@@ -282,7 +299,7 @@ pub enum AlertKind {
     /// A Sudo call has been detected.
     SudoCall {
         /// The sudo call's extrinsic information.
-        extrinsic_info: ExtrinsicInfo,
+        extrinsic_info: Arc<ExtrinsicInfo>,
     },
 
     /// A Sudo call event has been detected.
@@ -406,46 +423,46 @@ impl Display for AlertKind {
                     write!(f, "\nBackwards reorg depth: {backwards_reorg_depth}")?;
                 }
 
+                write!(f, "\n\n_Check Subscan 'finalized' blocks for changes_\n")?;
+
                 Ok(())
             }
 
             Self::ForceBalanceTransfer {
                 extrinsic_info,
-                transfer_value,
+                // Already printed in the extrinsic info.
+                transfer_value: _,
             } => {
                 write!(
                     f,
                     "**Force Balances call detected**\n\
-                    Transfer value: {}\n\
                     {extrinsic_info}",
-                    fmt_amount(*transfer_value),
                 )
             }
 
             Self::LargeBalanceTransfer {
                 extrinsic_info,
-                transfer_value,
+                transfer_value: _,
             } => {
                 write!(
                     f,
                     "**Large Balances call detected**\n\
-                    Transfer value: {} (above {})\n\
+                    Transfer above {}\n\
                     {extrinsic_info}",
-                    fmt_amount(*transfer_value),
                     fmt_amount(MIN_BALANCE_CHANGE),
                 )
             }
 
             Self::LargeBalanceTransferEvent {
                 event_info,
-                transfer_value,
+                // Already printed in the event info.
+                transfer_value: _,
             } => {
                 write!(
                     f,
                     "**Large Balances event detected**\n\
-                    Transfer value: {} (above {})\n\
+                    Transfer above {}\n\
                     {event_info}",
-                    fmt_amount(*transfer_value),
                     fmt_amount(MIN_BALANCE_CHANGE),
                 )
             }
@@ -453,30 +470,26 @@ impl Display for AlertKind {
             Self::ImportantAddressTransfer {
                 address_kinds,
                 extrinsic_info,
-                transfer_value,
+                transfer_value: _,
             } => {
                 write!(
                     f,
                     "**Important address transfer detected**\n\
                     Kind(s): {address_kinds}\n\
-                    Transfer value: {}\n\
                     {extrinsic_info}",
-                    fmt_amount(*transfer_value),
                 )
             }
 
             Self::ImportantAddressTransferEvent {
                 address_kinds,
                 event_info,
-                transfer_value,
+                transfer_value: _,
             } => {
                 write!(
                     f,
                     "**Important address transfer detected**\n\
                     Kind(s): {address_kinds}\n\
-                    Transfer value: {}\n\
                     {event_info}",
-                    fmt_amount(*transfer_value),
                 )
             }
 
@@ -575,6 +588,40 @@ impl Display for AlertKind {
 }
 
 impl AlertKind {
+    /// Returns true if this alert is always a duplicate of another alert.
+    pub fn is_duplicate(&self) -> bool {
+        match self {
+            // Always a duplicate of ImportantAddress*, because all extrinsics for important
+            // addresses get an alert.
+            Self::ImportantAddressTransferEvent { .. } | Self::ImportantAddressEvent { .. }
+            // Always a duplicate of Sudo, because all sudo extrinsics get an alert.
+            | Self::SudoEvent { .. }=> true,
+            // Usually a duplicate, but not for transfer_all, because transfer_all doesn't have an
+            // amount.
+            // TODO: get the transfer_all amount from storage during the extrinsic check.
+            Self::LargeBalanceTransferEvent { event_info, .. } => if let Some(extrinsic) = event_info.extrinsic_info.as_ref() {
+                extrinsic.call != "transfer_all"
+            } else {
+                true
+            },
+            Self::Startup
+            | Self::BlockProductionStall { .. }
+            | Self::BlockProductionResumed { .. }
+            | Self::NewSideFork { .. }
+            | Self::SideForkExtended { .. }
+            | Self::Reorg { .. }
+            | Self::ForceBalanceTransfer { .. }
+            | Self::LargeBalanceTransfer { .. }
+            | Self::ImportantAddressTransfer { .. }
+            | Self::ImportantAddressExtrinsic { .. }
+            | Self::SudoCall { .. }
+            | Self::OperatorSlashed { .. }
+            | Self::SlotTime { .. }
+            | Self::FarmersDecreasedSuddenly { .. }
+            | Self::FarmersIncreasedSuddenly { .. } => false,
+        }
+    }
+
     /// Extract the previous block info from the alert, if present.
     /// The Reorg alert doesn't have a previous block info, but it does have a previous block
     /// position.
@@ -639,7 +686,7 @@ impl AlertKind {
 
     /// Extract the extrinsic from the alert, if present.
     #[cfg_attr(not(test), allow(dead_code, reason = "only used in tests"))]
-    pub fn extrinsic_info(&self) -> Option<&ExtrinsicInfo> {
+    pub fn extrinsic_info(&self) -> Option<&Arc<ExtrinsicInfo>> {
         match self {
             Self::ForceBalanceTransfer { extrinsic_info, .. }
             | Self::LargeBalanceTransfer { extrinsic_info, .. }
@@ -854,9 +901,10 @@ pub async fn check_extrinsic(
     alert_tx: &mpsc::Sender<Alert>,
     extrinsic: &RawExtrinsic,
     block_info: &BlockInfo,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<Arc<ExtrinsicInfo>>> {
     let Some(extrinsic_info) = ExtrinsicInfo::new(extrinsic, block_info) else {
-        return Ok(());
+        // Invalid extrinsic, skip it.
+        return Ok(None);
     };
 
     // TODO:
@@ -971,7 +1019,7 @@ pub async fn check_extrinsic(
         );
     }
 
-    Ok(())
+    Ok(Some(extrinsic_info))
 }
 
 /// Check an event for alerts.
@@ -985,8 +1033,9 @@ pub async fn check_event(
     alert_tx: &mpsc::Sender<Alert>,
     event: &RawEvent,
     block_info: &BlockInfo,
+    extrinsic_info: Option<Arc<ExtrinsicInfo>>,
 ) -> anyhow::Result<()> {
-    let event_info = EventInfo::new(event, block_info);
+    let event_info = EventInfo::new(event, block_info, extrinsic_info);
 
     // TODO:
     // - combine extrinsics and events, but only if they are redundant (for example: sudo/sudid)

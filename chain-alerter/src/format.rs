@@ -29,9 +29,10 @@ pub fn truncate(s: &mut String, max_chars: usize) {
 /// Format an amount in AI3, accepting `Balance` or `Option<Balance>`.
 ///
 /// Returns a placeholder value if the input is missing.
+#[expect(clippy::cast_precision_loss, reason = "loss is acceptable for display")]
 pub fn fmt_amount(val: impl Into<Option<Balance>>) -> String {
     if let Some(val) = val.into() {
-        format!("{} AI3", val / AI3)
+        format!("{} AI3", (val as f64) / (AI3 as f64))
     } else {
         "unknown".to_string()
     }

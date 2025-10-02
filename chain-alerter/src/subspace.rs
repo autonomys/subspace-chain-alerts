@@ -5,6 +5,7 @@ pub mod decode;
 pub mod tests;
 
 use crate::alerts::account::Accounts;
+use crate::alerts::subscan::{BlockUrl, EventUrl, ExtrinsicUrl};
 use crate::alerts::transfer::TransferValue;
 use crate::format::{fmt_amount, fmt_fields, fmt_timestamp};
 use anyhow::Result;
@@ -13,6 +14,7 @@ use scale_value::Composite;
 use sp_core::crypto::AccountId32;
 use std::fmt::{self, Display};
 use std::ops::Sub;
+use std::sync::Arc;
 use std::time::Duration;
 use subspace_process::AsyncJoinOnDrop;
 use subxt::backend::rpc::reconnecting_rpc_client::ExponentialBackoff;
@@ -20,13 +22,12 @@ use subxt::blocks::{Block, ExtrinsicDetails, Extrinsics};
 use subxt::config::substrate::DigestItem;
 use subxt::events::{EventDetails, Events, Phase};
 use subxt::ext::subxt_rpcs::client::ReconnectingRpcClient;
-use subxt::utils::H256;
 use subxt::{OnlineClient, SubstrateConfig};
-use tracing::{debug, info, trace, warn};
+use tracing::{info, trace, warn};
 
 /// The placeholder hash for the parent of the genesis block.
 /// Well-known value.
-pub const PARENT_OF_GENESIS: H256 = H256([0; 32]);
+pub const PARENT_OF_GENESIS: BlockHash = subxt::utils::H256([0; 32]);
 
 /// One Subspace Credit.
 /// Copied from subspace-runtime-primitives.
@@ -65,6 +66,14 @@ pub type AccountId = AccountId32;
 /// The Subspace block height type.
 /// Copied from subspace-core-primitives.
 pub type BlockNumber = u32;
+
+/// The Subspace block hash type.
+/// TODO: turn this into a wrapper type so we don't get it confused with other hashes.
+pub type BlockHash = subxt::utils::H256;
+
+/// The Subspace extrinsic hash type.
+/// TODO: turn this into a wrapper type so we don't get it confused with other hashes.
+pub type ExtrinsicHash = subxt::utils::H256;
 
 /// The Subspace balance amount type.
 /// Copied from subspace-runtime-primitives.
@@ -175,7 +184,7 @@ pub struct BlockPosition {
     pub height: BlockNumber,
 
     /// The block hash.
-    pub hash: H256,
+    pub hash: BlockHash,
 }
 
 impl Display for BlockPosition {
@@ -188,7 +197,7 @@ impl Display for BlockPosition {
 
 impl BlockPosition {
     /// Create a new block position from a block height and hash.
-    pub fn new(height: BlockNumber, hash: H256) -> Self {
+    pub fn new(height: BlockNumber, hash: BlockHash) -> Self {
         BlockPosition { height, hash }
     }
 
@@ -203,7 +212,7 @@ impl BlockPosition {
     /// Create a block position, given its hash.
     #[expect(dead_code, reason = "included for completeness")]
     pub async fn with_block_hash(
-        block_hash: H256,
+        block_hash: BlockHash,
         chain_client: &SubspaceClient,
     ) -> anyhow::Result<Self> {
         let block = chain_client.blocks().at(block_hash).await?;
@@ -216,7 +225,7 @@ impl BlockPosition {
     pub fn min_for_height_range(height: BlockNumber) -> Self {
         BlockPosition {
             height,
-            hash: H256::zero(),
+            hash: BlockHash::zero(),
         }
     }
 
@@ -226,7 +235,7 @@ impl BlockPosition {
     pub fn max_for_height_range(height: BlockNumber) -> Self {
         BlockPosition {
             height,
-            hash: H256::repeat_byte(0xff),
+            hash: BlockHash::repeat_byte(0xff),
         }
     }
 }
@@ -238,7 +247,7 @@ pub struct BlockLink {
     pub position: BlockPosition,
 
     /// The block's parent hash.
-    pub parent_hash: H256,
+    pub parent_hash: BlockHash,
 }
 
 impl Display for BlockLink {
@@ -249,7 +258,7 @@ impl Display for BlockLink {
 
 impl BlockLink {
     /// Create a new block link from a block position and parent hash.
-    pub fn new(position: BlockPosition, parent_hash: H256) -> Self {
+    pub fn new(position: BlockPosition, parent_hash: BlockHash) -> Self {
         Self {
             position,
             parent_hash,
@@ -269,7 +278,7 @@ impl BlockLink {
 
     /// Create a block link, given its hash.
     pub async fn with_block_hash(
-        block_hash: H256,
+        block_hash: BlockHash,
         chain_client: &SubspaceClient,
     ) -> anyhow::Result<Self> {
         let block = chain_client.blocks().at(block_hash).await?;
@@ -278,7 +287,7 @@ impl BlockLink {
     }
 
     /// Returns the block hash.
-    pub fn hash(&self) -> H256 {
+    pub fn hash(&self) -> BlockHash {
         self.position.hash
     }
 
@@ -297,6 +306,7 @@ impl BlockLink {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Ord, PartialOrd)]
 pub struct BlockInfo {
     /// The block height, hash, and parent hash.
+    /// TODO: if we add other non-Copy fields, change this to `Arc<BlockLink>`.
     pub link: BlockLink,
 
     /// The time extrinsic in the block, if it exists.
@@ -306,7 +316,7 @@ pub struct BlockInfo {
     pub slot: Option<Slot>,
 
     /// The genesis block hash for this network.
-    pub genesis_hash: H256,
+    pub genesis_hash: BlockHash,
 }
 
 impl Display for BlockInfo {
@@ -320,12 +330,12 @@ impl Display for BlockInfo {
                 },
             time,
             slot,
-            genesis_hash,
+            // Available via links to Subscan.
+            genesis_hash: _,
         } = self;
 
-        writeln!(f, "Block Height: {height}")?;
-        // Show full block hash but truncated genesis hash.
-        writeln!(f, "Hash: {hash:?}")?;
+        // Show truncated block hash, link to Subscan with full hash.
+        writeln!(f, "Block: [{hash}]({}) ({height})", hash.block_url())?;
         writeln!(
             f,
             "Time: {}",
@@ -339,7 +349,6 @@ impl Display for BlockInfo {
             slot.map(|bs| bs.to_string())
                 .unwrap_or_else(|| "unknown".to_string())
         )?;
-        write!(f, "Genesis: {genesis_hash}")?;
 
         Ok(())
     }
@@ -347,7 +356,7 @@ impl Display for BlockInfo {
 
 impl BlockInfo {
     /// Create a block info from a block and its extrinsics.
-    pub fn new(block: &RawBlock, extrinsics: &RawExtrinsicList, genesis_hash: &H256) -> Self {
+    pub fn new(block: &RawBlock, extrinsics: &RawExtrinsicList, genesis_hash: &BlockHash) -> Self {
         Self {
             link: BlockLink::from_block(block),
             time: BlockTime::new(extrinsics),
@@ -374,7 +383,7 @@ impl BlockInfo {
 
     /// Create a block info, given its hash.
     pub async fn with_block_hash(
-        block_hash: H256,
+        block_hash: BlockHash,
         chain_client: &SubspaceClient,
     ) -> anyhow::Result<Self> {
         let block = chain_client.blocks().at(block_hash).await?;
@@ -388,7 +397,7 @@ impl BlockInfo {
     }
 
     /// Returns the block hash.
-    pub fn hash(&self) -> H256 {
+    pub fn hash(&self) -> BlockHash {
         self.link.hash()
     }
 
@@ -398,7 +407,7 @@ impl BlockInfo {
     }
 
     /// Returns the parent block hash.
-    pub fn parent_hash(&self) -> H256 {
+    pub fn parent_hash(&self) -> BlockHash {
         self.link.parent_hash
     }
 }
@@ -478,10 +487,14 @@ pub struct ExtrinsicInfo {
     pub index: ExtrinsicIndex,
 
     /// The extrinsic hash.
-    pub hash: H256,
+    pub hash: ExtrinsicHash,
 
     /// The extrinsic signing address, if it exists.
     pub signing_address: Option<AccountId>,
+
+    /// The block the extrinsic is in.
+    /// TODO: if we add other non-Copy fields to BlockInfo, change this to `Arc<BlockLink>`.
+    pub block: BlockLink,
 
     /// The extrinsic fields, with the extrinsic index as a context.
     pub fields: Composite<ExtrinsicIndex>,
@@ -494,16 +507,20 @@ impl Display for ExtrinsicInfo {
             call,
             index,
             hash,
-            signing_address,
-            fields,
+            // Already displayed in the accounts list.
+            signing_address: _,
+            // Already displayed by the block info.
+            block: _,
+            // Too detailed for an alert, can be seen on Subscan.
+            fields: _,
         } = self;
 
-        writeln!(f, "Extrinsic {pallet}::{call} (index {index})")?;
-        writeln!(f, "Hash: {hash:?}")?;
+        writeln!(
+            f,
+            "Extrinsic {pallet}::{call}({index}) [{hash}]({})",
+            hash.extrinsic_url(),
+        )?;
 
-        if let Some(signing_address) = signing_address {
-            writeln!(f, "Signing Address: {signing_address}")?;
-        }
         if let Some(transfer_value) = self.transfer_value() {
             writeln!(f, "Transfer Value: {}", fmt_amount(transfer_value))?;
         }
@@ -511,15 +528,13 @@ impl Display for ExtrinsicInfo {
             writeln!(f, "Accounts: {accounts}")?;
         }
 
-        write!(f, "{}", fmt_fields(fields))?;
-
         Ok(())
     }
 }
 
 impl ExtrinsicInfo {
     /// Check and collect an extrinsic's info.
-    pub fn new(extrinsic: &RawExtrinsic, block_info: &BlockInfo) -> Option<ExtrinsicInfo> {
+    pub fn new(extrinsic: &RawExtrinsic, block_info: &BlockInfo) -> Option<Arc<ExtrinsicInfo>> {
         let Ok(meta) = extrinsic.extrinsic_metadata() else {
             // If we can't get the extrinsic pallet and call name, there's nothing we can do.
             // Just log it and move on.
@@ -561,14 +576,15 @@ impl ExtrinsicInfo {
             .and_then(|addr| addr.split_at_checked(1)?.1.try_into().ok())
             .map(<[u8; 32]>::into);
 
-        Some(ExtrinsicInfo {
+        Some(Arc::new(ExtrinsicInfo {
             pallet: meta.pallet.name().to_string(),
             call: meta.variant.name.to_string(),
             index: extrinsic.index(),
             hash: extrinsic.hash(),
             signing_address,
+            block: block_info.link,
             fields,
-        })
+        }))
     }
 
     /// Format the extrinsic's fields as a string, truncating it if it is too long.
@@ -593,6 +609,13 @@ pub struct EventInfo {
     /// The phase the event was emitted in.
     pub phase: Phase,
 
+    /// The block the event is in.
+    /// TODO: if we add other non-Copy fields to BlockInfo, change this to `Arc<BlockLink>`.
+    pub block: BlockLink,
+
+    /// The extrinsic that emitted this event, if there was one.
+    pub extrinsic_info: Option<Arc<ExtrinsicInfo>>,
+
     /// The event fields, with the event index as a context.
     pub fields: Composite<EventIndex>,
 }
@@ -604,11 +627,21 @@ impl Display for EventInfo {
             kind,
             index,
             phase,
+            // Already displayed by the block info.
+            block: _,
+            // Available via links to Subscan.
+            extrinsic_info,
             fields,
         } = self;
 
-        writeln!(f, "Event {pallet}::{kind} (index {index})")?;
-        writeln!(f, "Phase: {phase:?}")?;
+        writeln!(f, "Event {pallet}::{kind}([{index}]({}))", self.event_url(),)?;
+
+        if let Some(extrinsic_info) = extrinsic_info {
+            // This links `ApplyExtrinsic(N)` to the extrinsic.
+            writeln!(f, "Phase: [{phase:?}]({})", extrinsic_info.extrinsic_url())?;
+        } else {
+            writeln!(f, "Phase: {phase:?}")?;
+        }
 
         if let Some(transfer_value) = self.transfer_value() {
             writeln!(f, "Transfer Value: {}", fmt_amount(transfer_value))?;
@@ -625,7 +658,11 @@ impl Display for EventInfo {
 
 impl EventInfo {
     /// Check and collect an event's info.
-    pub fn new(event: &RawEvent, block_info: &BlockInfo) -> EventInfo {
+    pub fn new(
+        event: &RawEvent,
+        block_info: &BlockInfo,
+        extrinsic_info: Option<Arc<ExtrinsicInfo>>,
+    ) -> EventInfo {
         let meta = event.event_metadata();
 
         // We can usually get the event fields, but we don't need the fields for some
@@ -644,8 +681,10 @@ impl EventInfo {
         EventInfo {
             pallet: meta.pallet.name().to_string(),
             kind: meta.variant.name.to_string(),
-            phase: event.phase(),
             index: event.index(),
+            phase: event.phase(),
+            block: block_info.link,
+            extrinsic_info,
             fields,
         }
     }
@@ -766,9 +805,9 @@ impl Slot {
             })
             .ok()?;
 
-        debug!(
+        trace!(
             "Found pre runtime digest with slot number {:?}",
-            hex::encode(slot_bytes)
+            hex::encode(slot_bytes),
         );
         Some(Slot(u64::from_le_bytes(slot_bytes)))
     }

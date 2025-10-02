@@ -6,7 +6,6 @@ use crate::subspace::decode::decode_h256_from_composite;
 use crate::subspace::{BlockInfo, BlockNumber, RawEvent};
 use scale_value::Composite;
 use std::collections::{HashMap, VecDeque};
-use subxt::utils::H256;
 use tokio::sync::mpsc;
 use tracing::{debug, trace, warn};
 
@@ -33,6 +32,10 @@ pub const FARMER_VOTE_EVENT_PALLET_NAME: &str = "Subspace";
 pub const FARMER_VOTE_EVENT_VARIANT_NAME: &str = "FarmerVote";
 /// The farmer vote event public key field name.
 pub const FARMER_VOTE_EVENT_PUBLIC_KEY_FIELD_NAME: &str = "public_key";
+
+/// The farmer vote event public key field type.
+/// TODO: turn this into a wrapper type so we don't get it confused with other hashes.
+type FarmerPublicKey = subxt::utils::H256;
 
 /// Interface for farming monitors that consume blocks and perform checks.
 pub trait FarmingMonitor {
@@ -84,9 +87,9 @@ pub enum FarmingMonitorStatus {
 #[derive(Debug, Clone)]
 pub struct FarmingMonitorState {
     /// The last block voted by a farmer, by farmer public key hash.
-    /// TODO: change this to `HashMap<H256, BTreeSet<BlockNumber>>`, and delete the last few
-    /// entries in the `BTreeSet` (or the whole `HashMap` entry) when a reorg happens.
-    last_block_voted_by_farmer: HashMap<H256, BlockNumber>,
+    /// TODO: change this to `HashMap<FarmerPublicKey, BTreeSet<BlockNumber>>`, and delete the last
+    /// few entries in the `BTreeSet` (or the whole `HashMap` entry) when a reorg happens.
+    last_block_voted_by_farmer: HashMap<FarmerPublicKey, BlockNumber>,
     /// The number of farmers that have votes in the last `max_block_interval` blocks.
     /// TODO: delete the last few entries when a reorg happens.
     active_farmers_in_last_blocks: VecDeque<usize>,
@@ -174,9 +177,9 @@ impl MemoryFarmingMonitor {
 
             if let Some(public_key_hash) = public_key_hash {
                 let public_key_hash_str = hex::encode(public_key_hash.as_bytes());
-                debug!(
+                trace!(
                     "Inserting farmer 0x{} into last voted by farmer",
-                    public_key_hash_str
+                    public_key_hash_str,
                 );
                 self.state
                     .last_block_voted_by_farmer
@@ -317,22 +320,21 @@ impl MemoryFarmingMonitor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::subspace::{BlockLink, BlockPosition};
-    use subxt::utils::H256;
+    use crate::subspace::{BlockHash, BlockLink, BlockPosition};
     use tokio::sync::mpsc;
 
-    fn farmers() -> [H256; 3] {
+    fn farmers() -> [FarmerPublicKey; 3] {
         [
-            H256::from_low_u64_be(1),
-            H256::from_low_u64_be(2),
-            H256::from_low_u64_be(3),
+            FarmerPublicKey::from_low_u64_be(1),
+            FarmerPublicKey::from_low_u64_be(2),
+            FarmerPublicKey::from_low_u64_be(3),
         ]
     }
 
     async fn simulate_block_votes(
         farming_monitor: &mut MemoryFarmingMonitor,
         block_height: BlockNumber,
-        farmers: &[H256],
+        farmers: &[FarmerPublicKey],
     ) -> anyhow::Result<()> {
         // Add farmers to the farming monitor.
         for farmer in farmers {
@@ -354,12 +356,12 @@ mod tests {
                 .check_farmer_count(
                     &BlockInfo {
                         link: BlockLink::new(
-                            BlockPosition::new(block_height, H256::zero()),
-                            H256::zero(),
+                            BlockPosition::new(block_height, BlockHash::zero()),
+                            BlockHash::zero(),
                         ),
                         time: None,
                         slot: None,
-                        genesis_hash: H256::zero(),
+                        genesis_hash: BlockHash::zero(),
                     },
                     BlockCheckMode::Current,
                 )
@@ -446,14 +448,14 @@ mod tests {
             farming_monitor
                 .state
                 .last_block_voted_by_farmer
-                .insert(H256::from_low_u64_be(u64::from(i)), 1);
+                .insert(FarmerPublicKey::from_low_u64_be(u64::from(i)), 1);
         }
 
         let block_info = BlockInfo {
-            link: BlockLink::new(BlockPosition::new(1, H256::zero()), H256::zero()),
+            link: BlockLink::new(BlockPosition::new(1, BlockHash::zero()), BlockHash::zero()),
             time: None,
             slot: None,
-            genesis_hash: H256::zero(),
+            genesis_hash: BlockHash::zero(),
         };
         farming_monitor.update_number_of_farmers_with_votes();
         farming_monitor
@@ -514,14 +516,14 @@ mod tests {
             farming_monitor
                 .state
                 .last_block_voted_by_farmer
-                .insert(H256::from_low_u64_be(u64::from(i)), 1);
+                .insert(FarmerPublicKey::from_low_u64_be(u64::from(i)), 1);
         }
 
         let mock_block_info = BlockInfo {
-            link: BlockLink::new(BlockPosition::new(1, H256::zero()), H256::zero()),
+            link: BlockLink::new(BlockPosition::new(1, BlockHash::zero()), BlockHash::zero()),
             time: None,
             slot: None,
-            genesis_hash: H256::zero(),
+            genesis_hash: BlockHash::zero(),
         };
 
         farming_monitor.update_number_of_farmers_with_votes();
@@ -584,17 +586,20 @@ mod tests {
             farming_monitor
                 .state
                 .last_block_voted_by_farmer
-                .insert(H256::from_low_u64_be(u64::from(i)), 1);
+                .insert(FarmerPublicKey::from_low_u64_be(u64::from(i)), 1);
         }
 
         farming_monitor.update_number_of_farmers_with_votes();
         farming_monitor
             .check_farmer_count(
                 &BlockInfo {
-                    link: BlockLink::new(BlockPosition::new(1, H256::zero()), H256::zero()),
+                    link: BlockLink::new(
+                        BlockPosition::new(1, BlockHash::zero()),
+                        BlockHash::zero(),
+                    ),
                     time: None,
                     slot: None,
-                    genesis_hash: H256::zero(),
+                    genesis_hash: BlockHash::zero(),
                 },
                 BlockCheckMode::Current,
             )
