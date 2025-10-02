@@ -13,7 +13,7 @@ if [[ "$#" -gt 1 ]] || [[ "${1:-}" == "-h" ]] || [[ "${1:-}" == "--help" ]]; the
   exit 1
 fi
 
-if [[ "$#" -eq 2 ]]; then
+if [[ "$#" -ge 1 ]]; then
     echo "Using node from command line"
     NODE_URL="$1"
 elif [[ -n "${NODE_URL:-}" ]]; then
