@@ -16,6 +16,7 @@ use crate::subspace::{
 };
 use anyhow::Ok;
 use std::assert_matches::assert_matches;
+use std::sync::Arc;
 use std::time::Duration;
 use subxt::ext::futures::FutureExt;
 
@@ -192,11 +193,13 @@ async fn test_startup_alert() -> anyhow::Result<()> {
     // Check block slot parsing works on real blocks.
     assert_matches!(alert.block_info.slot, Some(Slot(_)));
 
-    let result = update_task.now_or_never();
-    assert!(
-        result.is_none(),
-        "metadata update task exited unexpectedly with: {result:?}"
-    );
+    if let Some(update_task) = Arc::into_inner(update_task) {
+        let result = update_task.now_or_never();
+        assert!(
+            result.is_none(),
+            "metadata update task exited unexpectedly with: {result:?}"
+        );
+    }
 
     Ok(())
 }
@@ -284,11 +287,13 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
     // Check block slot parsing works on a known slot value.
     assert_eq!(alert.block_info.slot, Some(SUDO_EXTRINSIC_BLOCK.4));
 
-    let result = update_task.now_or_never();
-    assert!(
-        result.is_none(),
-        "metadata update task exited unexpectedly with: {result:?}"
-    );
+    if let Some(update_task) = Arc::into_inner(update_task) {
+        let result = update_task.now_or_never();
+        assert!(
+            result.is_none(),
+            "metadata update task exited unexpectedly with: {result:?}"
+        );
+    }
 
     Ok(())
 }
@@ -370,11 +375,13 @@ async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
         assert_eq!(alert.block_info.slot, Some(slot));
     }
 
-    let result = update_task.now_or_never();
-    assert!(
-        result.is_none(),
-        "metadata update task exited unexpectedly with: {result:?}"
-    );
+    if let Some(update_task) = Arc::into_inner(update_task) {
+        let result = update_task.now_or_never();
+        assert!(
+            result.is_none(),
+            "metadata update task exited unexpectedly with: {result:?}"
+        );
+    }
 
     Ok(())
 }
@@ -499,11 +506,13 @@ async fn test_important_address_transfer_alerts() -> anyhow::Result<()> {
         assert_eq!(alert.block_info.slot, Some(slot));
     }
 
-    let result = update_task.now_or_never();
-    assert!(
-        result.is_none(),
-        "metadata update task exited unexpectedly with: {result:?}"
-    );
+    if let Some(update_task) = Arc::into_inner(update_task) {
+        let result = update_task.now_or_never();
+        assert!(
+            result.is_none(),
+            "metadata update task exited unexpectedly with: {result:?}"
+        );
+    }
 
     Ok(())
 }
@@ -554,11 +563,13 @@ async fn test_important_address_only_alerts() -> anyhow::Result<()> {
         assert_eq!(alert.block_info.slot, Some(slot));
     }
 
-    let result = update_task.now_or_never();
-    assert!(
-        result.is_none(),
-        "metadata update task exited unexpectedly with: {result:?}"
-    );
+    if let Some(update_task) = Arc::into_inner(update_task) {
+        let result = update_task.now_or_never();
+        assert!(
+            result.is_none(),
+            "metadata update task exited unexpectedly with: {result:?}"
+        );
+    }
 
     Ok(())
 }

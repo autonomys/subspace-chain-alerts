@@ -597,6 +597,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "async_once"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ce4f10ea3abcd6617873bae9f91d1c5332b4a778bd9ce34d0cd517474c1de82"
+
+[[package]]
 name = "atomic-take"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -686,7 +692,7 @@ dependencies = [
  "bitflags 2.9.1",
  "cexpr",
  "clang-sys",
- "itertools 0.11.0",
+ "itertools 0.13.0",
  "log",
  "prettyplease",
  "proc-macro2",
@@ -4557,6 +4563,7 @@ name = "subspace-chain-alerter"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async_once",
  "chrono",
  "clap",
  "hex",
@@ -4564,6 +4571,7 @@ dependencies = [
  "humantime",
  "hyper-rustls",
  "hyper-util",
+ "lazy_static",
  "rand 0.9.2",
  "reqwest",
  "rustls",
