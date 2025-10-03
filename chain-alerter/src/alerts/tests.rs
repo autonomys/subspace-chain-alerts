@@ -686,7 +686,7 @@ async fn expected_test_slot_time_alert_but_not_yet() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Check that the slot time alert is triggered 
+/// Check that the slot time alert is triggered
 /// when the slot per time ratio gets above the slow threshold.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_slot_time_above_slow_threshold() -> anyhow::Result<()> {
