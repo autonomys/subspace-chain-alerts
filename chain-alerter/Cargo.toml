@@ -25,7 +25,5 @@ slack-morphism = { workspace = true, features = ["hyper"] }
 zeroize.workspace = true
 
 [dev-dependencies]
-async_once.workspace = true
 hex-literal.workspace = true
-lazy_static.workspace = true
 rand.workspace = true

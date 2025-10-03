@@ -77,8 +77,8 @@ jobs:
         run: |
           cargo build --release --locked --all-features --all-targets
 
-  cargo-test:
-    name: cargo-test (${{ matrix.os }})
+  cargo-nextest:
+    name: cargo-nextest (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -105,6 +105,21 @@ jobs:
       - name: cargo nextest run --locked
         run: |
           cargo nextest run --locked --all-features
+
+  # Run a single OS using cargo-test, just to make sure it works.
+  cargo-test:
+    name: cargo-test (ubuntu-24.04)
+    runs-on: "ubuntu-24.04"
+    # Don't use the full 6 hours if a test hangs
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+
+      - name: cargo test --locked
+        run: |
+          cargo test --locked --all-features
 
   # Runs the chain-alerter process until it sends a startup alert, but with Slack disabled.
   # This is useful for testing the chain-alerter process setup and main loop.
@@ -174,6 +189,7 @@ jobs:
       - cargo-fmt
       - cargo-clippy
       - cargo-build
+      - cargo-nextest
       - cargo-test
       - cargo-run
       - cargo-unused-deps
@@ -185,6 +201,7 @@ jobs:
           [[ "${{ needs.cargo-fmt.result }}" == "success" ]] || exit 1
           [[ "${{ needs.cargo-clippy.result }}" == "success" ]] || exit 1
           [[ "${{ needs.cargo-build.result }}" == "success" ]] || exit 1
+          [[ "${{ needs.cargo-nextest.result }}" == "success" ]] || exit 1
           [[ "${{ needs.cargo-test.result }}" == "success" ]] || exit 1
           [[ "${{ needs.cargo-run.result }}" == "success" ]] || exit 1
           [[ "${{ needs.cargo-unused-deps.result }}" == "success" ]] || exit 1
