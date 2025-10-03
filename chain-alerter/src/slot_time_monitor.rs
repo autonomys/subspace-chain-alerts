@@ -135,13 +135,6 @@ impl MemorySlotTimeMonitor {
     }
 
     /// Check the slot time and send alerts if needed.
-    #[cfg_attr(
-        not(test),
-        allow(
-            clippy::cast_precision_loss,
-            reason = "Casting numbers are within a safe range"
-        )
-    )]
     async fn check_slot_time(
         &mut self,
         mode: BlockCheckMode,
@@ -193,7 +186,19 @@ impl MemorySlotTimeMonitor {
 
         let slot_diff = last_block_slot - lowest_block_slot;
         let time_diff = last_block_time_in_seconds - lowest_block_time_in_seconds;
-        let slot_diff_per_time_diff = slot_diff as f64 / time_diff as f64;
+        // Convert to f64 with explicit handling to avoid precision loss warnings
+        // For slot timing calculations, precision loss is acceptable as we're dealing with
+        // reasonable time ranges and slot counts
+        let slot_diff_per_time_diff = if time_diff == 0 {
+            0.0 // Avoid division by zero
+        } else {
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "Precision loss is acceptable for slot timing calculations"
+            )]
+            let result = slot_diff as f64 / time_diff as f64;
+            result
+        };
 
         if slot_diff_per_time_diff > self.config.slow_slots_threshold {
             self.send_slow_slot_time_alert(slot_diff_per_time_diff, *block_info, mode)
