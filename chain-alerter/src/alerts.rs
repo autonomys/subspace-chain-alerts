@@ -10,10 +10,10 @@ mod tests;
 use crate::alerts::account::Accounts;
 use crate::alerts::transfer::TransferValue;
 use crate::chain_fork_monitor::ChainForkEvent;
-use crate::format::{fmt_amount, fmt_duration, fmt_timestamp};
+use crate::format::{fmt_amount, fmt_duration};
 use crate::subspace::{
-    AI3, Balance, BlockInfo, BlockPosition, BlockTime, EventInfo, ExtrinsicInfo, RawEvent,
-    RawExtrinsic, TARGET_BLOCK_INTERVAL, gap_since_last_block, gap_since_time,
+    AI3, Balance, BlockInfo, BlockPosition, EventInfo, ExtrinsicInfo, RawEvent, RawExtrinsic,
+    TARGET_BLOCK_INTERVAL, gap_since_last_block, gap_since_time,
 };
 use chrono::Utc;
 use std::fmt::{self, Display};
@@ -314,8 +314,8 @@ pub enum AlertKind {
         event_info: EventInfo,
     },
 
-    /// Slot timing is outside the expected range.
-    SlotTime {
+    /// Slot timing is slower than expected.
+    SlowSlotTime {
         /// The current ratio of slots to time.
         current_ratio: f64,
 
@@ -324,9 +324,18 @@ pub enum AlertKind {
 
         /// The duration of the interval.
         interval: Duration,
+    },
 
-        /// The time of the first slot in the interval.
-        first_slot_time: BlockTime,
+    /// Slot timing is faster than expected.
+    FastSlotTime {
+        /// The current ratio of slots to time.
+        current_ratio: f64,
+
+        /// The applicable threshold for this alert.
+        threshold: f64,
+
+        /// The duration of the interval.
+        interval: Duration,
     },
 
     /// Farmers count has decreased suddenly.
@@ -541,21 +550,33 @@ impl Display for AlertKind {
                 )
             }
 
-            Self::SlotTime {
+            Self::SlowSlotTime {
                 current_ratio,
                 threshold,
                 interval,
-                first_slot_time,
             } => {
                 write!(
                     f,
                     "**Slot per time ratio alert**\n\
                     Current ratio: {current_ratio:.2} slots per second\n\
                     Threshold: {threshold:.2} slots per second\n\
-                    Interval: {}\n\
-                    First slot time: {}",
+                    Interval: {}",
                     fmt_duration(*interval),
-                    fmt_timestamp(first_slot_time.date_time()),
+                )
+            }
+
+            Self::FastSlotTime {
+                current_ratio,
+                threshold,
+                interval,
+            } => {
+                write!(
+                    f,
+                    "**Fast slot time alert**\n\
+                    Current ratio: {current_ratio:.2} slots per second\n\
+                    Threshold: {threshold:.2} slots per second\n\
+                    Interval: {}",
+                    fmt_duration(*interval),
                 )
             }
 
@@ -616,7 +637,8 @@ impl AlertKind {
             | Self::ImportantAddressExtrinsic { .. }
             | Self::SudoCall { .. }
             | Self::OperatorSlashed { .. }
-            | Self::SlotTime { .. }
+            | Self::SlowSlotTime { .. }
+            | Self::FastSlotTime { .. }
             | Self::FarmersDecreasedSuddenly { .. }
             | Self::FarmersIncreasedSuddenly { .. } => false,
         }
@@ -648,7 +670,8 @@ impl AlertKind {
             | Self::SudoCall { .. }
             | Self::SudoEvent { .. }
             | Self::OperatorSlashed { .. }
-            | Self::SlotTime { .. }
+            | Self::SlowSlotTime { .. }
+            | Self::FastSlotTime { .. }
             | Self::FarmersDecreasedSuddenly { .. }
             | Self::FarmersIncreasedSuddenly { .. } => None,
         }
@@ -678,7 +701,8 @@ impl AlertKind {
             | Self::SudoCall { .. }
             | Self::SudoEvent { .. }
             | Self::OperatorSlashed { .. }
-            | Self::SlotTime { .. }
+            | Self::SlowSlotTime { .. }
+            | Self::FastSlotTime { .. }
             | Self::FarmersDecreasedSuddenly { .. }
             | Self::FarmersIncreasedSuddenly { .. } => None,
         }
@@ -706,7 +730,8 @@ impl AlertKind {
             | Self::Reorg { .. }
             | Self::SudoEvent { .. }
             | Self::OperatorSlashed { .. }
-            | Self::SlotTime { .. } => None,
+            | Self::SlowSlotTime { .. }
+            | Self::FastSlotTime { .. } => None,
         }
     }
 
@@ -732,7 +757,8 @@ impl AlertKind {
             | Self::SudoCall { .. }
             | Self::SudoEvent { .. }
             | Self::OperatorSlashed { .. }
-            | Self::SlotTime { .. } => None,
+            | Self::SlowSlotTime { .. }
+            | Self::FastSlotTime { .. } => None,
         }
     }
 
@@ -756,7 +782,8 @@ impl AlertKind {
             | Self::ImportantAddressTransfer { .. }
             | Self::ImportantAddressExtrinsic { .. }
             | Self::SudoCall { .. }
-            | Self::SlotTime { .. }
+            | Self::SlowSlotTime { .. }
+            | Self::FastSlotTime { .. }
             | Self::FarmersDecreasedSuddenly { .. }
             | Self::FarmersIncreasedSuddenly { .. } => None,
         }
