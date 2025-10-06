@@ -7,8 +7,6 @@ use crate::subspace::{
     FOUNDATION_SUBSPACE_NODE_URL, LABS_SUBSPACE_NODE_URL, RawEvent, RawEventList, RawExtrinsic,
     RawExtrinsicList, RawRpcClient, SubspaceClient, create_subspace_client,
 };
-use async_once::AsyncOnce;
-use lazy_static::lazy_static;
 use rand::{Rng, rng};
 use sp_core::crypto::{Ss58AddressFormatRegistry, set_default_ss58_version};
 use std::env;
@@ -18,26 +16,14 @@ use tokio::sync::mpsc;
 use tracing::info;
 
 /// The type of the sharedfoundation and labs subspace clients.
-type SubspaceSetup = (
+///
+/// The Arcs make sure shared clients and tasks are never dropped. (Because `&'static T` can
+/// implicitly be converted to `T`.)
+pub type SubspaceSetup = (
     SubspaceClient,
     RawRpcClient,
     Arc<AsyncJoinOnDrop<anyhow::Result<()>>>,
 );
-
-lazy_static! {
-    /// Fallback Foundation Subspace Client to avoid test failures from pruned blocks.
-    /// TODO: move the Arc inside AsyncJoinOnDrop and derive Clone for it
-    static ref FOUNDATION_SUBSPACE_CLIENT: AsyncOnce<SubspaceSetup> = AsyncOnce::new(async {
-        create_test_subspace_client(FOUNDATION_SUBSPACE_NODE_URL).await.expect("failed to create foundation subspace client")
-    });
-
-    /// Fallback Labs Subspace Client to avoid test failures from pruned blocks.
-    static ref LABS_SUBSPACE_CLIENT: AsyncOnce<SubspaceSetup> = AsyncOnce::new(async {
-        create_test_subspace_client(LABS_SUBSPACE_NODE_URL)
-            .await
-            .expect("failed to create labs subspace client")
-    });
-}
 
 /// The default RPC URL for a local Subspace node.
 pub fn node_rpc_url() -> String {
@@ -94,23 +80,20 @@ pub async fn test_setup(
     set_default_ss58_version(Ss58AddressFormatRegistry::AutonomysAccount.into());
 
     // Avoid a crypto provider conflict: see main::setup() for details.
-    // An error is a bug in the test, because setup should only be called once.
-    rustls::crypto::aws_lc_rs::default_provider()
+    // We expect errors here with `cargo test`, so we log and ignore them.
+    //
+    // TODO: remove ring to reduce compile time/size
+    let _: Result<(), Arc<rustls::crypto::CryptoProvider>> = rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
-        .expect("failed to install crypto provider, this function should only be called once");
+        .inspect_err(|_| {
+            info!(
+                "Selecting default TLS crypto provider failed, this is expected with `cargo test`"
+            )
+        });
 
     // Create a client that subscribes to the configured Substrate node.
     let (chain_client, raw_rpc_client, update_task) =
-        if node_rpc_url.as_ref() == FOUNDATION_SUBSPACE_NODE_URL {
-            let (client, raw_rpc_client, update_task) = FOUNDATION_SUBSPACE_CLIENT.get().await;
-            (client.clone(), raw_rpc_client.clone(), update_task.clone())
-        } else if node_rpc_url.as_ref() == LABS_SUBSPACE_NODE_URL {
-            let (client, raw_rpc_client, update_task) = LABS_SUBSPACE_CLIENT.get().await;
-            (client.clone(), raw_rpc_client.clone(), update_task.clone())
-        } else {
-            // For custom URLs we don't share the instance between tests.
-            create_test_subspace_client(node_rpc_url).await?
-        };
+        create_test_subspace_client(node_rpc_url).await?;
 
     // Create a channel to receive alerts.
     let (alert_tx, alert_rx) = alert_channel_only_setup();
@@ -152,8 +135,13 @@ pub async fn fetch_block_info(
     {
         info!(?block_hash, "got block from original RPC server");
         block_extras
-    } else if let Ok(block_extras) =
-        get_block(block_hash, &FOUNDATION_SUBSPACE_CLIENT.get().await.0).await
+    } else if let Ok(block_extras) = get_block(
+        block_hash,
+        &create_test_subspace_client(FOUNDATION_SUBSPACE_NODE_URL)
+            .await?
+            .0,
+    )
+    .await
     {
         info!(
             ?block_hash,
@@ -165,7 +153,11 @@ pub async fn fetch_block_info(
             ?block_hash,
             "getting block from other servers failed, trying fallback labs RPC server",
         );
-        get_block(block_hash, &LABS_SUBSPACE_CLIENT.get().await.0).await?
+        get_block(
+            block_hash,
+            &create_test_subspace_client(LABS_SUBSPACE_NODE_URL).await?.0,
+        )
+        .await?
     };
 
     if let Some(expected_block_height) = expected_block_height.into() {
