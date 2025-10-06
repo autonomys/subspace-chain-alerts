@@ -557,7 +557,7 @@ impl Display for AlertKind {
             } => {
                 write!(
                     f,
-                    "**Slot per time ratio alert**\n\
+                    "**Slow slot time alert**\n\
                     Current ratio: {current_ratio:.2} slots per second\n\
                     Threshold: {threshold:.2} slots per second\n\
                     Interval: {}",
