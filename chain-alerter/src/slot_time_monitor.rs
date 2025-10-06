@@ -213,10 +213,10 @@ impl MemorySlotTimeMonitor {
             result
         };
 
-        if slot_diff_per_time_diff > self.config.slow_slots_threshold {
+        if slot_diff_per_time_diff < self.config.slow_slots_threshold {
             self.send_slow_slot_time_alert(slot_diff_per_time_diff, *block_info, mode)
                 .await?;
-        } else if slot_diff_per_time_diff < self.config.fast_slots_threshold {
+        } else if slot_diff_per_time_diff > self.config.fast_slots_threshold {
             self.send_fast_slot_time_alert(slot_diff_per_time_diff, *block_info, mode)
                 .await?;
         } else {
