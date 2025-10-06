@@ -62,9 +62,8 @@ pub struct MemorySlotTimeMonitor {
 
 /// State tracked by the slot time monitor, and updated at the same time.
 ///
-/// Reorgs are effectively ignored in the slot time state.
-/// If the chain passes `next_check_time` before the reorg, then the reorg will be a long way
-/// behind the new `next_check_time`.
+/// Reorgs will provoke to reduce the block height check window since some blocks heights will be
+/// duplicated, which is not precise but good enough for the slot time monitor.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct SlotTimeMonitorState {
     /// Block buffer
