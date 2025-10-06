@@ -61,10 +61,6 @@ const ALERT_BUFFER_SIZE: usize = 100;
 #[derive(Parser, Debug)]
 #[command(version, about, long_about)]
 struct Args {
-    /// The name used by the bot when posting alerts to Slack.
-    #[arg(long, default_value = "Dev")]
-    name: String,
-
     /// The Slack icon used by the bot when posting.
     ///
     /// Uses Short Names (but without the ':') from:
@@ -74,20 +70,25 @@ struct Args {
     #[arg(long)]
     icon: Option<String>,
 
+    /// The name used by the bot when posting alerts to Slack.
+    #[arg(long, default_value = "Dev")]
+    name: String,
+
     /// The RPC URL of the node to connect to.
     /// Uses the local node by default.
     #[arg(long, value_hint = ValueHint::Url, default_value = LOCAL_SUBSPACE_NODE_URL)]
     node_rpc_url: String,
 
-    /// Enable or disable Slack message posting.
-    /// Slack is enabled by default, and required a Slack OAuth secret file named `slack-secret`.
-    #[arg(long, default_value = "true", action = ArgAction::Set)]
-    slack: bool,
-
+    // Integration testing options
     /// Exit after this many alerts have been posted. Mainly used for testing.
     /// Default is no limit.
     #[arg(long)]
     alert_limit: Option<usize>,
+
+    /// Enable or disable Slack message posting.
+    /// Slack is enabled by default, and required a Slack OAuth secret file named `slack-secret`.
+    #[arg(long, default_value = "true", action = ArgAction::Set)]
+    slack: bool,
 }
 
 /// Initialize once-off setup for the chain alerter.
