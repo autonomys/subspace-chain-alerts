@@ -220,10 +220,7 @@ impl MemorySlotTimeMonitor {
             self.send_fast_slot_time_alert(slot_diff_per_time_diff, *block_info, mode)
                 .await?;
         } else {
-            // Reset alerting status when slot timing is within normal ranges
-            if let Some(state) = self.state.as_mut() {
-                state.alerting_status = AlertingStatus::NotAlerting;
-            }
+            self.set_alerting_status(AlertingStatus::NotAlerting);
         }
 
         Ok(())
@@ -240,7 +237,7 @@ impl MemorySlotTimeMonitor {
         if let Some(state) = self.state.as_mut()
             && state.alerting_status != AlertingStatus::SlowSlotTime
         {
-            state.alerting_status = AlertingStatus::SlowSlotTime;
+            self.set_alerting_status(AlertingStatus::SlowSlotTime);
             self.config
                 .alert_tx
                 .send(Alert::new(
@@ -268,7 +265,7 @@ impl MemorySlotTimeMonitor {
         if let Some(state) = self.state.as_mut()
             && state.alerting_status != AlertingStatus::FastSlotTime
         {
-            state.alerting_status = AlertingStatus::FastSlotTime;
+            self.set_alerting_status(AlertingStatus::FastSlotTime);
             self.config
                 .alert_tx
                 .send(Alert::new(
@@ -283,5 +280,12 @@ impl MemorySlotTimeMonitor {
                 .await?;
         }
         Ok(())
+    }
+
+    /// Helper function to set the alerting status.
+    fn set_alerting_status(&mut self, alert_status: AlertingStatus) {
+        if let Some(state) = self.state.as_mut() {
+            state.alerting_status = alert_status;
+        }
     }
 }
