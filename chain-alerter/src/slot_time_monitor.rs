@@ -214,10 +214,10 @@ impl MemorySlotTimeMonitor {
         };
 
         if slot_diff_per_time_diff < self.config.slow_slots_threshold {
-            self.send_slow_slot_time_alert(slot_diff_per_time_diff, *block_info, mode)
+            self.send_slow_slot_time_alert(slot_diff, slot_diff_per_time_diff, *block_info, mode)
                 .await?;
         } else if slot_diff_per_time_diff > self.config.fast_slots_threshold {
-            self.send_fast_slot_time_alert(slot_diff_per_time_diff, *block_info, mode)
+            self.send_fast_slot_time_alert(slot_diff, slot_diff_per_time_diff, *block_info, mode)
                 .await?;
         } else {
             self.set_alerting_status(AlertingStatus::NotAlerting);
@@ -229,6 +229,7 @@ impl MemorySlotTimeMonitor {
     /// Send a slot time alert with the computed ratio and block info.
     async fn send_slow_slot_time_alert(
         &mut self,
+        slot_diff: u64,
         slot_diff_per_time_diff: f64,
         block_info: BlockInfo,
         mode: BlockCheckMode,
@@ -242,6 +243,7 @@ impl MemorySlotTimeMonitor {
                 .alert_tx
                 .send(Alert::new(
                     AlertKind::SlowSlotTime {
+                        slot_amount: slot_diff,
                         current_ratio: slot_diff_per_time_diff,
                         threshold: self.config.slow_slots_threshold,
                         interval: self.config.check_interval,
@@ -257,6 +259,7 @@ impl MemorySlotTimeMonitor {
     /// Send a fast slot time alert with the computed ratio and block info.
     async fn send_fast_slot_time_alert(
         &mut self,
+        slot_diff: u64,
         slot_diff_per_time_diff: f64,
         block_info: BlockInfo,
         mode: BlockCheckMode,
@@ -270,6 +273,7 @@ impl MemorySlotTimeMonitor {
                 .alert_tx
                 .send(Alert::new(
                     AlertKind::FastSlotTime {
+                        slot_amount: slot_diff,
                         current_ratio: slot_diff_per_time_diff,
                         threshold: self.config.fast_slots_threshold,
                         interval: self.config.check_interval,

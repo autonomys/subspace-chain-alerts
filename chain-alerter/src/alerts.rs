@@ -316,6 +316,9 @@ pub enum AlertKind {
 
     /// Slot timing is slower than expected.
     SlowSlotTime {
+        /// The amount of slots.
+        slot_amount: u64,
+
         /// The current ratio of slots to time.
         current_ratio: f64,
 
@@ -328,6 +331,9 @@ pub enum AlertKind {
 
     /// Slot timing is faster than expected.
     FastSlotTime {
+        /// The amount of slots.
+        slot_amount: u64,
+
         /// The current ratio of slots to time.
         current_ratio: f64,
 
@@ -551,6 +557,7 @@ impl Display for AlertKind {
             }
 
             Self::SlowSlotTime {
+                slot_amount,
                 current_ratio,
                 threshold,
                 interval,
@@ -560,12 +567,14 @@ impl Display for AlertKind {
                     "**Slow slot time alert**\n\
                     Current ratio: {current_ratio:.2} slots per second\n\
                     Threshold: {threshold:.2} slots per second\n\
+                    Slot amount: {slot_amount}\n\
                     Interval: {}",
                     fmt_duration(*interval),
                 )
             }
 
             Self::FastSlotTime {
+                slot_amount,
                 current_ratio,
                 threshold,
                 interval,
@@ -575,6 +584,7 @@ impl Display for AlertKind {
                     "**Fast slot time alert**\n\
                     Current ratio: {current_ratio:.2} slots per second\n\
                     Threshold: {threshold:.2} slots per second\n\
+                    Slot amount: {slot_amount}\n\
                     Interval: {}",
                     fmt_duration(*interval),
                 )
