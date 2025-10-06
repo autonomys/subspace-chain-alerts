@@ -79,6 +79,10 @@ struct Args {
     #[arg(long, value_hint = ValueHint::Url, default_value = LOCAL_SUBSPACE_NODE_URL)]
     node_rpc_url: String,
 
+    /// Send alerts to the production Slack channel.
+    #[arg(long, alias = "prod", default_value = "false", action = ArgAction::SetTrue)]
+    production: bool,
+
     // Integration testing options
     /// Exit after this many alerts have been posted. Mainly used for testing.
     /// Default is no limit.
@@ -131,6 +135,7 @@ async fn setup(
     let slack_client_info = if args.slack {
         Some(
             SlackClientInfo::new(
+                args.production,
                 &args.name,
                 args.icon.clone(),
                 &args.node_rpc_url,

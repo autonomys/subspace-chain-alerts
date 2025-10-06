@@ -17,6 +17,7 @@ use slack_morphism::{
     SlackApiScrollableRequest, SlackApiToken, SlackChannelId, SlackChannelInfo, SlackClient,
     SlackClientSession, SlackMessageContent,
 };
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::ops::Deref;
 use std::time::Duration;
@@ -28,10 +29,11 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 /// The path of the file that stores the Slack OAuth secret.
 pub const SLACK_OAUTH_SECRET_PATH: &str = "slack-secret";
 
-/// The Slack channel to post alerts to.
-///
-/// TODO: add the production channel and switch to it after startup on mainnet prod instances
+/// The test Slack channel, used for alert testing, and to post all startup alerts.
 const TEST_CHANNEL_NAME: &str = "chain-alerts-test";
+
+/// The Slack channel to post production alerts to.
+const PROD_CHANNEL_NAME: &str = "chain-alerts";
 
 /// The name the bot uses to post alerts to Slack.
 /// TODO: take "test" out of this name once we're production-ready
@@ -73,12 +75,16 @@ pub struct SlackClientInfo {
     /// The Slack HTTPS client, used to create new Slack sessions.
     client: SlackClient<SlackConnector>,
 
-    /// The channel ID to post to.
+    /// The channel ID to post startup alerts to. This is always the test channel, because startup
+    /// alerts aren't actionable.
+    ///
     /// Some Slack APIs accept channel names and IDs, but some only accept IDs, so we convert this
     /// to an ID at startup.
-    ///
-    /// TODO: add test and prod channel IDs in a hashmap
-    pub channel_id: SlackChannelId,
+    pub startup_channel_id: SlackChannelId,
+
+    /// The channel ID to post alerts to. This is the test channel by default, unless the
+    /// production flag is set on the command line.
+    pub alert_channel_id: SlackChannelId,
 
     /// The name the bot uses to post alerts to Slack.
     pub bot_name: String,
@@ -165,6 +171,7 @@ impl SlackClientInfo {
     ///
     /// Any returned errors are fatal and require a restart.
     pub async fn new(
+        is_production: bool,
         bot_name: impl AsRef<str>,
         bot_icon: impl Into<Option<String>>,
         node_rpc_url: impl AsRef<str>,
@@ -177,8 +184,18 @@ impl SlackClientInfo {
             SlackApiRateControlConfig::new().with_max_retries(MAX_SLACK_API_RETRIES),
         ));
 
-        let channel_id = Self::find_channel_id(&client, &secret).await?;
-        info!("channel ID: {channel_id:?}");
+        let alert_channel_name = if is_production {
+            PROD_CHANNEL_NAME
+        } else {
+            TEST_CHANNEL_NAME
+        };
+        let channel_names = if is_production {
+            HashSet::from([TEST_CHANNEL_NAME, alert_channel_name])
+        } else {
+            HashSet::from([TEST_CHANNEL_NAME])
+        };
+        let channel_ids = Self::find_channel_ids(channel_names, &client, &secret).await?;
+        info!("channel IDs: {channel_ids:?}");
 
         let geoip = match Self::find_external_geoip().await {
             Ok(geoip) => geoip,
@@ -201,7 +218,8 @@ impl SlackClientInfo {
 
         Ok(Self {
             client,
-            channel_id,
+            startup_channel_id: channel_ids[TEST_CHANNEL_NAME].clone(),
+            alert_channel_id: channel_ids[alert_channel_name].clone(),
             bot_name: bot_name.as_ref().to_string(),
             bot_ip_cc: geoip.0,
             node_rpc_url: node_rpc_url.as_ref().to_string(),
@@ -210,17 +228,18 @@ impl SlackClientInfo {
         })
     }
 
-    /// Find the channel ID for the test channel.
+    /// Find the channel ID for the supplied channel names.
     ///
     /// Any returned errors are fatal and require a restart.
-    async fn find_channel_id(
+    async fn find_channel_ids(
+        channel_names: HashSet<&str>,
         client: &SlackClient<SlackConnector>,
         secret: &SlackSecret,
-    ) -> Result<SlackChannelId, anyhow::Error> {
+    ) -> Result<HashMap<String, SlackChannelId>, anyhow::Error> {
         let session = client.open_session(secret);
         info!("opened Slack session");
 
-        info!("finding channel ID for '{TEST_CHANNEL_NAME}'...");
+        info!("finding channel IDs for '{channel_names:?}'...");
         let list_req = SlackApiConversationsListRequest::new()
             .with_limit(MAX_CHANNEL_LIST_LIMIT)
             .with_exclude_archived(true);
@@ -230,18 +249,22 @@ impl SlackClientInfo {
             .await?;
         info!("got {} channels", collected_channels.len());
 
-        let mut channel_id = None;
-        for channel in collected_channels {
-            if channel.name == Some(TEST_CHANNEL_NAME.into()) {
-                channel_id = Some(channel.id);
-                break;
+        let mut channel_ids = HashMap::new();
+        for channel_name in channel_names.iter() {
+            for channel in collected_channels.iter() {
+                if channel.name == Some(channel_name.to_string()) {
+                    channel_ids.insert(channel_name.to_string(), channel.id.clone());
+                }
             }
         }
-        let Some(channel_id) = channel_id else {
-            anyhow::bail!("channel '{TEST_CHANNEL_NAME}' ID not found");
-        };
 
-        Ok(channel_id)
+        for channel_name in channel_names {
+            if !channel_ids.contains_key(channel_name) {
+                anyhow::bail!("channel '{channel_name}' ID not found");
+            };
+        }
+
+        Ok(channel_ids)
     }
 
     /// Finds the external IP and country flag emoji for this instance.
@@ -297,13 +320,6 @@ impl SlackClientInfo {
     ) -> Result<SlackApiChatPostMessageResponse, anyhow::Error> {
         let slack_session = self.open_session();
 
-        info!(
-            ?alert,
-            is_duplicate = %alert.alert.is_duplicate(),
-            channel_id = ?self.channel_id,
-            "posting message to '{TEST_CHANNEL_NAME}'",
-        );
-
         let Alert {
             alert,
             block_info,
@@ -337,8 +353,28 @@ impl SlackClientInfo {
         context_block.verbatim = Some(true);
         message_blocks.push(SlackContextBlock::new(vec![context_block.into()]).into());
 
+        let channel_id = if alert.is_test_alert() {
+            info!(
+                ?alert,
+                is_duplicate = %alert.is_duplicate(),
+                channel_id = ?self.startup_channel_id,
+                "posting startup message to test channel",
+            );
+
+            self.startup_channel_id.clone()
+        } else {
+            info!(
+                ?alert,
+                is_duplicate = %alert.is_duplicate(),
+                channel_id = ?self.alert_channel_id,
+                "posting alert to alerts channel",
+            );
+
+            self.alert_channel_id.clone()
+        };
+
         let post_chat_req = SlackApiChatPostMessageRequest::new(
-            self.channel_id.clone(),
+            channel_id,
             SlackMessageContent::new().with_blocks(message_blocks),
         )
         .with_icon_emoji(self.bot_icon.clone())
