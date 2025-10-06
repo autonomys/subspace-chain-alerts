@@ -12,7 +12,6 @@ use anyhow::Ok;
 use std::collections::VecDeque;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tokio::sync::mpsc::error::SendError;
 
 /// The default threshold for the slot time alert.
 pub const DEFAULT_SLOW_SLOTS_THRESHOLD: f64 = 1.05;
@@ -69,6 +68,19 @@ pub struct MemorySlotTimeMonitor {
 pub struct SlotTimeMonitorState {
     /// Block buffer
     block_buffer: VecDeque<BlockInfo>,
+    /// The status of the slot time monitor.
+    alerting_status: AlertingStatus,
+}
+
+/// The status of the slot time monitor.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub enum AlertingStatus {
+    /// The slot time monitor is alerting.
+    FastSlotTime,
+    /// The slot time monitor is alerting.
+    SlowSlotTime,
+    /// The slot time monitor is not alerting.
+    NotAlerting,
 }
 
 impl SlotTimeMonitorConfig {
@@ -123,6 +135,7 @@ impl MemorySlotTimeMonitor {
         if self.state.is_none() {
             self.state = Some(SlotTimeMonitorState {
                 block_buffer: VecDeque::new(),
+                alerting_status: AlertingStatus::NotAlerting,
             });
         }
 
@@ -206,6 +219,11 @@ impl MemorySlotTimeMonitor {
         } else if slot_diff_per_time_diff < self.config.fast_slots_threshold {
             self.send_fast_slot_time_alert(slot_diff_per_time_diff, *block_info, mode)
                 .await?;
+        } else {
+            // Reset alerting status when slot timing is within normal ranges
+            if let Some(state) = self.state.as_mut() {
+                state.alerting_status = AlertingStatus::NotAlerting;
+            }
         }
 
         Ok(())
@@ -213,43 +231,57 @@ impl MemorySlotTimeMonitor {
 
     /// Send a slot time alert with the computed ratio and block info.
     async fn send_slow_slot_time_alert(
-        &self,
+        &mut self,
         slot_diff_per_time_diff: f64,
         block_info: BlockInfo,
         mode: BlockCheckMode,
-    ) -> Result<(), SendError<Alert>> {
-        self.config
-            .alert_tx
-            .send(Alert::new(
-                AlertKind::SlowSlotTime {
-                    current_ratio: slot_diff_per_time_diff,
-                    threshold: self.config.slow_slots_threshold,
-                    interval: self.config.check_interval,
-                },
-                block_info,
-                mode,
-            ))
-            .await
+    ) -> anyhow::Result<()> {
+        // Only send alert if we're not already alerting for slow slot time
+        if let Some(state) = self.state.as_mut()
+            && state.alerting_status != AlertingStatus::SlowSlotTime
+        {
+            state.alerting_status = AlertingStatus::SlowSlotTime;
+            self.config
+                .alert_tx
+                .send(Alert::new(
+                    AlertKind::SlowSlotTime {
+                        current_ratio: slot_diff_per_time_diff,
+                        threshold: self.config.slow_slots_threshold,
+                        interval: self.config.check_interval,
+                    },
+                    block_info,
+                    mode,
+                ))
+                .await?;
+        }
+        Ok(())
     }
 
     /// Send a fast slot time alert with the computed ratio and block info.
     async fn send_fast_slot_time_alert(
-        &self,
+        &mut self,
         slot_diff_per_time_diff: f64,
         block_info: BlockInfo,
         mode: BlockCheckMode,
-    ) -> Result<(), SendError<Alert>> {
-        self.config
-            .alert_tx
-            .send(Alert::new(
-                AlertKind::FastSlotTime {
-                    current_ratio: slot_diff_per_time_diff,
-                    threshold: self.config.fast_slots_threshold,
-                    interval: self.config.check_interval,
-                },
-                block_info,
-                mode,
-            ))
-            .await
+    ) -> anyhow::Result<()> {
+        // Only send alert if we're not already alerting for fast slot time
+        if let Some(state) = self.state.as_mut()
+            && state.alerting_status != AlertingStatus::FastSlotTime
+        {
+            state.alerting_status = AlertingStatus::FastSlotTime;
+            self.config
+                .alert_tx
+                .send(Alert::new(
+                    AlertKind::FastSlotTime {
+                        current_ratio: slot_diff_per_time_diff,
+                        threshold: self.config.fast_slots_threshold,
+                        interval: self.config.check_interval,
+                    },
+                    block_info,
+                    mode,
+                ))
+                .await?;
+        }
+        Ok(())
     }
 }
