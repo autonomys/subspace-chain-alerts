@@ -13,7 +13,7 @@ mod slack;
 mod slot_time_monitor;
 mod subspace;
 
-use crate::alerts::{Alert, BlockCheckMode};
+use crate::alerts::{Alert, BlockCheckMode, BlockGapAlertStatus};
 use crate::chain_fork_monitor::{
     BlockSeen, CHAIN_FORK_BUFFER_SIZE, NewBestBlockMessage, check_for_chain_forks,
 };
@@ -477,6 +477,9 @@ async fn check_best_blocks(
     // A channel that shares the latest block info with concurrently running tasks.
     let latest_block_tx = watch::Sender::new(None);
 
+    // Tracks the previous block's gap alert status.
+    let mut prev_block_gap_status = BlockGapAlertStatus::NoAlert;
+
     // Slot time monitor is used to check if the slot time is within the expected range.
     let mut slot_time_monitor = MemorySlotTimeMonitor::new(SlotTimeMonitorConfig::new(
         DEFAULT_CHECK_INTERVAL,
@@ -550,12 +553,13 @@ async fn check_best_blocks(
         }
 
         // We check for other alerts in any mode.
-        run_on_best_block(
+        prev_block_gap_status = run_on_best_block(
             mode,
             &raw_block,
             &block_info,
             &raw_extrinsics,
             &prev_block_info,
+            prev_block_gap_status,
             &mut slot_time_monitor,
             &mut farming_monitor,
             &alert_tx,
@@ -597,10 +601,11 @@ async fn run_on_best_block(
     block_info: &BlockInfo,
     extrinsics: &RawExtrinsicList,
     prev_block_info: &Option<BlockInfo>,
+    prev_block_gap_status: BlockGapAlertStatus,
     slot_time_monitor: &mut MemorySlotTimeMonitor,
     farming_monitor: &mut MemoryFarmingMonitor,
     alert_tx: &mpsc::Sender<Alert>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<BlockGapAlertStatus> {
     let events = block.events().await?;
     let events = events
         .iter()
@@ -617,7 +622,14 @@ async fn run_on_best_block(
         .collect::<Vec<RawEvent>>();
 
     // Check the block itself for alerts, including stall resumes.
-    alerts::check_block(mode, alert_tx, block_info, prev_block_info).await?;
+    let block_gap_status = alerts::check_block(
+        mode,
+        alert_tx,
+        block_info,
+        prev_block_info,
+        prev_block_gap_status,
+    )
+    .await?;
     slot_time_monitor.process_block(mode, block_info).await?;
     farming_monitor
         .process_block(mode, block_info, &events)
@@ -643,7 +655,7 @@ async fn run_on_best_block(
         alerts::check_event(mode, alert_tx, event, block_info, extrinsic_info).await?;
     }
 
-    Ok(())
+    Ok(block_gap_status)
 }
 
 /// The main function, which runs the chain alerter process until Ctrl-C is pressed.

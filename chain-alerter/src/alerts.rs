@@ -916,6 +916,41 @@ pub async fn startup_alert(
     Ok(())
 }
 
+/// The status of the block gap check.
+///
+/// Alerts are prioritised in the listed order, so if we're in a chain gap, we'll still issue a
+/// local gap alert.
+#[must_use = "the status must be tracked"]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub enum BlockGapAlertStatus {
+    /// A local resume alert was issued after a block receive gap.
+    LocalResume,
+
+    /// A chain time resume alert was issued after a chain time gap.
+    ChainResume,
+
+    /// No resume or gap alert was issued - blocks are being produced and received normally.
+    NoAlert,
+}
+
+impl BlockGapAlertStatus {
+    /// Returns true if the new status deserves an alert.
+    pub fn needs_new_alert(self, new_status: Self) -> bool {
+        // Equal statuses and "no alert" statuses don't need an alert.
+        if self == new_status || new_status == Self::NoAlert {
+            return false;
+        }
+
+        // Local resume alerts are more important than chain time resume alerts,
+        // because the local resume alert contains the chain time gap.
+        if self == Self::LocalResume && new_status == Self::ChainResume {
+            return false;
+        }
+
+        true
+    }
+}
+
 /// Check a block for alerts, against the previous block.
 ///
 /// Any returned errors are fatal and require a restart.
@@ -925,10 +960,13 @@ pub async fn check_block(
     alert_tx: &mpsc::Sender<Alert>,
     block_info: &BlockInfo,
     prev_block_info: &Option<BlockInfo>,
-) -> anyhow::Result<()> {
+    prev_block_gap_status: BlockGapAlertStatus,
+) -> anyhow::Result<BlockGapAlertStatus> {
+    let mut gap_alert_status = prev_block_gap_status;
+
     let Some(prev_block_info) = prev_block_info else {
         // No last block to check against.
-        return Ok(());
+        return Ok(gap_alert_status);
     };
 
     // Because they depend on the next block, these checks log after block production/propagation
@@ -939,31 +977,42 @@ pub async fn check_block(
     // Gap alerts without a stall are harmless, and might actually be interesting in themselves.
     // We prioritise the block receive resume alert, because it also contains the chain time gap.
     if local_time_gap >= MIN_RESUME_BLOCK_GAP {
-        alert_tx
-            .send(Alert::new(
-                AlertKind::BlockReceiveResumed {
-                    local_time_gap,
-                    chain_time_gap,
-                    prev_block_info: *prev_block_info,
-                },
-                *block_info,
-                mode,
-            ))
-            .await?;
+        if prev_block_gap_status.needs_new_alert(BlockGapAlertStatus::LocalResume) {
+            gap_alert_status = BlockGapAlertStatus::LocalResume;
+            alert_tx
+                .send(Alert::new(
+                    AlertKind::BlockReceiveResumed {
+                        local_time_gap,
+                        chain_time_gap,
+                        prev_block_info: *prev_block_info,
+                    },
+                    *block_info,
+                    mode,
+                ))
+                .await?;
+        }
     } else if let Some(chain_time_gap) = chain_time_gap
         && chain_time_gap >= MIN_RESUME_BLOCK_GAP
     {
-        alert_tx
-            .send(Alert::new(
-                AlertKind::BlockChainTimeGap {
-                    chain_time_gap,
-                    prev_block_info: *prev_block_info,
-                },
-                *block_info,
-                mode,
-            ))
-            .await?;
-    } else if chain_time_gap.is_none() {
+        // Prioritise the local resume status by only changing status if we send an alert.
+        if prev_block_gap_status.needs_new_alert(BlockGapAlertStatus::ChainResume) {
+            gap_alert_status = BlockGapAlertStatus::ChainResume;
+            alert_tx
+                .send(Alert::new(
+                    AlertKind::BlockChainTimeGap {
+                        chain_time_gap,
+                        prev_block_info: *prev_block_info,
+                    },
+                    *block_info,
+                    mode,
+                ))
+                .await?;
+        }
+    } else {
+        gap_alert_status = BlockGapAlertStatus::NoAlert;
+    }
+
+    if chain_time_gap.is_none() {
         // No chain time to check against.
         warn!(
             ?mode,
@@ -973,7 +1022,7 @@ pub async fn check_block(
         );
     };
 
-    Ok(())
+    Ok(gap_alert_status)
 }
 
 /// Spawn a task that waits for `MIN_BLOCK_GAP`, then alerts if there was no block received on
