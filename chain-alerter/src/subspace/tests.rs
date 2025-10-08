@@ -16,9 +16,6 @@ use tokio::sync::mpsc;
 use tracing::info;
 
 /// The type of the sharedfoundation and labs subspace clients.
-///
-/// The Arcs make sure shared clients and tasks are never dropped. (Because `&'static T` can
-/// implicitly be converted to `T`.)
 pub type SubspaceSetup = (
     SubspaceClient,
     RawRpcClient,

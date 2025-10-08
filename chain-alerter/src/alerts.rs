@@ -619,6 +619,32 @@ impl Display for AlertKind {
 }
 
 impl AlertKind {
+    /// Returns true if the alert always goes to the test channel.
+    pub fn is_test_alert(&self) -> bool {
+        match self {
+            Self::Startup => true,
+            Self::BlockProductionStall { .. }
+            | Self::BlockProductionResumed { .. }
+            | Self::NewSideFork { .. }
+            | Self::SideForkExtended { .. }
+            | Self::Reorg { .. }
+            | Self::ForceBalanceTransfer { .. }
+            | Self::LargeBalanceTransfer { .. }
+            | Self::LargeBalanceTransferEvent { .. }
+            | Self::ImportantAddressTransfer { .. }
+            | Self::ImportantAddressTransferEvent { .. }
+            | Self::ImportantAddressExtrinsic { .. }
+            | Self::ImportantAddressEvent { .. }
+            | Self::SudoCall { .. }
+            | Self::SudoEvent { .. }
+            | Self::OperatorSlashed { .. }
+            | Self::SlowSlotTime { .. }
+            | Self::FastSlotTime { .. }
+            | Self::FarmersDecreasedSuddenly { .. }
+            | Self::FarmersIncreasedSuddenly { .. } => false,
+        }
+    }
+
     /// Returns true if this alert is always a duplicate of another alert.
     pub fn is_duplicate(&self) -> bool {
         match self {
