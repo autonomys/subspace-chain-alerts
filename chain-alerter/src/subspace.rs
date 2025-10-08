@@ -310,7 +310,12 @@ pub struct BlockInfo {
     pub link: BlockLink,
 
     /// The time extrinsic in the block, if it exists.
-    pub time: Option<BlockTime>,
+    /// This time is guaranteed to be monotonic by the Subspace consensus rules.
+    pub chain_time: Option<BlockTime<ChainTime>>,
+
+    /// The local time that the block was received by the alerter.
+    /// This time can be out of order, particularly for replayed or startup blocks.
+    pub local_time: BlockTime<LocalTime>,
 
     /// The block slot.
     pub slot: Option<Slot>,
@@ -328,7 +333,8 @@ impl Display for BlockInfo {
                     // Skip the parent hash because it's too verbose in alerts.
                     parent_hash: _,
                 },
-            time,
+            chain_time,
+            local_time,
             slot,
             // Available via links to Subscan.
             genesis_hash: _,
@@ -338,11 +344,13 @@ impl Display for BlockInfo {
         writeln!(f, "Block: [{hash}]({}) ({height})", hash.block_url())?;
         writeln!(
             f,
-            "Time: {}",
-            time.as_ref()
+            "{}",
+            chain_time
+                .as_ref()
                 .map(|bt| bt.to_string())
                 .unwrap_or_else(|| "unknown".to_string())
         )?;
+        writeln!(f, "{local_time}")?;
         writeln!(
             f,
             "Slot: {}",
@@ -359,7 +367,8 @@ impl BlockInfo {
     pub fn new(block: &RawBlock, extrinsics: &RawExtrinsicList, genesis_hash: &BlockHash) -> Self {
         Self {
             link: BlockLink::from_block(block),
-            time: BlockTime::new(extrinsics),
+            chain_time: BlockTime::new_from_extrinsics(extrinsics),
+            local_time: BlockTime::new_from_local_time(),
             slot: Slot::new(block),
             genesis_hash: *genesis_hash,
         }
@@ -412,25 +421,48 @@ impl BlockInfo {
     }
 }
 
-/// A block time formatted different ways.
+/// A marker trait for block time sources.
+pub trait BlockTimeSource {}
+
+/// A monotonic block time sourced from the blockchain.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Ord, PartialOrd, Hash)]
+pub struct ChainTime;
+
+/// A potentially out-of-order block time sourced from the alerter local clock.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Ord, PartialOrd, Hash)]
+pub struct LocalTime;
+
+impl BlockTimeSource for ChainTime {}
+
+impl BlockTimeSource for LocalTime {}
+
+/// A block chain time, which can be formatted in different ways.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Ord, PartialOrd)]
-pub struct BlockTime {
+pub struct BlockTime<S: BlockTimeSource> {
     /// The block UNIX time (in milliseconds).
     pub unix_time: RawTime,
+
+    /// The block time source.
+    pub source: S,
 }
 
-impl Display for BlockTime {
+impl<S: BlockTimeSource + fmt::Debug> Display for BlockTime<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} ({})", self.human_time(), self.unix_time)
+        write!(
+            f,
+            "{:?}: {} ({})",
+            self.source,
+            self.human_time(),
+            self.unix_time
+        )
     }
 }
 
-impl BlockTime {
-    /// Returns the block UNIX time (in milliseconds), a date time type, and a human-readable time
-    /// string.
+impl BlockTime<ChainTime> {
+    /// Returns the block UNIX time extrinsic, if it exists.
     ///
     /// If the block does not have a timestamp set extrinsic, or parsing fails, returns `None`.
-    pub fn new(extrinsics: &RawExtrinsicList) -> Option<BlockTime> {
+    pub fn new_from_extrinsics(extrinsics: &RawExtrinsicList) -> Option<Self> {
         // Find the timestamp set extrinsic (usually the first extrinsic).
         for extrinsic in extrinsics.iter() {
             let Ok(meta) = extrinsic.extrinsic_metadata() else {
@@ -455,12 +487,30 @@ impl BlockTime {
                 .try_into()
                 .ok()?;
 
-            return Some(BlockTime { unix_time });
+            return Some(BlockTime {
+                unix_time,
+                source: ChainTime,
+            });
         }
 
         None
     }
+}
 
+impl BlockTime<LocalTime> {
+    /// Returns the current local UNIX time (in milliseconds).
+    pub fn new_from_local_time() -> Self {
+        Self {
+            unix_time: Utc::now()
+                .timestamp_millis()
+                .try_into()
+                .expect("local time is always after 1970"),
+            source: LocalTime,
+        }
+    }
+}
+
+impl<S: BlockTimeSource> BlockTime<S> {
     /// Returns the block time as a date time type.
     pub fn date_time(&self) -> Option<DateTime<Utc>> {
         // If the time is out of range, return None.
@@ -472,6 +522,34 @@ impl BlockTime {
     pub fn human_time(&self) -> String {
         fmt_timestamp(self.date_time())
     }
+}
+
+/// Calculates the local time since a block was received.
+/// Returns `None` if the block is missing a timestamp.
+pub fn local_time_gap_since_block(block_info: BlockInfo) -> Option<Duration> {
+    gap_since_time(Utc::now(), block_info.local_time.date_time()?)
+}
+
+/// Calculates the chain timestamp gap between two blocks, if both are present and have timestamps.
+/// Returns `None` if either block info is missing, or a block is missing a timestamp.
+pub fn chain_time_gap_since_last_block(
+    block_info: impl Into<Option<BlockInfo>>,
+    prev_block_info: impl Into<Option<BlockInfo>>,
+) -> Option<Duration> {
+    let block_info = block_info.into()?;
+    let prev_block_info = prev_block_info.into()?;
+
+    gap_since_time(
+        block_info.chain_time?.date_time()?,
+        prev_block_info.chain_time?.date_time()?,
+    )
+}
+
+/// Calculates the timestamp gap between two times.
+fn gap_since_time(later_time: DateTime<Utc>, earlier_time: DateTime<Utc>) -> Option<Duration> {
+    let gap = later_time.signed_duration_since(earlier_time);
+
+    gap.to_std().ok()
 }
 
 /// Extrinsic info that can be formatted.
@@ -694,32 +772,6 @@ impl EventInfo {
     pub fn fields_str(&self) -> String {
         fmt_fields(&self.fields)
     }
-}
-
-/// Calculates the timestamp gap between a block and a later time, if the block is present and has a
-/// timestamp. Returns `None` if the block info is missing, or the block is missing a timestamp.
-pub fn gap_since_time(
-    latest_time: DateTime<Utc>,
-    prev_block_info: impl Into<Option<BlockInfo>>,
-) -> Option<Duration> {
-    let prev_block_info = prev_block_info.into()?;
-    let prev_block_time = prev_block_info.time?;
-
-    let gap = latest_time.signed_duration_since(prev_block_time.date_time()?);
-
-    gap.to_std().ok()
-}
-
-/// Calculates the timestamp gap between two blocks, if both are present and have timestamps.
-/// Returns `None` if either block info is missing, or a block is missing a timestamp.
-pub fn gap_since_last_block(
-    block_info: impl Into<Option<BlockInfo>>,
-    prev_block_info: impl Into<Option<BlockInfo>>,
-) -> Option<Duration> {
-    let block_info = block_info.into()?;
-    let block_time = block_info.time?;
-
-    gap_since_time(block_time.date_time()?, prev_block_info)
 }
 
 /// A Subspace block slot.

@@ -320,7 +320,7 @@ impl MemoryFarmingMonitor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::subspace::{BlockHash, BlockLink, BlockPosition};
+    use crate::slot_time_monitor::test_utils::mock_block_info;
     use tokio::sync::mpsc;
 
     fn farmers() -> [FarmerPublicKey; 3] {
@@ -351,20 +351,10 @@ mod tests {
         farming_monitor.update_number_of_farmers_with_votes();
 
         // Run checks on the number of farmers.
+        let mock_block_info = mock_block_info(None, None);
         if farming_monitor.has_passed_minimum_block_interval() {
             farming_monitor
-                .check_farmer_count(
-                    &BlockInfo {
-                        link: BlockLink::new(
-                            BlockPosition::new(block_height, BlockHash::zero()),
-                            BlockHash::zero(),
-                        ),
-                        time: None,
-                        slot: None,
-                        genesis_hash: BlockHash::zero(),
-                    },
-                    BlockCheckMode::Current,
-                )
+                .check_farmer_count(&mock_block_info, BlockCheckMode::Current)
                 .await?;
         }
 
@@ -451,15 +441,10 @@ mod tests {
                 .insert(FarmerPublicKey::from_low_u64_be(u64::from(i)), 1);
         }
 
-        let block_info = BlockInfo {
-            link: BlockLink::new(BlockPosition::new(1, BlockHash::zero()), BlockHash::zero()),
-            time: None,
-            slot: None,
-            genesis_hash: BlockHash::zero(),
-        };
+        let mock_block_info = mock_block_info(None, None);
         farming_monitor.update_number_of_farmers_with_votes();
         farming_monitor
-            .check_farmer_count(&block_info, BlockCheckMode::Current)
+            .check_farmer_count(&mock_block_info, BlockCheckMode::Current)
             .await?;
 
         let alert = alert_rx.recv().await.expect("expected decrease alert");
@@ -472,7 +457,7 @@ mod tests {
                     average_number_of_farmers_with_votes: f64::from(10 + 10 + 10 + 5) / 4.0f64,
                     number_of_blocks: 4,
                 },
-                block_info,
+                mock_block_info,
                 BlockCheckMode::Current,
             )
         );
@@ -484,7 +469,7 @@ mod tests {
 
         // Check that no alert is emitted again after the alert has been emitted.
         farming_monitor
-            .check_farmer_count(&block_info, BlockCheckMode::Current)
+            .check_farmer_count(&mock_block_info, BlockCheckMode::Current)
             .await?;
 
         alert_rx.try_recv().unwrap_err();
@@ -519,13 +504,7 @@ mod tests {
                 .insert(FarmerPublicKey::from_low_u64_be(u64::from(i)), 1);
         }
 
-        let mock_block_info = BlockInfo {
-            link: BlockLink::new(BlockPosition::new(1, BlockHash::zero()), BlockHash::zero()),
-            time: None,
-            slot: None,
-            genesis_hash: BlockHash::zero(),
-        };
-
+        let mock_block_info = mock_block_info(None, None);
         farming_monitor.update_number_of_farmers_with_votes();
         farming_monitor
             .check_farmer_count(&mock_block_info, BlockCheckMode::Current)
@@ -589,20 +568,10 @@ mod tests {
                 .insert(FarmerPublicKey::from_low_u64_be(u64::from(i)), 1);
         }
 
+        let mock_block_info = mock_block_info(None, None);
         farming_monitor.update_number_of_farmers_with_votes();
         farming_monitor
-            .check_farmer_count(
-                &BlockInfo {
-                    link: BlockLink::new(
-                        BlockPosition::new(1, BlockHash::zero()),
-                        BlockHash::zero(),
-                    ),
-                    time: None,
-                    slot: None,
-                    genesis_hash: BlockHash::zero(),
-                },
-                BlockCheckMode::Current,
-            )
+            .check_farmer_count(&mock_block_info, BlockCheckMode::Current)
             .await?;
 
         // No alert expected

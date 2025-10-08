@@ -192,7 +192,7 @@ impl MemorySlotTimeMonitor {
         };
 
         let (lowest_block_time_in_seconds, last_block_time_in_seconds) =
-            match (lowest_block.time, last_block.time) {
+            match (lowest_block.chain_time, last_block.chain_time) {
                 (Some(lowest_block_time), Some(last_block_time)) => (
                     lowest_block_time.unix_time / 1000,
                     last_block_time.unix_time / 1000,

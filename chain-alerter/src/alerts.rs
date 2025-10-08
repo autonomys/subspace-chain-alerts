@@ -13,9 +13,8 @@ use crate::chain_fork_monitor::ChainForkEvent;
 use crate::format::{fmt_amount, fmt_duration};
 use crate::subspace::{
     AI3, Balance, BlockInfo, BlockPosition, EventInfo, ExtrinsicInfo, RawEvent, RawExtrinsic,
-    TARGET_BLOCK_INTERVAL, gap_since_last_block, gap_since_time,
+    TARGET_BLOCK_INTERVAL, chain_time_gap_since_last_block, local_time_gap_since_block,
 };
-use chrono::Utc;
 use std::fmt::{self, Display};
 use std::sync::Arc;
 use std::time::Duration;
@@ -177,14 +176,14 @@ pub enum AlertKind {
     Startup,
 
     /// A node has stopped receiving blocks.
-    BlockReceivedGap {
+    BlockReceiveGap {
         /// The gap since the previous block from the node, based on alerter local time.
         ///
         /// Note: the previous block is `Alert.block_info`.
         gap: Option<Duration>,
     },
 
-    /// There is a gap between block header times.
+    /// A gap between block header times (with no stall according to the node time).
     BlockHeaderTimeGap {
         /// The gap between the previous and current block header times.
         ///
@@ -376,7 +375,7 @@ impl Display for AlertKind {
                 write!(f, "**Launched and connected to the node**")
             }
 
-            Self::BlockReceivedGap { gap } => {
+            Self::BlockReceiveGap { gap } => {
                 write!(
                     f,
                     "**Node stopped receiving blocks**\n\
@@ -623,7 +622,7 @@ impl AlertKind {
     pub fn is_test_alert(&self) -> bool {
         match self {
             Self::Startup => true,
-            Self::BlockReceivedGap { .. }
+            Self::BlockReceiveGap { .. }
             | Self::BlockHeaderTimeGap { .. }
             | Self::NewSideFork { .. }
             | Self::SideForkExtended { .. }
@@ -662,7 +661,7 @@ impl AlertKind {
                 true
             },
             Self::Startup
-            | Self::BlockReceivedGap { .. }
+            | Self::BlockReceiveGap { .. }
             | Self::BlockHeaderTimeGap { .. }
             | Self::NewSideFork { .. }
             | Self::SideForkExtended { .. }
@@ -692,7 +691,7 @@ impl AlertKind {
             // Deliberately repeat each enum variant here, so we can't forget to update this
             // method when adding new variants.
             Self::Startup
-            | Self::BlockReceivedGap { .. }
+            | Self::BlockReceiveGap { .. }
             | Self::NewSideFork { .. }
             | Self::SideForkExtended { .. }
             | Self::Reorg { .. }
@@ -718,13 +717,17 @@ impl AlertKind {
     /// position.
     #[allow(dead_code, reason = "TODO: use in tests")]
     pub fn prev_block_position(&self) -> Option<BlockPosition> {
+        if let Some(prev_block_info) = self.prev_block_info() {
+            return Some(prev_block_info.position());
+        }
+
         match self {
             Self::BlockHeaderTimeGap {
-                prev_block_info, ..
-            } => Some(prev_block_info.position()),
+                prev_block_info: _, ..
+            } => unreachable!("already handled above"),
             Self::Reorg { old_best_block, .. } => Some(*old_best_block),
             Self::Startup
-            | Self::BlockReceivedGap { .. }
+            | Self::BlockReceiveGap { .. }
             | Self::NewSideFork { .. }
             | Self::SideForkExtended { .. }
             | Self::ForceBalanceTransfer { .. }
@@ -754,9 +757,7 @@ impl AlertKind {
             | Self::ImportantAddressExtrinsic { extrinsic_info, .. }
             | Self::SudoCall { extrinsic_info } => Some(extrinsic_info),
             Self::Startup
-            | Self::FarmersDecreasedSuddenly { .. }
-            | Self::FarmersIncreasedSuddenly { .. }
-            | Self::BlockReceivedGap { .. }
+            | Self::BlockReceiveGap { .. }
             | Self::BlockHeaderTimeGap { .. }
             | Self::NewSideFork { .. }
             | Self::SideForkExtended { .. }
@@ -767,7 +768,9 @@ impl AlertKind {
             | Self::SudoEvent { .. }
             | Self::OperatorSlashed { .. }
             | Self::SlowSlotTime { .. }
-            | Self::FastSlotTime { .. } => None,
+            | Self::FastSlotTime { .. }
+            | Self::FarmersDecreasedSuddenly { .. }
+            | Self::FarmersIncreasedSuddenly { .. } => None,
         }
     }
 
@@ -781,9 +784,7 @@ impl AlertKind {
             Self::LargeBalanceTransfer { transfer_value, .. }
             | Self::LargeBalanceTransferEvent { transfer_value, .. } => Some(*transfer_value),
             Self::Startup
-            | Self::FarmersDecreasedSuddenly { .. }
-            | Self::FarmersIncreasedSuddenly { .. }
-            | Self::BlockReceivedGap { .. }
+            | Self::BlockReceiveGap { .. }
             | Self::BlockHeaderTimeGap { .. }
             | Self::NewSideFork { .. }
             | Self::SideForkExtended { .. }
@@ -794,7 +795,9 @@ impl AlertKind {
             | Self::SudoEvent { .. }
             | Self::OperatorSlashed { .. }
             | Self::SlowSlotTime { .. }
-            | Self::FastSlotTime { .. } => None,
+            | Self::FastSlotTime { .. }
+            | Self::FarmersDecreasedSuddenly { .. }
+            | Self::FarmersIncreasedSuddenly { .. } => None,
         }
     }
 
@@ -808,7 +811,7 @@ impl AlertKind {
             | Self::OperatorSlashed { event_info }
             | Self::ImportantAddressEvent { event_info, .. } => Some(event_info),
             Self::Startup
-            | Self::BlockReceivedGap { .. }
+            | Self::BlockReceiveGap { .. }
             | Self::BlockHeaderTimeGap { .. }
             | Self::NewSideFork { .. }
             | Self::SideForkExtended { .. }
@@ -868,7 +871,7 @@ pub async fn check_block(
 
     // Because it depends on the next block, this check logs after block production/propagation
     // resumes.
-    if let Some(gap) = gap_since_last_block(*block_info, *prev_block_info) {
+    if let Some(gap) = chain_time_gap_since_last_block(*block_info, *prev_block_info) {
         // Gap alerts without a stall are harmless, and might actually be interesting in themselves.
         if gap >= MIN_BLOCK_GAP.saturating_sub(BLOCK_GAP_SLOP) {
             alert_tx
@@ -929,19 +932,19 @@ pub async fn check_for_block_stall(
             .borrow()
             .expect("never empty, a block is sent before spawning this task");
 
-        if latest_block_info.time > old_block_info.time {
+        if latest_block_info.chain_time > old_block_info.chain_time {
             // There's a new block since we sent our block and spawned our task, so block
             // production hasn't stalled. But the latest block also spawned a task, so it
             // will alert if there is actually a stall.
             return Ok(());
         }
 
-        let gap = gap_since_time(Utc::now(), old_block_info);
+        let gap = local_time_gap_since_block(old_block_info);
 
         // If there is an error, we will restart, and the new alerter will replay missed blocks.
         alert_tx
             .send(Alert::new(
-                AlertKind::BlockReceivedGap { gap },
+                AlertKind::BlockReceiveGap { gap },
                 old_block_info,
                 mode,
             ))
