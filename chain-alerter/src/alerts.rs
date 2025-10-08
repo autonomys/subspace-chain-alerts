@@ -176,17 +176,17 @@ pub enum AlertKind {
     /// The alerter has started.
     Startup,
 
-    /// Block production has stalled.
-    BlockProductionStall {
-        /// The gap between the previous block and now.
+    /// A node has stopped receiving blocks.
+    BlockReceivedGap {
+        /// The gap since the previous block from the node, based on alerter local time.
         ///
         /// Note: the previous block is `Alert.block_info`.
         gap: Option<Duration>,
     },
 
-    /// Block production has resumed.
-    BlockProductionResumed {
-        /// The gap between the previous and current block.
+    /// There is a gap between block header times.
+    BlockHeaderTimeGap {
+        /// The gap between the previous and current block header times.
         ///
         /// Note: the current block is `Alert.block_info`.
         gap: Duration,
@@ -376,22 +376,22 @@ impl Display for AlertKind {
                 write!(f, "**Launched and connected to the node**")
             }
 
-            Self::BlockProductionStall { gap } => {
+            Self::BlockReceivedGap { gap } => {
                 write!(
                     f,
-                    "**Block production stalled**\n\
-                    Time since last best block: {}",
+                    "**Node stopped receiving blocks**\n\
+                    Local time since last best block: {}",
                     fmt_duration(*gap),
                 )
             }
 
-            Self::BlockProductionResumed {
+            Self::BlockHeaderTimeGap {
                 gap,
                 prev_block_info,
             } => {
                 write!(
                     f,
-                    "**Block production resumed**\n\
+                    "**Block header time gap**\n\
                     Gap: {}\n\n\
                     Previous best block:\n\
                     {prev_block_info}",
@@ -623,8 +623,8 @@ impl AlertKind {
     pub fn is_test_alert(&self) -> bool {
         match self {
             Self::Startup => true,
-            Self::BlockProductionStall { .. }
-            | Self::BlockProductionResumed { .. }
+            Self::BlockReceivedGap { .. }
+            | Self::BlockHeaderTimeGap { .. }
             | Self::NewSideFork { .. }
             | Self::SideForkExtended { .. }
             | Self::Reorg { .. }
@@ -662,8 +662,8 @@ impl AlertKind {
                 true
             },
             Self::Startup
-            | Self::BlockProductionStall { .. }
-            | Self::BlockProductionResumed { .. }
+            | Self::BlockReceivedGap { .. }
+            | Self::BlockHeaderTimeGap { .. }
             | Self::NewSideFork { .. }
             | Self::SideForkExtended { .. }
             | Self::Reorg { .. }
@@ -686,13 +686,13 @@ impl AlertKind {
     #[allow(dead_code, reason = "TODO: use in tests")]
     pub fn prev_block_info(&self) -> Option<&BlockInfo> {
         match self {
-            Self::BlockProductionResumed {
+            Self::BlockHeaderTimeGap {
                 prev_block_info, ..
             } => Some(prev_block_info),
             // Deliberately repeat each enum variant here, so we can't forget to update this
             // method when adding new variants.
             Self::Startup
-            | Self::BlockProductionStall { .. }
+            | Self::BlockReceivedGap { .. }
             | Self::NewSideFork { .. }
             | Self::SideForkExtended { .. }
             | Self::Reorg { .. }
@@ -719,12 +719,12 @@ impl AlertKind {
     #[allow(dead_code, reason = "TODO: use in tests")]
     pub fn prev_block_position(&self) -> Option<BlockPosition> {
         match self {
-            Self::BlockProductionResumed {
+            Self::BlockHeaderTimeGap {
                 prev_block_info, ..
             } => Some(prev_block_info.position()),
             Self::Reorg { old_best_block, .. } => Some(*old_best_block),
             Self::Startup
-            | Self::BlockProductionStall { .. }
+            | Self::BlockReceivedGap { .. }
             | Self::NewSideFork { .. }
             | Self::SideForkExtended { .. }
             | Self::ForceBalanceTransfer { .. }
@@ -756,8 +756,8 @@ impl AlertKind {
             Self::Startup
             | Self::FarmersDecreasedSuddenly { .. }
             | Self::FarmersIncreasedSuddenly { .. }
-            | Self::BlockProductionStall { .. }
-            | Self::BlockProductionResumed { .. }
+            | Self::BlockReceivedGap { .. }
+            | Self::BlockHeaderTimeGap { .. }
             | Self::NewSideFork { .. }
             | Self::SideForkExtended { .. }
             | Self::LargeBalanceTransferEvent { .. }
@@ -783,8 +783,8 @@ impl AlertKind {
             Self::Startup
             | Self::FarmersDecreasedSuddenly { .. }
             | Self::FarmersIncreasedSuddenly { .. }
-            | Self::BlockProductionStall { .. }
-            | Self::BlockProductionResumed { .. }
+            | Self::BlockReceivedGap { .. }
+            | Self::BlockHeaderTimeGap { .. }
             | Self::NewSideFork { .. }
             | Self::SideForkExtended { .. }
             | Self::Reorg { .. }
@@ -808,8 +808,8 @@ impl AlertKind {
             | Self::OperatorSlashed { event_info }
             | Self::ImportantAddressEvent { event_info, .. } => Some(event_info),
             Self::Startup
-            | Self::BlockProductionStall { .. }
-            | Self::BlockProductionResumed { .. }
+            | Self::BlockReceivedGap { .. }
+            | Self::BlockHeaderTimeGap { .. }
             | Self::NewSideFork { .. }
             | Self::SideForkExtended { .. }
             | Self::Reorg { .. }
@@ -866,14 +866,14 @@ pub async fn check_block(
         return Ok(());
     };
 
-    // Because it depends on the next block, this check logs after block production resumes.
+    // Because it depends on the next block, this check logs after block production/propagation
+    // resumes.
     if let Some(gap) = gap_since_last_block(*block_info, *prev_block_info) {
-        // Resume alerts without a stall are harmless, and might actually be interesting in
-        // themselves.
+        // Gap alerts without a stall are harmless, and might actually be interesting in themselves.
         if gap >= MIN_BLOCK_GAP.saturating_sub(BLOCK_GAP_SLOP) {
             alert_tx
                 .send(Alert::new(
-                    AlertKind::BlockProductionResumed {
+                    AlertKind::BlockHeaderTimeGap {
                         gap,
                         prev_block_info: *prev_block_info,
                     },
@@ -941,7 +941,7 @@ pub async fn check_for_block_stall(
         // If there is an error, we will restart, and the new alerter will replay missed blocks.
         alert_tx
             .send(Alert::new(
-                AlertKind::BlockProductionStall { gap },
+                AlertKind::BlockReceivedGap { gap },
                 old_block_info,
                 mode,
             ))
