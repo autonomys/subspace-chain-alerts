@@ -7,14 +7,21 @@
 pub mod test_utils;
 
 use crate::alerts::{Alert, AlertKind, BlockCheckMode};
-use crate::subspace::{BlockInfo, BlockTime, RawTime, Slot};
+use crate::subspace::BlockInfo;
+use anyhow::Ok;
+use std::collections::VecDeque;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tokio::sync::mpsc::error::SendError;
-use tracing::{debug, info, warn};
+use tracing::warn;
 
 /// The default threshold for the slot time alert.
-pub const DEFAULT_SLOT_TIME_ALERT_THRESHOLD: f64 = 1.05;
+pub const DEFAULT_SLOW_SLOTS_THRESHOLD: f64 = 1.05;
+
+/// The default fast slots threshold for the slot time alert.
+pub const DEFAULT_FAST_SLOTS_THRESHOLD: f64 = 0.95;
+
+/// The default maximum block buffer size.
+pub const DEFAULT_MAX_BLOCK_BUFFER: usize = 100;
 
 /// The default check interval for the slot time monitor.
 pub const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_secs(600);
@@ -34,9 +41,12 @@ pub trait SlotTimeMonitor {
 pub struct SlotTimeMonitorConfig {
     /// Interval between checks of slot timing.
     pub check_interval: Duration,
+    /// Maximum block buffer
+    pub max_block_buffer: usize,
     /// Minimum threshold for alerting based on time-per-slot ratio.
-    /// TODO: also alert on a maximum threshold
-    pub alert_threshold: f64,
+    pub slow_slots_threshold: f64,
+    /// Maximum threshold for alerting based on time-per-slot ratio.
+    pub fast_slots_threshold: f64,
     /// Channel used to emit alerts.
     pub alert_tx: mpsc::Sender<Alert>,
 }
@@ -52,24 +62,34 @@ pub struct MemorySlotTimeMonitor {
 
 /// State tracked by the slot time monitor, and updated at the same time.
 ///
-/// Reorgs are effectively ignored in the slot time state.
-/// If the chain passes `next_check_time` before the reorg, then the reorg will be a long way
-/// behind the new `next_check_time`.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+/// Reorgs will provoke to reduce the block height check window since some blocks heights will be
+/// duplicated, which is not precise but good enough for the slot time monitor.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct SlotTimeMonitorState {
-    /// First slot observed in the current checking interval.
-    first_slot_in_interval: Slot,
-    /// Consensus wall-clock time when the first slot of the interval was observed.
-    first_slot_time: BlockTime,
-    /// Next consensus wall-clock time when a check should occur.
-    next_check_time: BlockTime,
+    /// Block buffer
+    block_buffer: VecDeque<BlockInfo>,
+    /// The status of the slot time monitor.
+    alerting_status: AlertingStatus,
+}
+
+/// The status of the slot time monitor.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub enum AlertingStatus {
+    /// The slot time monitor is alerting.
+    FastSlotTime,
+    /// The slot time monitor is alerting.
+    SlowSlotTime,
+    /// The slot time monitor is not alerting.
+    NotAlerting,
 }
 
 impl SlotTimeMonitorConfig {
     /// Create a new slot time monitor configuration with the provided parameters.
     pub fn new(
         check_interval: Duration,
-        alert_threshold: f64,
+        max_block_buffer: usize,
+        slow_slots_threshold: f64,
+        fast_slots_threshold: f64,
         alert_tx: mpsc::Sender<Alert>,
     ) -> Self {
         assert!(
@@ -79,7 +99,9 @@ impl SlotTimeMonitorConfig {
 
         Self {
             check_interval,
-            alert_threshold,
+            max_block_buffer,
+            slow_slots_threshold,
+            fast_slots_threshold,
             alert_tx,
         }
     }
@@ -92,83 +114,13 @@ impl SlotTimeMonitor for MemorySlotTimeMonitor {
         mode: BlockCheckMode,
         block_info: &BlockInfo,
     ) -> anyhow::Result<()> {
-        let (block_time, block_slot) = match (block_info.time, block_info.slot) {
-            (Some(block_time), Some(block_slot)) => (block_time, block_slot),
-            // These errors indicate a chain metadata issue, which should be fixed by restarting.
-            (None, None) => {
-                warn!(?mode, "Block time and slot not found");
-                return Err(anyhow::anyhow!("block time and slot not found"));
-            }
-            (None, Some(_)) => {
-                warn!(?mode, "Block time not found");
-                return Err(anyhow::anyhow!("block time not found"));
-            }
-            (Some(_), None) => {
-                warn!(?mode, "Block slot not found");
-                return Err(anyhow::anyhow!("block slot not found"));
-            }
-        };
+        self.push_block_to_buffer(*block_info);
 
-        debug!(
-            ?mode,
-            "Extracted slot: {:?} for block {:?}",
-            block_slot,
-            block_info.height(),
-        );
-
-        match self.state {
-            // slot available, we should check if we are in the interval
-            Some(state) if state.next_check_time <= block_time && !mode.is_startup() => {
-                debug!(?mode, "Checking slot time alert in interval...");
-
-                let slot_diff = block_slot - state.first_slot_in_interval;
-                let time_diff = state
-                    .next_check_time
-                    .unix_time
-                    .checked_sub(state.first_slot_time.unix_time);
-
-                if let Some(time_diff) = time_diff {
-                    let time_diff_in_seconds = time_diff / 1000;
-                    #[allow(
-                        clippy::cast_precision_loss,
-                        reason = "time and slot differences are much smaller than 52 bits in practice"
-                    )]
-                    let time_per_slot = time_diff_in_seconds as f64 / slot_diff as f64;
-                    if time_per_slot > self.config.alert_threshold {
-                        info!(
-                            ?mode,
-                            "Time per slot alert triggered, time_per_slot: {time_per_slot}",
-                        );
-                        self.send_alert(time_per_slot, *block_info, mode).await?;
-                    } else {
-                        debug!(
-                            ?mode,
-                            "Time per slot not triggered, time_per_slot: {time_per_slot}",
-                        );
-                    }
-                    self.schedule_next_check(block_time, block_slot);
-
-                    Ok(())
-                } else {
-                    warn!(
-                        ?mode,
-                        "Unexpected slot time, earlier than first block in interval: {block_info:?} - {state:?}",
-                    );
-                    // This error indicates a chain gap or history consistency issue, or a metadata
-                    // issue, which should be fixed by restarting.
-                    Err(anyhow::anyhow!(
-                        "Unexpected slot time, earlier than first block in interval: {block_info:?} - {state:?}"
-                    ))
-                }
-            }
-            // do nothing if we are in the interval, or during startup
-            Some(_) => Ok(()),
-            // we received a new block, so we init the first check
-            None => {
-                self.schedule_next_check(block_time, block_slot);
-                Ok(())
-            }
+        let result = self.check_slot_time(mode, block_info).await;
+        if result.is_err() {
+            warn!("error checking slot time: {result:?}");
         }
+        result
     }
 }
 
@@ -181,46 +133,164 @@ impl MemorySlotTimeMonitor {
         }
     }
 
+    /// Push a block to the buffer and remove the oldest block if the buffer is full.
+    fn push_block_to_buffer(&mut self, block_info: BlockInfo) {
+        // Initialize state if it doesn't exist
+        if self.state.is_none() {
+            self.state = Some(SlotTimeMonitorState {
+                block_buffer: VecDeque::new(),
+                alerting_status: AlertingStatus::NotAlerting,
+            });
+        }
+
+        if let Some(state) = self.state.as_mut() {
+            state.block_buffer.push_front(block_info);
+            if state.block_buffer.len() > self.config.max_block_buffer {
+                state.block_buffer.pop_back();
+            }
+        }
+    }
+
+    /// Check the slot time and send alerts if needed.
+    async fn check_slot_time(
+        &mut self,
+        mode: BlockCheckMode,
+        block_info: &BlockInfo,
+    ) -> anyhow::Result<()> {
+        // Ignore alerts during startup mode
+        if mode.is_startup() {
+            return Ok(());
+        }
+
+        // Only check slot timing when the buffer is full
+        let state = match &self.state {
+            Some(state) => state,
+            None => return Ok(()),
+        };
+
+        // Check if buffer is full (has reached max_block_buffer)
+        if state.block_buffer.len() < self.config.max_block_buffer {
+            return Ok(());
+        }
+
+        let (lowest_block, last_block) = (
+            state.block_buffer.back().cloned(),
+            state.block_buffer.front().cloned(),
+        );
+
+        let (lowest_block, last_block) = match (lowest_block, last_block) {
+            (Some(lowest_block), Some(last_block)) => (lowest_block, last_block),
+            _ => return Ok(()),
+        };
+
+        let (lowest_block_slot, last_block_slot) = match (lowest_block.slot, last_block.slot) {
+            (Some(lowest_block_slot), Some(last_block_slot)) => {
+                (lowest_block_slot, last_block_slot)
+            }
+            // If either block doesn't have a slot, return Ok(())
+            _ => return Ok(()),
+        };
+
+        let (lowest_block_time_in_seconds, last_block_time_in_seconds) =
+            match (lowest_block.time, last_block.time) {
+                (Some(lowest_block_time), Some(last_block_time)) => (
+                    lowest_block_time.unix_time / 1000,
+                    last_block_time.unix_time / 1000,
+                ),
+                // If either block doesn't have a time, return Ok(())
+                _ => return Ok(()),
+            };
+
+        let slot_diff = last_block_slot - lowest_block_slot;
+        let time_diff = last_block_time_in_seconds - lowest_block_time_in_seconds;
+
+        // If time diff is 0, return an error should never happen though
+        if time_diff == 0 {
+            return Err(anyhow::anyhow!("time diff is 0"));
+        }
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "The range of slot diff and time diff is small enough that precision loss is acceptable"
+        )]
+        let slot_diff_per_time_diff = slot_diff as f64 / time_diff as f64;
+
+        if slot_diff_per_time_diff < self.config.slow_slots_threshold {
+            self.send_slow_slot_time_alert(slot_diff, slot_diff_per_time_diff, *block_info, mode)
+                .await?;
+        } else if slot_diff_per_time_diff > self.config.fast_slots_threshold {
+            self.send_fast_slot_time_alert(slot_diff, slot_diff_per_time_diff, *block_info, mode)
+                .await?;
+        } else {
+            self.set_alerting_status(AlertingStatus::NotAlerting);
+        }
+
+        Ok(())
+    }
+
     /// Send a slot time alert with the computed ratio and block info.
-    async fn send_alert(
-        &self,
+    async fn send_slow_slot_time_alert(
+        &mut self,
+        slot_diff: u64,
         slot_diff_per_time_diff: f64,
         block_info: BlockInfo,
         mode: BlockCheckMode,
-    ) -> Result<(), SendError<Alert>> {
-        self.config
-            .alert_tx
-            .send(Alert::new(
-                AlertKind::SlotTime {
-                    current_ratio: slot_diff_per_time_diff,
-                    threshold: self.config.alert_threshold,
-                    interval: self.config.check_interval,
-                    first_slot_time: self
-                        .state
-                        .expect("alerts are only triggered when state is present")
-                        .first_slot_time,
-                },
-                block_info,
-                mode,
-            ))
-            .await
+    ) -> anyhow::Result<()> {
+        // Only send alert if we're not already alerting for slow slot time
+        if let Some(state) = self.state.as_mut()
+            && state.alerting_status != AlertingStatus::SlowSlotTime
+        {
+            self.set_alerting_status(AlertingStatus::SlowSlotTime);
+            self.config
+                .alert_tx
+                .send(Alert::new(
+                    AlertKind::SlowSlotTime {
+                        slot_amount: slot_diff,
+                        current_ratio: slot_diff_per_time_diff,
+                        threshold: self.config.slow_slots_threshold,
+                        interval: self.config.check_interval,
+                    },
+                    block_info,
+                    mode,
+                ))
+                .await?;
+        }
+        Ok(())
     }
 
-    /// Schedule the next check at `current_time + check_interval` and record the slot.
-    fn schedule_next_check(&mut self, current_time: BlockTime, current_slot: Slot) {
-        let next_check_time = BlockTime {
-            unix_time: current_time.unix_time
-                + RawTime::try_from(self.config.check_interval.as_millis())
-                    .expect("already checked when constructing config"),
-        };
-        debug!(
-            "Scheduling next check for block time: {:?}",
-            next_check_time
-        );
-        self.state = Some(SlotTimeMonitorState {
-            first_slot_in_interval: current_slot,
-            first_slot_time: current_time,
-            next_check_time,
-        });
+    /// Send a fast slot time alert with the computed ratio and block info.
+    async fn send_fast_slot_time_alert(
+        &mut self,
+        slot_diff: u64,
+        slot_diff_per_time_diff: f64,
+        block_info: BlockInfo,
+        mode: BlockCheckMode,
+    ) -> anyhow::Result<()> {
+        // Only send alert if we're not already alerting for fast slot time
+        if let Some(state) = self.state.as_mut()
+            && state.alerting_status != AlertingStatus::FastSlotTime
+        {
+            self.set_alerting_status(AlertingStatus::FastSlotTime);
+            self.config
+                .alert_tx
+                .send(Alert::new(
+                    AlertKind::FastSlotTime {
+                        slot_amount: slot_diff,
+                        current_ratio: slot_diff_per_time_diff,
+                        threshold: self.config.fast_slots_threshold,
+                        interval: self.config.check_interval,
+                    },
+                    block_info,
+                    mode,
+                ))
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Helper function to set the alerting status.
+    fn set_alerting_status(&mut self, alert_status: AlertingStatus) {
+        if let Some(state) = self.state.as_mut() {
+            state.alerting_status = alert_status;
+        }
     }
 }

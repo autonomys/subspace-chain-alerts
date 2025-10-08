@@ -579,17 +579,18 @@ async fn test_important_address_only_alerts() -> anyhow::Result<()> {
 async fn no_expected_test_slot_time_alert() -> anyhow::Result<()> {
     let (alert_tx, mut alert_rx) = alert_channel_only_setup();
 
-    let first_block = mock_block_info(1000, Slot(100));
-    let second_block = mock_block_info(2000, Slot(200));
+    let first_block = mock_block_info(100000, Slot(100));
+    let second_block = mock_block_info(200000, Slot(200));
 
-    let mut naive_slot_time_monitor = MemorySlotTimeMonitor::new({
-        SlotTimeMonitorConfig {
-            check_interval: Duration::from_secs(1),
-            alert_threshold: 10.0f64,
-            alert_tx: alert_tx.clone(),
-        }
-    });
+    let mut naive_slot_time_monitor = MemorySlotTimeMonitor::new(SlotTimeMonitorConfig::new(
+        Duration::from_secs(1),
+        2,       // max_block_buffer - small buffer for testing
+        0.5f64,  // slow_slots_threshold
+        10.0f64, // fast_slots_threshold
+        alert_tx.clone(),
+    ));
 
+    // Process blocks to fill the buffer
     naive_slot_time_monitor
         .process_block(BlockCheckMode::Replay, &first_block)
         .await?;
@@ -610,17 +611,18 @@ async fn no_expected_test_slot_time_alert() -> anyhow::Result<()> {
 async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
     let (alert_tx, mut alert_rx) = alert_channel_only_setup();
 
-    let first_block = mock_block_info(1000, Slot(100));
-    let second_block = mock_block_info(2000, Slot(200));
+    let first_block = mock_block_info(100000, Slot(100));
+    let second_block = mock_block_info(200000, Slot(200));
 
-    let mut strict_slot_time_monitor = MemorySlotTimeMonitor::new({
-        SlotTimeMonitorConfig {
-            check_interval: Duration::from_secs(1),
-            alert_threshold: 0f64,
-            alert_tx: alert_tx.clone(),
-        }
-    });
+    let mut strict_slot_time_monitor = MemorySlotTimeMonitor::new(SlotTimeMonitorConfig::new(
+        Duration::from_secs(1),
+        2,       // max_block_buffer - small buffer for testing
+        5.0f64,  // slow_slots_threshold
+        10.0f64, // fast_slots_threshold
+        alert_tx.clone(),
+    ));
 
+    // Process blocks to fill the buffer
     strict_slot_time_monitor
         .process_block(BlockCheckMode::Replay, &first_block)
         .await?;
@@ -635,13 +637,11 @@ async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
     assert_eq!(
         alert,
         Alert::new(
-            AlertKind::SlotTime {
-                current_ratio: 0.01,
-                threshold: 0.0,
+            AlertKind::SlowSlotTime {
+                slot_amount: 100,
+                current_ratio: 1.0,
+                threshold: 5.0,
                 interval: Duration::from_secs(1),
-                first_slot_time: first_block
-                    .time
-                    .expect("block must have time to trigger alert"),
             },
             second_block,
             BlockCheckMode::Replay,
@@ -655,33 +655,176 @@ async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Check that the slot time alert is not triggered when the time per slot is above the threshold
-/// but has not elapsed enough time.
+/// Check that the slot time alert is triggered
+/// when the slot per time ratio gets above the slow threshold.
 #[tokio::test(flavor = "multi_thread")]
-async fn expected_test_slot_time_alert_but_not_yet() -> anyhow::Result<()> {
+async fn test_slot_time_above_slow_threshold() -> anyhow::Result<()> {
     let (alert_tx, mut alert_rx) = alert_channel_only_setup();
 
-    let first_block = mock_block_info(1000, Slot(100));
-    let second_block = mock_block_info(2000, Slot(200));
+    // Create blocks with a very fast slot progression (high ratio)
+    // First block at time 100000ms, slot 100
+    // Second block at time 101000ms, slot 200
+    // This gives us 1 slots in 1000ms = 1 slots per second
+    let first_block = mock_block_info(100000, Slot(100));
+    let second_block = mock_block_info(200000, Slot(101));
 
-    let mut strict_slot_time_monitor = MemorySlotTimeMonitor::new({
-        SlotTimeMonitorConfig {
-            check_interval: Duration::from_secs(3600 * 24),
-            alert_threshold: 0f64,
-            alert_tx: alert_tx.clone(),
-        }
-    });
+    let mut slot_time_monitor = MemorySlotTimeMonitor::new(SlotTimeMonitorConfig::new(
+        Duration::from_secs(1),
+        2,      // max_block_buffer - small buffer for testing
+        0.5f64, // slow_slots_threshold (1.0 > 0.5, so should trigger)
+        100f64, // fast_slots_threshold
+        alert_tx.clone(),
+    ));
 
-    strict_slot_time_monitor
+    // Process blocks to fill the buffer
+    slot_time_monitor
         .process_block(BlockCheckMode::Replay, &first_block)
         .await?;
-    strict_slot_time_monitor
+    slot_time_monitor
         .process_block(BlockCheckMode::Replay, &second_block)
         .await?;
+
+    let alert = alert_rx
+        .try_recv()
+        .expect("SlowSlotTime alert not received when expected");
+
+    assert_eq!(
+        alert,
+        Alert::new(
+            AlertKind::SlowSlotTime {
+                slot_amount: 1,
+                current_ratio: 1.0 / 100.0, // 1 slots / 1000ms = 0.01 slots per second
+                threshold: 0.5,
+                interval: Duration::from_secs(1),
+            },
+            second_block,
+            BlockCheckMode::Replay,
+        )
+    );
 
     alert_rx
         .try_recv()
         .expect_err("alert received when none expected");
+
+    Ok(())
+}
+
+/// Check that the slot time alert is triggered when the slot per time ratio gets below the fast
+/// threshold.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_slot_time_below_fast_threshold() -> anyhow::Result<()> {
+    let (alert_tx, mut alert_rx) = alert_channel_only_setup();
+
+    // Create blocks with a very slow slot progression (low ratio)
+    // First block at time 100000, slot 100
+    // Second block at time 200000, slot 200
+    // This gives us 100 slots in 100000ms = 1 slots per second
+    let first_block = mock_block_info(100000, Slot(100));
+    let second_block = mock_block_info(200000, Slot(200));
+
+    let mut slot_time_monitor = MemorySlotTimeMonitor::new(SlotTimeMonitorConfig::new(
+        Duration::from_secs(1),
+        2,      // max_block_buffer - small buffer for testing
+        0.1f64, // slow_slots_threshold
+        0.5f64, // fast_slots_threshold
+        alert_tx.clone(),
+    ));
+
+    // Process blocks to fill the buffer
+    slot_time_monitor
+        .process_block(BlockCheckMode::Replay, &first_block)
+        .await?;
+    slot_time_monitor
+        .process_block(BlockCheckMode::Replay, &second_block)
+        .await?;
+
+    let alert = alert_rx
+        .try_recv()
+        .expect("FastSlotTime alert not received when expected");
+
+    assert_eq!(
+        alert,
+        Alert::new(
+            AlertKind::FastSlotTime {
+                slot_amount: 100,
+                current_ratio: 1.0, // 100 slots / 100000ms = 1.0 slots per second
+                threshold: 0.5,
+                interval: Duration::from_secs(1),
+            },
+            second_block,
+            BlockCheckMode::Replay,
+        )
+    );
+
+    alert_rx
+        .try_recv()
+        .expect_err("alert received when none expected");
+
+    Ok(())
+}
+
+/// Check that slot time alerts are ignored during startup mode.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_slot_time_alerts_ignored_during_startup() -> anyhow::Result<()> {
+    let (alert_tx, mut alert_rx) = alert_channel_only_setup();
+
+    // Create blocks that would normally trigger an alert
+    let first_block = mock_block_info(1000, Slot(100));
+    let second_block = mock_block_info(2000, Slot(200));
+
+    let mut slot_time_monitor = MemorySlotTimeMonitor::new(SlotTimeMonitorConfig::new(
+        Duration::from_secs(1),
+        2,      // max_block_buffer - small buffer for testing
+        0.5f64, // slow_slots_threshold (0.1 < 0.5, so would normally trigger)
+        0.1f64, // fast_slots_threshold
+        alert_tx.clone(),
+    ));
+
+    // Process blocks in Startup mode - should not trigger alerts
+    slot_time_monitor
+        .process_block(BlockCheckMode::Startup, &first_block)
+        .await?;
+    slot_time_monitor
+        .process_block(BlockCheckMode::Startup, &second_block)
+        .await?;
+
+    // No alerts should be received during startup
+    alert_rx
+        .try_recv()
+        .expect_err("alert received during startup when none expected");
+
+    Ok(())
+}
+
+/// Check that slot time alerts are not triggered when the buffer is not full.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_slot_time_alerts_not_triggered_when_buffer_not_full() -> anyhow::Result<()> {
+    let (alert_tx, mut alert_rx) = alert_channel_only_setup();
+
+    // Create blocks that would normally trigger an alert
+    let first_block = mock_block_info(100000, Slot(100));
+    let second_block = mock_block_info(200000, Slot(200));
+
+    let mut slot_time_monitor = MemorySlotTimeMonitor::new(SlotTimeMonitorConfig::new(
+        Duration::from_secs(1),
+        3,      // max_block_buffer - need 3 blocks to fill buffer
+        0.5f64, // slow_slots_threshold (1.0 > 0.5, so would trigger if buffer was full)
+        0.1f64, // fast_slots_threshold
+        alert_tx.clone(),
+    ));
+
+    // Process only 2 blocks - buffer not full, so no alerts should be triggered
+    slot_time_monitor
+        .process_block(BlockCheckMode::Replay, &first_block)
+        .await?;
+    slot_time_monitor
+        .process_block(BlockCheckMode::Replay, &second_block)
+        .await?;
+
+    // No alerts should be received when buffer is not full
+    alert_rx
+        .try_recv()
+        .expect_err("alert received when buffer not full");
 
     Ok(())
 }

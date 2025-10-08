@@ -25,7 +25,8 @@ use crate::farming_monitor::{
 };
 use crate::slack::{SLACK_OAUTH_SECRET_PATH, SlackClientInfo};
 use crate::slot_time_monitor::{
-    DEFAULT_CHECK_INTERVAL, DEFAULT_SLOT_TIME_ALERT_THRESHOLD, SlotTimeMonitorConfig,
+    DEFAULT_CHECK_INTERVAL, DEFAULT_FAST_SLOTS_THRESHOLD, DEFAULT_MAX_BLOCK_BUFFER,
+    DEFAULT_SLOW_SLOTS_THRESHOLD, SlotTimeMonitorConfig,
 };
 use crate::subspace::{
     BlockHash, BlockInfo, BlockLink, BlockNumber, LOCAL_SUBSPACE_NODE_URL,
@@ -473,7 +474,9 @@ async fn check_best_blocks(
     // Slot time monitor is used to check if the slot time is within the expected range.
     let mut slot_time_monitor = MemorySlotTimeMonitor::new(SlotTimeMonitorConfig::new(
         DEFAULT_CHECK_INTERVAL,
-        DEFAULT_SLOT_TIME_ALERT_THRESHOLD,
+        DEFAULT_MAX_BLOCK_BUFFER,
+        DEFAULT_SLOW_SLOTS_THRESHOLD,
+        DEFAULT_FAST_SLOTS_THRESHOLD,
         alert_tx.clone(),
     ));
 
