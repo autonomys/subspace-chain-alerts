@@ -10,11 +10,12 @@ mod tests;
 use crate::alerts::account::Accounts;
 use crate::alerts::transfer::TransferValue;
 use crate::chain_fork_monitor::ChainForkEvent;
-use crate::format::{fmt_amount, fmt_duration};
+use crate::format::{fmt_amount, fmt_duration, fmt_time_delta};
 use crate::subspace::{
     AI3, Balance, BlockInfo, BlockPosition, EventInfo, ExtrinsicInfo, RawEvent, RawExtrinsic,
-    TARGET_BLOCK_INTERVAL, chain_time_gap_since_last_block, local_time_gap_since_block,
+    chain_time_gap_between_blocks, local_time_gap_between_blocks, local_time_gap_since_block,
 };
+use chrono::TimeDelta;
 use std::fmt::{self, Display};
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,17 +27,38 @@ use tracing::{trace, warn};
 /// The minimum balance change to alert on.
 const MIN_BALANCE_CHANGE: Balance = 1_000_000 * AI3;
 
-/// The minimum gap between block timestamps to alert on.
-/// The target block gap is 6 seconds, so we alert if it takes substantially longer.
-///
-/// `pallet-timestamp` enforces a `MinimumPeriod` of 3 seconds in Subspace, and a
-/// `MAX_TIMESTAMP_DRIFT_MILLIS` of 30 seconds from each node's local clock.
-/// <https://github.com/paritytech/polkadot-sdk/blob/0034d178fff88a0fd87cf0ec1d8f122ae0011d78/substrate/frame/timestamp/src/lib.rs#L307>
-const MIN_BLOCK_GAP: Duration = Duration::from_secs(TARGET_BLOCK_INTERVAL * 10);
+/// Hide the details of the block gap constants, so we only use the correct ones.
+mod internal {
+    use crate::subspace::TARGET_BLOCK_INTERVAL;
+    use chrono::TimeDelta;
+    use std::time::Duration;
 
-/// The amount of time to add/subtract from the minimum block gap to account for consensus clock
-/// drift, async timer delays, and similar inaccuracies.
-const BLOCK_GAP_SLOP: Duration = Duration::from_secs(1);
+    /// The minimum gap between block timestamps to alert on.
+    /// The target block gap is 6 seconds, so we alert if it takes substantially longer.
+    ///
+    /// `pallet-timestamp` enforces a `MinimumPeriod` of 3 seconds in Subspace, and a
+    /// `MAX_TIMESTAMP_DRIFT_MILLIS` of 30 seconds from each node's local clock.
+    /// <https://github.com/paritytech/polkadot-sdk/blob/0034d178fff88a0fd87cf0ec1d8f122ae0011d78/substrate/frame/timestamp/src/lib.rs#L307>
+    const MIN_BLOCK_GAP: Duration = Duration::from_secs(TARGET_BLOCK_INTERVAL * 10);
+
+    /// The amount of time to add/subtract from the minimum block gap to account for consensus clock
+    /// drift, async timer delays, and similar inaccuracies.
+    const BLOCK_GAP_SLOP: Duration = Duration::from_secs(5);
+
+    /// The minimum resume block gap to alert on.
+    pub const MIN_RESUME_BLOCK_GAP: TimeDelta =
+        match TimeDelta::from_std(MIN_BLOCK_GAP.saturating_sub(BLOCK_GAP_SLOP)) {
+            Ok(gap) => gap,
+            Err(_err) => {
+                panic!("constants are small and always in range");
+            }
+        };
+
+    /// The minimum stall block gap to alert on.
+    pub const MIN_STALL_BLOCK_GAP: Duration = MIN_BLOCK_GAP.saturating_add(BLOCK_GAP_SLOP);
+}
+
+pub use internal::{MIN_RESUME_BLOCK_GAP, MIN_STALL_BLOCK_GAP};
 
 /// Whether we are replaying missed blocks, or checking current blocks.
 /// This impacts block stall checks, which can only be spawned on new blocks.
@@ -180,15 +202,27 @@ pub enum AlertKind {
         /// The gap since the previous block from the node, based on alerter local time.
         ///
         /// Note: the previous block is `Alert.block_info`.
-        gap: Option<Duration>,
+        local_time_gap: TimeDelta,
+    },
+
+    /// A node has started receiving blocks again.
+    BlockReceiveResumed {
+        /// The full gap between the blocks, based on alerter local time.
+        local_time_gap: TimeDelta,
+
+        /// The gap between the previous and current block header times.
+        chain_time_gap: Option<TimeDelta>,
+
+        /// The previous block.
+        prev_block_info: BlockInfo,
     },
 
     /// A gap between block header times (with no stall according to the node time).
-    BlockHeaderTimeGap {
+    BlockChainTimeGap {
         /// The gap between the previous and current block header times.
         ///
         /// Note: the current block is `Alert.block_info`.
-        gap: Duration,
+        chain_time_gap: TimeDelta,
 
         /// The previous block.
         prev_block_info: BlockInfo,
@@ -375,26 +409,43 @@ impl Display for AlertKind {
                 write!(f, "**Launched and connected to the node**")
             }
 
-            Self::BlockReceiveGap { gap } => {
+            Self::BlockReceiveGap { local_time_gap } => {
                 write!(
                     f,
                     "**Node stopped receiving blocks**\n\
-                    Local time since last best block: {}",
-                    fmt_duration(*gap),
+                    Local time since last block: {}",
+                    fmt_time_delta(*local_time_gap),
                 )
             }
 
-            Self::BlockHeaderTimeGap {
-                gap,
+            Self::BlockReceiveResumed {
+                local_time_gap,
+                chain_time_gap,
                 prev_block_info,
             } => {
                 write!(
                     f,
-                    "**Block header time gap**\n\
+                    "**Node resumed receiving blocks**\n\
+                    Local time gap: {}\n\
+                    Header time gap: {}\n\n\
+                    Previous best block:\n\
+                    {prev_block_info}",
+                    fmt_time_delta(*local_time_gap),
+                    fmt_time_delta(*chain_time_gap),
+                )
+            }
+
+            Self::BlockChainTimeGap {
+                chain_time_gap,
+                prev_block_info,
+            } => {
+                write!(
+                    f,
+                    "**Block chain time gap**\n\
                     Gap: {}\n\n\
                     Previous best block:\n\
                     {prev_block_info}",
-                    fmt_duration(*gap),
+                    fmt_time_delta(*chain_time_gap),
                 )
             }
 
@@ -623,7 +674,8 @@ impl AlertKind {
         match self {
             Self::Startup => true,
             Self::BlockReceiveGap { .. }
-            | Self::BlockHeaderTimeGap { .. }
+            | Self::BlockReceiveResumed { .. }
+            | Self::BlockChainTimeGap { .. }
             | Self::NewSideFork { .. }
             | Self::SideForkExtended { .. }
             | Self::Reorg { .. }
@@ -662,7 +714,8 @@ impl AlertKind {
             },
             Self::Startup
             | Self::BlockReceiveGap { .. }
-            | Self::BlockHeaderTimeGap { .. }
+            | Self::BlockReceiveResumed { .. }
+            | Self::BlockChainTimeGap { .. }
             | Self::NewSideFork { .. }
             | Self::SideForkExtended { .. }
             | Self::Reorg { .. }
@@ -685,7 +738,10 @@ impl AlertKind {
     #[allow(dead_code, reason = "TODO: use in tests")]
     pub fn prev_block_info(&self) -> Option<&BlockInfo> {
         match self {
-            Self::BlockHeaderTimeGap {
+            Self::BlockReceiveResumed {
+                prev_block_info, ..
+            }
+            | Self::BlockChainTimeGap {
                 prev_block_info, ..
             } => Some(prev_block_info),
             // Deliberately repeat each enum variant here, so we can't forget to update this
@@ -722,7 +778,10 @@ impl AlertKind {
         }
 
         match self {
-            Self::BlockHeaderTimeGap {
+            Self::BlockReceiveResumed {
+                prev_block_info: _, ..
+            }
+            | Self::BlockChainTimeGap {
                 prev_block_info: _, ..
             } => unreachable!("already handled above"),
             Self::Reorg { old_best_block, .. } => Some(*old_best_block),
@@ -758,7 +817,8 @@ impl AlertKind {
             | Self::SudoCall { extrinsic_info } => Some(extrinsic_info),
             Self::Startup
             | Self::BlockReceiveGap { .. }
-            | Self::BlockHeaderTimeGap { .. }
+            | Self::BlockReceiveResumed { .. }
+            | Self::BlockChainTimeGap { .. }
             | Self::NewSideFork { .. }
             | Self::SideForkExtended { .. }
             | Self::LargeBalanceTransferEvent { .. }
@@ -785,7 +845,8 @@ impl AlertKind {
             | Self::LargeBalanceTransferEvent { transfer_value, .. } => Some(*transfer_value),
             Self::Startup
             | Self::BlockReceiveGap { .. }
-            | Self::BlockHeaderTimeGap { .. }
+            | Self::BlockReceiveResumed { .. }
+            | Self::BlockChainTimeGap { .. }
             | Self::NewSideFork { .. }
             | Self::SideForkExtended { .. }
             | Self::Reorg { .. }
@@ -812,7 +873,8 @@ impl AlertKind {
             | Self::ImportantAddressEvent { event_info, .. } => Some(event_info),
             Self::Startup
             | Self::BlockReceiveGap { .. }
-            | Self::BlockHeaderTimeGap { .. }
+            | Self::BlockReceiveResumed { .. }
+            | Self::BlockChainTimeGap { .. }
             | Self::NewSideFork { .. }
             | Self::SideForkExtended { .. }
             | Self::Reorg { .. }
@@ -869,24 +931,40 @@ pub async fn check_block(
         return Ok(());
     };
 
-    // Because it depends on the next block, this check logs after block production/propagation
+    // Because they depend on the next block, these checks log after block production/propagation
     // resumes.
-    if let Some(gap) = chain_time_gap_since_last_block(*block_info, *prev_block_info) {
-        // Gap alerts without a stall are harmless, and might actually be interesting in themselves.
-        if gap >= MIN_BLOCK_GAP.saturating_sub(BLOCK_GAP_SLOP) {
-            alert_tx
-                .send(Alert::new(
-                    AlertKind::BlockHeaderTimeGap {
-                        gap,
-                        prev_block_info: *prev_block_info,
-                    },
-                    *block_info,
-                    mode,
-                ))
-                .await?;
-        }
-    } else {
-        // No block time to check against.
+    let local_time_gap = local_time_gap_between_blocks(*block_info, *prev_block_info);
+    let chain_time_gap = chain_time_gap_between_blocks(*block_info, *prev_block_info);
+
+    // Gap alerts without a stall are harmless, and might actually be interesting in themselves.
+    // We prioritise the block receive resume alert, because it also contains the chain time gap.
+    if local_time_gap >= MIN_RESUME_BLOCK_GAP {
+        alert_tx
+            .send(Alert::new(
+                AlertKind::BlockReceiveResumed {
+                    local_time_gap,
+                    chain_time_gap,
+                    prev_block_info: *prev_block_info,
+                },
+                *block_info,
+                mode,
+            ))
+            .await?;
+    } else if let Some(chain_time_gap) = chain_time_gap
+        && chain_time_gap >= MIN_RESUME_BLOCK_GAP
+    {
+        alert_tx
+            .send(Alert::new(
+                AlertKind::BlockChainTimeGap {
+                    chain_time_gap,
+                    prev_block_info: *prev_block_info,
+                },
+                *block_info,
+                mode,
+            ))
+            .await?;
+    } else if chain_time_gap.is_none() {
+        // No chain time to check against.
         warn!(
             ?mode,
             ?block_info,
@@ -925,7 +1003,7 @@ pub async fn check_for_block_stall(
     tokio::spawn(async move {
         // Stall alerts without a resume are alarming, it looks like either the chain or alerter
         // has stopped. We've seen a spurious stall at exactly 60 seconds, but only once.
-        sleep(MIN_BLOCK_GAP.saturating_add(BLOCK_GAP_SLOP)).await;
+        sleep(MIN_STALL_BLOCK_GAP).await;
 
         // Avoid a potential deadlock by copying the watched value immediately.
         let latest_block_info: BlockInfo = latest_block_rx
@@ -939,12 +1017,12 @@ pub async fn check_for_block_stall(
             return Ok(());
         }
 
-        let gap = local_time_gap_since_block(old_block_info);
+        let local_time_gap = local_time_gap_since_block(old_block_info);
 
         // If there is an error, we will restart, and the new alerter will replay missed blocks.
         alert_tx
             .send(Alert::new(
-                AlertKind::BlockReceiveGap { gap },
+                AlertKind::BlockReceiveGap { local_time_gap },
                 old_block_info,
                 mode,
             ))

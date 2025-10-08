@@ -9,7 +9,7 @@ use crate::alerts::subscan::{BlockUrl, EventUrl, ExtrinsicUrl};
 use crate::alerts::transfer::TransferValue;
 use crate::format::{fmt_amount, fmt_fields, fmt_timestamp};
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 use scale_value::Composite;
 use sp_core::crypto::AccountId32;
 use std::fmt::{self, Display};
@@ -514,7 +514,8 @@ impl<S: BlockTimeSource> BlockTime<S> {
     /// Returns the block time as a date time type.
     pub fn date_time(&self) -> Option<DateTime<Utc>> {
         // If the time is out of range, return None.
-        // This should never happen due to consensus rules.
+        // This should never happen for chain time due to consensus rules.
+        // For local times if it happens, the alert's clock is very wrong.
         DateTime::from_timestamp_millis(i64::try_from(self.unix_time).ok()?)
     }
 
@@ -525,31 +526,59 @@ impl<S: BlockTimeSource> BlockTime<S> {
 }
 
 /// Calculates the local time since a block was received.
-/// Returns `None` if the block is missing a timestamp.
-pub fn local_time_gap_since_block(block_info: BlockInfo) -> Option<Duration> {
-    gap_since_time(Utc::now(), block_info.local_time.date_time()?)
-}
-
-/// Calculates the chain timestamp gap between two blocks, if both are present and have timestamps.
-/// Returns `None` if either block info is missing, or a block is missing a timestamp.
-pub fn chain_time_gap_since_last_block(
-    block_info: impl Into<Option<BlockInfo>>,
-    prev_block_info: impl Into<Option<BlockInfo>>,
-) -> Option<Duration> {
-    let block_info = block_info.into()?;
-    let prev_block_info = prev_block_info.into()?;
-
+///
+/// Returns a negative delta if the times are out of order, which can happen if the local clock has
+/// changed.
+pub fn local_time_gap_since_block(block_info: BlockInfo) -> TimeDelta {
     gap_since_time(
-        block_info.chain_time?.date_time()?,
-        prev_block_info.chain_time?.date_time()?,
+        Utc::now(),
+        block_info
+            .local_time
+            .date_time()
+            .expect("local time is always valid, was originally from a DateTime"),
     )
 }
 
-/// Calculates the timestamp gap between two times.
-fn gap_since_time(later_time: DateTime<Utc>, earlier_time: DateTime<Utc>) -> Option<Duration> {
-    let gap = later_time.signed_duration_since(earlier_time);
+/// Calculates the local time gap between two blocks being received.
+///
+/// Returns a negative delta if the times are out of order, which can happen if the local clock has
+/// changed, or the blocks were received out of order.
+pub fn local_time_gap_between_blocks(
+    block_info: BlockInfo,
+    prev_block_info: BlockInfo,
+) -> TimeDelta {
+    gap_since_time(
+        block_info
+            .local_time
+            .date_time()
+            .expect("local time is always valid, was originally from a DateTime"),
+        prev_block_info
+            .local_time
+            .date_time()
+            .expect("local time is always valid, was originally from a DateTime"),
+    )
+}
 
-    gap.to_std().ok()
+/// Calculates the chain timestamp gap between two blocks, if both are present and have timestamps.
+///
+/// Returns `None` if either block info is missing, or a block is missing a timestamp.
+/// Returns a negative delta if the blocks are out of order.
+pub fn chain_time_gap_between_blocks(
+    block_info: impl Into<Option<BlockInfo>>,
+    prev_block_info: impl Into<Option<BlockInfo>>,
+) -> Option<TimeDelta> {
+    let block_info = block_info.into()?;
+    let prev_block_info = prev_block_info.into()?;
+
+    Some(gap_since_time(
+        block_info.chain_time?.date_time()?,
+        prev_block_info.chain_time?.date_time()?,
+    ))
+}
+
+/// Calculates the timestamp gap between two times.
+fn gap_since_time(later_time: DateTime<Utc>, earlier_time: DateTime<Utc>) -> TimeDelta {
+    later_time.signed_duration_since(earlier_time)
 }
 
 /// Extrinsic info that can be formatted.

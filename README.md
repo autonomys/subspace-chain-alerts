@@ -102,6 +102,7 @@ Other alert kinds are not de-duplicated, because they are unlikely to report the
 Some alerts are de-duplicated by only issuing an alert when the status changes:
 
 - BlockStall/Resume
+  - BlockReceiveResumed also takes priority over BlockChainTimeGap, because it contains the chain gap anyway
 - SlotTime High/Low
 - Farmer Increase/Decrease
 
