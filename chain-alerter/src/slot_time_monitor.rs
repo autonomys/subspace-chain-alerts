@@ -15,10 +15,10 @@ use tokio::sync::mpsc;
 use tracing::warn;
 
 /// The default threshold for the slot time alert.
-pub const DEFAULT_SLOW_SLOTS_THRESHOLD: f64 = 1.05;
+pub const DEFAULT_SLOW_SLOTS_THRESHOLD: f64 = 0.95;
 
 /// The default fast slots threshold for the slot time alert.
-pub const DEFAULT_FAST_SLOTS_THRESHOLD: f64 = 0.95;
+pub const DEFAULT_FAST_SLOTS_THRESHOLD: f64 = 1.05;
 
 /// The default maximum block buffer size.
 pub const DEFAULT_MAX_BLOCK_BUFFER: usize = 100;
