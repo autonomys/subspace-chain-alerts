@@ -923,6 +923,9 @@ pub async fn startup_alert(
 #[must_use = "the status must be tracked"]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum BlockGapAlertStatus {
+    /// A local stall alert was issued during a block receive gap.
+    LocalStall,
+
     /// A local resume alert was issued after a block receive gap.
     LocalResume,
 
@@ -1039,8 +1042,8 @@ pub async fn check_for_block_stall(
     mode: BlockCheckMode,
     alert_tx: mpsc::Sender<Alert>,
     block_info: BlockInfo,
-    latest_block_rx: watch::Receiver<Option<BlockInfo>>,
-) -> JoinHandle<anyhow::Result<()>> {
+    latest_block_rx: watch::Receiver<Option<(BlockInfo, BlockGapAlertStatus)>>,
+) -> JoinHandle<anyhow::Result<Option<BlockGapAlertStatus>>> {
     // It doesn't make sense to check the local clock for stalls on replayed blocks, because we
     // already know there's a new current block. It's expensive to spawn a task, so return
     // early.
@@ -1055,29 +1058,34 @@ pub async fn check_for_block_stall(
         sleep(MIN_STALL_BLOCK_GAP).await;
 
         // Avoid a potential deadlock by copying the watched value immediately.
-        let latest_block_info: BlockInfo = latest_block_rx
-            .borrow()
-            .expect("never empty, a block is sent before spawning this task");
+        let (latest_block_info, latest_block_gap_status): (BlockInfo, BlockGapAlertStatus) =
+            latest_block_rx
+                .borrow()
+                .expect("never empty, a block is sent before spawning this task");
 
         if latest_block_info.chain_time > old_block_info.chain_time {
             // There's a new block since we sent our block and spawned our task, so block
             // production hasn't stalled. But the latest block also spawned a task, so it
             // will alert if there is actually a stall.
-            return Ok(());
+            return Ok(None);
         }
 
         let local_time_gap = local_time_gap_since_block(old_block_info);
 
-        // If there is an error, we will restart, and the new alerter will replay missed blocks.
-        alert_tx
-            .send(Alert::new(
-                AlertKind::BlockReceiveGap { local_time_gap },
-                old_block_info,
-                mode,
-            ))
-            .await?;
+        if latest_block_gap_status.needs_new_alert(BlockGapAlertStatus::LocalStall) {
+            // If there is an error, we will restart, and the new alerter will replay missed blocks.
+            alert_tx
+                .send(Alert::new(
+                    AlertKind::BlockReceiveGap { local_time_gap },
+                    old_block_info,
+                    mode,
+                ))
+                .await?;
 
-        Ok(())
+            Ok(Some(BlockGapAlertStatus::LocalStall))
+        } else {
+            Ok(None)
+        }
     })
 }
 

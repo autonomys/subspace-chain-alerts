@@ -502,8 +502,9 @@ async fn check_best_blocks(
     });
 
     // Tasks spawned by the block stall alert.
-    let mut block_stall_join_handles: FuturesUnordered<JoinHandle<anyhow::Result<()>>> =
-        FuturesUnordered::new();
+    let mut block_stall_join_handles: FuturesUnordered<
+        JoinHandle<anyhow::Result<Option<BlockGapAlertStatus>>>,
+    > = FuturesUnordered::new();
 
     while let Some((mode, raw_block, raw_extrinsics, block_info)) = best_forks_rx.recv().await {
         // Let the user know we're still alive.
@@ -527,7 +528,7 @@ async fn check_best_blocks(
 
         // Notify spawned tasks that a new block has arrived, and give them time to process that
         // block. This is needed even if there is a block gap.
-        latest_block_tx.send_replace(Some(block_info));
+        latest_block_tx.send_replace(Some((block_info, prev_block_gap_status)));
         task::yield_now().await;
 
         // If there has been a reorg, replace the previous block with the correct (fork point)
@@ -569,20 +570,23 @@ async fn check_best_blocks(
         // Give spawned tasks another opportunity to run.
         task::yield_now().await;
 
-        // There's no point checking for finished tasks when we're not creating any new ones.
-        if mode.is_current() {
-            trace!(block_stall_join_handles = %block_stall_join_handles.len(), "spawned tasks before joining");
+        trace!(block_stall_join_handles = %block_stall_join_handles.len(), ?prev_block_gap_status, "spawned tasks before joining");
 
-            // Join any spawned block stall tasks that have finished.
-            // When there are no more finished tasks, continue to the next block.
-            while let Some(block_stall_result) =
-                block_stall_join_handles.next().now_or_never().flatten()
-            {
-                block_stall_result??;
+        // Join any spawned block stall tasks that have finished.
+        // When there are no more finished tasks, continue to the next block.
+        while let Some(block_stall_result) =
+            block_stall_join_handles.next().now_or_never().flatten()
+        {
+            // We only want to reset the previous block gap status if the task actually issued an
+            // alert. In the absence of an alert, we can't assume there were no gaps (due to the
+            // slop). The most reliable indicators of a reset are the block gap checks in
+            // check_block().
+            if let Some(block_gap_status) = block_stall_result?? {
+                prev_block_gap_status = block_gap_status;
             }
-
-            trace!(block_stall_join_handles = %block_stall_join_handles.len(), "spawned tasks after joining");
         }
+
+        trace!(block_stall_join_handles = %block_stall_join_handles.len(), ?prev_block_gap_status, "spawned tasks after joining");
 
         prev_block_info = Some(block_info);
     }
