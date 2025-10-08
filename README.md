@@ -1,19 +1,20 @@
-# Subspace Chain Alerts (PoC)
+# Subspace Chain Alerts
 
 Important event alerts for Subspace blockchains.
 
 ## Status: Proof of Concept
 
-- This repository is in a PoC state. Interfaces, configuration, and behavior may change without notice.
-- Hardcoded settings are used for speed of iteration (Slack channel, WebSocket URL, thresholds, etc.).
+- This repository is a minimum viable product.
+- Interfaces, configuration, and behavior may change without notice.
+- Hardcoded settings are used for speed of iteration (Slack channel, wallet addresses, thresholds, etc.).
 
 ## What it does currently
 
-- Connects to a Subspace node over WebSocket (`ws://127.0.0.1:9944`).
-- Subscribes to notifications for best blocks (and all blocks for fork detection).
-- Keeps runtime metadata up to date via a background updater.
+- Connects to Subspace nodes over WebSocket (`ws://127.0.0.1:9944` by default).
+- Subscribes to notifications for best blocks (and all blocks across all nodes for fork detection).
+- Keeps runtime metadata up to date for each node via a background updater.
 - Detects block gaps and forks, filling in missing blocks as needed.
-- After filling in gaps and rationalising forks, runs alert detection on the best fork (or all forks).
+- After filling in gaps and rationalising forks, runs alert detection on the best fork.
 - Posts applicable alerts to a Slack channel, with links to [subscan.io](https://autonomys.subscan.io)
 
 ### Known issues
@@ -28,13 +29,20 @@ Important event alerts for Subspace blockchains.
 ### How fork detection works
 
 Blocks can be received in any order, and block notifications can be skipped, particularly during bulk syncing.
-When a block is received from the best or all/any blocks subscription:
 
-1. it is checked to see if it is the best block (only needed for the "all blocks" subscription)
-2. the fork monitor connects it to the existing chain, fetching missing parent blocks  needed
-  a. if there are too many missing blocks, it is treated as a disconnected new fork
+When a block is received from the all blocks subscription on the primary node:
+
+1. it is checked to see if it is the best block (only if it is a recent block)
+  a. backwards reorgs are rare and unlikely due to the fork rules, so we can skip this check for most blocks
+
+For all other subscriptions:
+
+1. The block is either assumed to be the best block (best blocks subscription) or assumed not to be (all blocks on secondary servers)
+  a. a separate block stall alerter is run for each connected node
+2. the fork monitor connects the block to the existing chain, fetching missing parent blocks as needed
+  a. if there are too many missing blocks, the block is treated as a disconnected new fork
 3. new and missing blocks on the best fork are checked for alerts
-  <!-- TODO: a. some alerts also check side forks -->
+  a. the side chain alerts also check for side forks on all connected nodes
 
 ### Core block operations
 
@@ -77,6 +85,8 @@ For details of the fork choice algorithm, see [the subspace protocol specificati
 
 ## Alert De-duplication
 
+### By Alert Kind
+
 Alerts about the same extrinsic or event are deduplicated, using this priority order:
 
 - sudo/sudid
@@ -85,7 +95,22 @@ Alerts about the same extrinsic or event are deduplicated, using this priority o
 - important address transfer
 - important address (any other extrinsic or event)
 
-Other alert kinds are not de-duplicated.
+Other alert kinds are not de-duplicated, because they are unlikely to report the same issue.
+
+### Over Time
+
+Some alerts are de-duplicated by only issuing an alert when the status changes:
+
+- BlockStall/Resume
+- SlotTime High/Low
+- Farmer Increase/Decrease
+
+We could do the same kind of de-duplication with fork lengths, but each additional fork block is about 10x less likely,
+so it is worth alerting on.
+
+### Between Servers
+
+Alerts are de-duplicated between servers by connecting multiple servers to the same alerter instance.
 
 ## Security notes
 
