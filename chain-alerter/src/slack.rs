@@ -316,7 +316,7 @@ impl SlackClientInfo {
     /// - spawn this to a background task, so that any retries don't block the main task.
     pub async fn post_message(
         &self,
-        alert: Alert,
+        alert: &Alert,
     ) -> Result<SlackApiChatPostMessageResponse, anyhow::Error> {
         let slack_session = self.open_session();
 

@@ -90,6 +90,10 @@ struct Args {
     #[arg(long)]
     alert_limit: Option<usize>,
 
+    /// Exit after the startup alert, even if other alerts fired during the initial context load.
+    #[arg(long)]
+    test_startup: bool,
+
     /// Enable or disable Slack message posting.
     /// Slack is enabled by default, and required a Slack OAuth secret file named `slack-secret`.
     #[arg(long, default_value = "true", action = ArgAction::Set)]
@@ -164,17 +168,19 @@ async fn setup(
 async fn slack_poster(
     slack_client: Option<SlackClientInfo>,
     alert_limit: Option<usize>,
+    test_startup: bool,
     mut alert_rx: mpsc::Receiver<Alert>,
 ) -> anyhow::Result<()> {
     if slack_client.is_none() {
         warn!(
             ?alert_limit,
+            ?test_startup,
             "slack posting is disabled, only posting alerts to the terminal",
         );
     }
 
     if alert_limit == Some(0) {
-        info!("alert limit is zero, exiting immediately");
+        info!(?test_startup, "alert limit is zero, exiting immediately");
         return Ok(());
     }
 
@@ -186,22 +192,27 @@ async fn slack_poster(
         alert_count += 1;
 
         if alert.alert.is_duplicate() {
-            info!(%alert_count, ?alert_limit, "skipping posting duplicate alert message:\n{alert}");
+            info!(%alert_count, ?alert_limit, ?test_startup, "skipping posting duplicate alert message:\n{alert}");
             continue;
         }
 
         if let Some(slack_client) = slack_client.as_ref() {
             // We have a large number of retries in the Slack poster, so it is unlikely to fail.
-            let response = slack_client.post_message(alert).await?;
-            debug!(?response, %alert_count, ?alert_limit, "posted alert to Slack");
+            let response = slack_client.post_message(&alert).await?;
+            debug!(?response, %alert_count, ?alert_limit, ?test_startup, "posted alert to Slack");
         } else {
-            info!(%alert_count, ?alert_limit, "{}", alert);
+            info!(%alert_count, ?alert_limit, ?test_startup, "{alert}");
         }
 
         if let Some(alert_limit) = alert_limit
             && alert_count >= alert_limit
         {
-            info!(%alert_count, ?alert_limit, "alert limit reached, exiting");
+            info!(%alert_count, ?alert_limit, ?test_startup, "alert limit reached, exiting");
+            break;
+        }
+
+        if test_startup && alert.alert.is_test_alert() {
+            info!(%alert_count, ?alert_limit, ?test_startup, "startup alert reached, exiting");
             break;
         }
     }
@@ -222,7 +233,12 @@ async fn run(args: &Args) -> anyhow::Result<()> {
     // We don't need to wait for the task to finish, because it will panic on failure.
     let (alert_tx, alert_rx) = mpsc::channel(ALERT_BUFFER_SIZE);
     let slack_alert_task: AsyncJoinOnDrop<anyhow::Result<()>> = AsyncJoinOnDrop::new(
-        tokio::spawn(slack_poster(slack_client_info, args.alert_limit, alert_rx)),
+        tokio::spawn(slack_poster(
+            slack_client_info,
+            args.alert_limit,
+            args.test_startup,
+            alert_rx,
+        )),
         true,
     );
 
@@ -676,7 +692,7 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     // If we have an alert limit, we don't want to restart when it is reached.
-    let max_reconnection_attempts = if args.alert_limit.is_some() {
+    let max_reconnection_attempts = if args.alert_limit.is_some() || args.test_startup {
         0
     } else {
         MAX_RECONNECTION_ATTEMPTS

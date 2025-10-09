@@ -157,6 +157,7 @@ Alerts are de-duplicated between servers by connecting multiple servers to the s
      - `--production` will sent alerts to the production channel (except for startup alerts, which always go to the test channel)
      - `--slack=false` will disable Slack message posting entirely, and just log alerts to the terminal.
      - `--alert-limit=5` will exit after 5 alerts have been posted, including the startup alert.
+     - `--test-startup` will always exit after the startup alert, even if other alerts fired during the initial context load.
    - On first observed block, you should see a Slack message in `#chain-alerts-test` summarizing connection and block info.
    - All arguments are optional.The default node is `localhost`, and the default icon is the instance external IP address country flag (looked up via an online GeoIP service, which can be wrong).
    - `RUST_LOG` can be used to filter logs, see:
