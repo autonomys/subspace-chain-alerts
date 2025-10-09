@@ -29,9 +29,9 @@ use crate::slot_time_monitor::{
     DEFAULT_SLOW_SLOTS_THRESHOLD, SlotTimeMonitorConfig,
 };
 use crate::subspace::{
-    BlockHash, BlockInfo, BlockLink, BlockNumber, LOCAL_SUBSPACE_NODE_URL,
-    MAX_RECONNECTION_ATTEMPTS, MAX_RECONNECTION_DELAY, RawBlock, RawBlockHash, RawEvent,
-    RawExtrinsicList, RawRpcClient, SubspaceClient, create_subspace_client,
+    BlockInfo, BlockLink, BlockNumber, LOCAL_SUBSPACE_NODE_URL, MAX_RECONNECTION_ATTEMPTS,
+    MAX_RECONNECTION_DELAY, RawBlock, RawEvent, RawExtrinsicList, RawRpcClient, SubspaceClient,
+    create_subspace_client, node_best_block_hash,
 };
 use clap::{ArgAction, Parser, ValueHint};
 use slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor};
@@ -452,28 +452,6 @@ async fn run_on_best_blocks_subscription(
     }
 
     Ok(())
-}
-
-/// Get the hash of the best block from the node RPCs.
-pub async fn node_best_block_hash(raw_rpc_client: &RawRpcClient) -> anyhow::Result<BlockHash> {
-    // Check if this is the best block.
-    let best_block_hash = raw_rpc_client
-        .request("chain_getBlockHash".to_string(), None)
-        .await?
-        .to_string();
-    // JSON string values are quoted inside the JSON, and start with "0x".
-    let Ok(best_block_hash) = serde_json::from_str::<String>(&best_block_hash) else {
-        anyhow::bail!("failed to parse best block hash: {best_block_hash}");
-    };
-    let best_block_hash = best_block_hash
-        .strip_prefix("0x")
-        .unwrap_or(&best_block_hash);
-    let best_block_hash: RawBlockHash = hex::decode(best_block_hash)?
-        .try_into()
-        .map_err(|e| anyhow::anyhow!("failed to parse best block hash: {}", hex::encode(e)))?;
-    let best_block_hash = BlockHash::from(best_block_hash);
-
-    Ok(best_block_hash)
 }
 
 /// Run best block alert checks, receiving new best blocks after gap/reorg resolution from

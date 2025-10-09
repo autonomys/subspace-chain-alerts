@@ -177,6 +177,28 @@ pub async fn spawn_metadata_update_task(
     )
 }
 
+/// Get the hash of the best block from the node RPCs.
+pub async fn node_best_block_hash(raw_rpc_client: &RawRpcClient) -> anyhow::Result<BlockHash> {
+    // Check if this is the best block.
+    let best_block_hash = raw_rpc_client
+        .request("chain_getBlockHash".to_string(), None)
+        .await?
+        .to_string();
+    // JSON string values are quoted inside the JSON, and start with "0x".
+    let Ok(best_block_hash) = serde_json::from_str::<String>(&best_block_hash) else {
+        anyhow::bail!("failed to parse best block hash: {best_block_hash}");
+    };
+    let best_block_hash = best_block_hash
+        .strip_prefix("0x")
+        .unwrap_or(&best_block_hash);
+    let best_block_hash: RawBlockHash = hex::decode(best_block_hash)?
+        .try_into()
+        .map_err(|e| anyhow::anyhow!("failed to parse best block hash: {}", hex::encode(e)))?;
+    let best_block_hash = BlockHash::from(best_block_hash);
+
+    Ok(best_block_hash)
+}
+
 /// Block position in the chain, including height and hash.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Ord, PartialOrd, Hash)]
 pub struct BlockPosition {
