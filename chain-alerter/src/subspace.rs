@@ -23,7 +23,7 @@ use subxt::config::substrate::DigestItem;
 use subxt::events::{EventDetails, Events, Phase};
 use subxt::ext::subxt_rpcs::client::ReconnectingRpcClient;
 use subxt::{OnlineClient, SubstrateConfig};
-use tracing::{info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 /// The placeholder hash for the parent of the genesis block.
 /// Well-known value.
@@ -120,16 +120,17 @@ pub type RawEvent = EventDetails<SubspaceConfig>;
 pub type EventIndex = u32;
 
 /// Create a new reconnecting Subspace client.
-/// Returns the subxt client, the raw RPC client, and a task handle for the subxt metadata update
-/// task.
+/// Returns the subxt client, the raw RPC client (if it is the primary server), and a task handle
+/// for the subxt metadata update task.
 ///
 /// The metadata update task is aborted when the returned handle is dropped.
 pub async fn create_subspace_client(
     node_url: impl AsRef<str>,
+    is_primary: bool,
 ) -> Result<
     (
         SubspaceClient,
-        RawRpcClient,
+        Option<RawRpcClient>,
         AsyncJoinOnDrop<anyhow::Result<()>>,
     ),
     anyhow::Error,
@@ -152,11 +153,17 @@ pub async fn create_subspace_client(
     // let backend = ChainHeadBackend::builder().build_with_background_task(rpc.clone());
     // let client = SubspaceClient::from_backend(Arc::new(backend)).await?;
 
-    let client = SubspaceClient::from_rpc_client(rpc.clone()).await?;
+    if is_primary {
+        let client = SubspaceClient::from_rpc_client(rpc.clone()).await?;
+        let update_task = spawn_metadata_update_task(&client).await;
 
-    let update_task = spawn_metadata_update_task(&client).await;
+        Ok((client, Some(rpc), update_task))
+    } else {
+        let client = SubspaceClient::from_rpc_client(rpc).await?;
+        let update_task = spawn_metadata_update_task(&client).await;
 
-    Ok((client, rpc, update_task))
+        Ok((client, None, update_task))
+    }
 }
 
 /// Spawn a background task to keep the runtime metadata up to date.
@@ -177,7 +184,7 @@ pub async fn spawn_metadata_update_task(
     )
 }
 
-/// Get the hash of the best block from the node RPCs.
+/// Get the hash of the best block from the supplied node RPC.
 pub async fn node_best_block_hash(raw_rpc_client: &RawRpcClient) -> anyhow::Result<BlockHash> {
     // Check if this is the best block.
     let best_block_hash = raw_rpc_client
@@ -197,6 +204,97 @@ pub async fn node_best_block_hash(raw_rpc_client: &RawRpcClient) -> anyhow::Resu
     let best_block_hash = BlockHash::from(best_block_hash);
 
     Ok(best_block_hash)
+}
+
+/// Get a raw block from a hash, using the first chain client that succeeds.
+/// Used for `BlockLink`, `BlockPosition`, and `Slot`.
+/// Use `block_full_from_hash` if you need a `BlockInfo`, extrinsics, or events.
+///
+/// The returned `RawBlock` contains a reference to the node that provided the block.
+/// This will work on non-archival nodes, because they keep a list of finalized block hashes.
+/// But retrieving `BlockInfo`, extrinsics, or events from older blocks requires an archival node.
+async fn raw_block_from_hash(
+    block_hash: impl Into<Option<BlockHash>> + Copy,
+    chain_clients: &[SubspaceClient],
+) -> anyhow::Result<RawBlock> {
+    let block_hash = block_hash.into();
+    let mut result = None;
+
+    for chain_client in chain_clients {
+        let raw_block = if let Some(block_hash) = block_hash {
+            chain_client.blocks().at(block_hash).await
+        } else {
+            chain_client.blocks().at_latest().await
+        };
+
+        match raw_block {
+            Ok(block) => {
+                result = Some(Ok(block));
+                break;
+            }
+            Err(e) => {
+                debug!(?e, "failed to get block from chain client");
+                result = Some(Err(e));
+            }
+        }
+    }
+
+    let block = result.expect("always at least one RPC server")?;
+
+    Ok(block)
+}
+
+/// Get a block, its extrinsics, and events from a block hash, using the first chain client that
+/// succeeds.
+///
+/// This must be used if you want a `BlockInfo`, extrinsics, or events for a block.
+pub async fn block_full_from_hash(
+    block_hash: impl Into<Option<BlockHash>> + Copy,
+    need_events: bool,
+    chain_clients: &[SubspaceClient],
+) -> anyhow::Result<(RawBlock, RawExtrinsicList, Option<RawEventList>)> {
+    let mut result = None;
+
+    for chain_client in chain_clients {
+        match block_full_single_client(block_hash, need_events, chain_client).await {
+            Ok(block_full) => {
+                result = Some(Ok(block_full));
+                break;
+            }
+            Err(e) => {
+                debug!(?e, "failed to get block from chain client");
+                result = Some(Err(e));
+            }
+        }
+    }
+
+    let block_full = result.expect("always at least one RPC server")?;
+
+    Ok(block_full)
+}
+
+/// Get a block, its extrinsics, and events from a block hash, using the supplied chain client.
+async fn block_full_single_client(
+    block_hash: impl Into<Option<BlockHash>> + Copy,
+    need_events: bool,
+    chain_client: &SubspaceClient,
+) -> anyhow::Result<(RawBlock, RawExtrinsicList, Option<RawEventList>)> {
+    let block_hash = block_hash.into();
+
+    let block = if let Some(block_hash) = block_hash {
+        chain_client.blocks().at(block_hash).await?
+    } else {
+        chain_client.blocks().at_latest().await?
+    };
+    let extrinsics = block.extrinsics().await?;
+
+    let events = if need_events {
+        Some(block.events().await?)
+    } else {
+        None
+    };
+
+    Ok((block, extrinsics, events))
 }
 
 /// Block position in the chain, including height and hash.
@@ -235,9 +333,9 @@ impl BlockPosition {
     #[expect(dead_code, reason = "included for completeness")]
     pub async fn with_block_hash(
         block_hash: BlockHash,
-        chain_client: &SubspaceClient,
+        chain_clients: &[SubspaceClient],
     ) -> anyhow::Result<Self> {
-        let block = chain_client.blocks().at(block_hash).await?;
+        let block = raw_block_from_hash(block_hash, chain_clients).await?;
 
         Ok(Self::from_block(&block))
     }
@@ -294,18 +392,18 @@ impl BlockLink {
     }
 
     /// Create a new block link from a block.
-    pub fn from_block(block: &RawBlock) -> Self {
+    pub fn from_raw_block(block: &RawBlock) -> Self {
         Self::new(BlockPosition::from_block(block), block.header().parent_hash)
     }
 
     /// Create a block link, given its hash.
     pub async fn with_block_hash(
         block_hash: BlockHash,
-        chain_client: &SubspaceClient,
+        chain_clients: &[SubspaceClient],
     ) -> anyhow::Result<Self> {
-        let block = chain_client.blocks().at(block_hash).await?;
+        let block = raw_block_from_hash(block_hash, chain_clients).await?;
 
-        Ok(Self::from_block(&block))
+        Ok(Self::from_raw_block(&block))
     }
 
     /// Returns the block hash.
@@ -388,7 +486,7 @@ impl BlockInfo {
     /// Create a block info from a block and its extrinsics.
     pub fn new(block: &RawBlock, extrinsics: &RawExtrinsicList, genesis_hash: &BlockHash) -> Self {
         Self {
-            link: BlockLink::from_block(block),
+            link: BlockLink::from_raw_block(block),
             chain_time: BlockTime::new_from_extrinsics(extrinsics),
             local_time: BlockTime::new_from_local_time(),
             slot: Slot::new(block),
@@ -396,30 +494,20 @@ impl BlockInfo {
         }
     }
 
-    /// Create a block info from a block, after fetching its extrinsics.
-    pub async fn with_block(
-        block: &RawBlock,
-        chain_client: &SubspaceClient,
-    ) -> anyhow::Result<Self> {
-        // These errors represent a connection failure or similar, and require a
-        // restart.
-        let extrinsics = block.extrinsics().await?;
-
-        Ok(BlockInfo::new(
-            block,
-            &extrinsics,
-            &chain_client.genesis_hash(),
-        ))
-    }
-
     /// Create a block info, given its hash.
     pub async fn with_block_hash(
-        block_hash: BlockHash,
-        chain_client: &SubspaceClient,
+        block_hash: impl Into<Option<BlockHash>> + Copy,
+        chain_clients: &[SubspaceClient],
     ) -> anyhow::Result<Self> {
-        let block = chain_client.blocks().at(block_hash).await?;
+        let (block, extrinsics, _no_events) =
+            block_full_from_hash(block_hash, false, chain_clients).await?;
 
-        Self::with_block(&block, chain_client).await
+        Ok(Self::new(
+            &block,
+            &extrinsics,
+            // The genesis hash is the same for all chain clients, so we use the primary client.
+            &chain_clients[0].genesis_hash(),
+        ))
     }
 
     /// Returns the block height.

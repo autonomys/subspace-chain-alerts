@@ -2,8 +2,8 @@
 
 use crate::alerts::{Alert, BlockCheckMode};
 use crate::subspace::{
-    BlockHash, BlockInfo, BlockLink, BlockNumber, BlockPosition, PARENT_OF_GENESIS, RawBlock,
-    RawExtrinsicList, RawRpcClient, SubspaceClient, node_best_block_hash,
+    BlockHash, BlockInfo, BlockLink, BlockNumber, BlockPosition, PARENT_OF_GENESIS, RawEventList,
+    RawExtrinsicList, RawRpcClient, SubspaceClient, block_full_from_hash, node_best_block_hash,
 };
 use static_assertions::const_assert;
 use std::cmp::max;
@@ -70,7 +70,7 @@ pub const ESTIMATED_TIP_COUNT: usize = ESTIMATED_BLOCK_COUNT.saturating_sub(MAX_
 /// The message sent when the fork monitor has loaded a best block and its ancestors.
 ///
 /// TODO: make this into a struct
-pub type NewBestBlockMessage = (BlockCheckMode, RawBlock, RawExtrinsicList, BlockInfo);
+pub type NewBestBlockMessage = (BlockCheckMode, BlockInfo, RawExtrinsicList, RawEventList);
 
 /// Errors encountered when trying to add a block to the chain fork state.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -662,14 +662,14 @@ impl BlockSeen {
 pub async fn send_best_fork_block(
     mode: BlockCheckMode,
     is_best_block: bool,
-    block: RawBlock,
-    extrinsics: RawExtrinsicList,
     block_info: BlockInfo,
+    extrinsics: RawExtrinsicList,
+    events: RawEventList,
     best_fork_tx: &mpsc::Sender<NewBestBlockMessage>,
 ) -> anyhow::Result<()> {
     if is_best_block {
         best_fork_tx
-            .send((mode, block, extrinsics, block_info))
+            .send((mode, block_info, extrinsics, events))
             .await?;
     }
 
@@ -678,7 +678,7 @@ pub async fn send_best_fork_block(
 
 /// Add a block and any missing ancestors to the chain fork state, sending alerts as needed.
 pub async fn add_blocks_to_chain_fork_state(
-    chain_client: &SubspaceClient,
+    chain_clients: &[SubspaceClient],
     raw_rpc_client: &RawRpcClient,
     state: &mut ChainForkState,
     mode: BlockCheckMode,
@@ -740,35 +740,47 @@ pub async fn add_blocks_to_chain_fork_state(
                     debug!(?mode, ?event, "Chain fork or reorg event");
                 }
 
-                if event.needs_alert() || is_best_block {
+                let block_info = if is_best_block {
                     // Get the block info for the best block checker.
                     // Delaying fetching this info saves a lot of work during initial block context
                     // and replays.
-                    // TODO: if the node has pruned this block, just send the alert without it
-                    let block = chain_client.blocks().at(block.hash()).await?;
-                    let extrinsics = block.extrinsics().await?;
-                    let block_info =
-                        BlockInfo::new(&block, &extrinsics, &chain_client.genesis_hash());
 
-                    // We deliberately create spurious forks during startup, while populating the
-                    // history.
-                    // TODO: fix this at a lower level in the init, startup, or fork detection code
-                    // instead
-                    if event.needs_alert() && !mode.is_startup() {
-                        alert_tx
-                            .send(Alert::from_chain_fork_event(event, block_info, mode))
-                            .await?;
-                    }
+                    // TODO: only get extrinsics and events if
+                    // TODO: if the node has pruned this block, just send the alert without it
+                    let (block, extrinsics, events) =
+                        block_full_from_hash(block.hash(), true, chain_clients).await?;
+                    let block_info =
+                        BlockInfo::new(&block, &extrinsics, &chain_clients[0].genesis_hash());
 
                     send_best_fork_block(
                         mode,
                         is_best_block,
-                        block,
-                        extrinsics,
                         block_info,
+                        extrinsics,
+                        events.expect("asked for events"),
                         best_fork_tx,
                     )
                     .await?;
+
+                    Some(block_info)
+                } else {
+                    None
+                };
+
+                // We deliberately create spurious forks during startup, while populating the
+                // history.
+                // TODO: fix this at a lower level in the init, startup, or fork detection code
+                // instead
+                if event.needs_alert() && !mode.is_startup() {
+                    let block_info = if let Some(block_info) = block_info {
+                        block_info
+                    } else {
+                        BlockInfo::with_block_hash(block.hash(), chain_clients).await?
+                    };
+
+                    alert_tx
+                        .send(Alert::from_chain_fork_event(event, block_info, mode))
+                        .await?;
                 }
             }
 
@@ -782,17 +794,17 @@ pub async fn add_blocks_to_chain_fork_state(
                 );
 
                 if is_best_block {
-                    let block = chain_client.blocks().at(block.hash()).await?;
-                    let extrinsics = block.extrinsics().await?;
+                    let (block, extrinsics, events) =
+                        block_full_from_hash(block.hash(), true, chain_clients).await?;
                     let block_info =
-                        BlockInfo::new(&block, &extrinsics, &chain_client.genesis_hash());
+                        BlockInfo::new(&block, &extrinsics, &chain_clients[0].genesis_hash());
 
                     send_best_fork_block(
                         mode,
                         is_best_block,
-                        block,
-                        extrinsics,
                         block_info,
+                        extrinsics,
+                        events.expect("asked for events"),
                         best_fork_tx,
                     )
                     .await?;
@@ -815,7 +827,7 @@ pub async fn add_blocks_to_chain_fork_state(
                 // TODO: if the node has pruned this block, just stop here and insert the rest of
                 // the pending blocks
                 let parent_block =
-                    BlockLink::with_block_hash(block.parent_hash, chain_client).await?;
+                    BlockLink::with_block_hash(block.parent_hash, chain_clients).await?;
                 let parent_block = Arc::new(parent_block);
 
                 if parent_block.height() >= block.height() {
@@ -865,7 +877,7 @@ pub async fn add_blocks_to_chain_fork_state(
 /// TODO:
 /// - write tests for this, or for ChainForkState
 pub async fn check_for_chain_forks(
-    chain_client: SubspaceClient,
+    chain_clients: Vec<SubspaceClient>,
     raw_rpc_client: RawRpcClient,
     mut new_blocks_rx: mpsc::Receiver<BlockSeen>,
     best_fork_tx: mpsc::Sender<NewBestBlockMessage>,
@@ -884,7 +896,7 @@ pub async fn check_for_chain_forks(
     // This will fetch the context for the parent block (and therefore the first block), and fix up
     // the duplicate tips as needed.
     let parent_of_first_block =
-        BlockLink::with_block_hash(first_block.parent_hash, &chain_client).await?;
+        BlockLink::with_block_hash(first_block.parent_hash, &chain_clients).await?;
     let parent_of_first_block = Arc::new(parent_of_first_block);
     let parent_of_first_block = if is_best_block {
         BlockSeen::from_best_block(parent_of_first_block)
@@ -902,7 +914,7 @@ pub async fn check_for_chain_forks(
         "Adding {MAX_BLOCK_DEPTH} previous blocks to chain fork state, this may take some time...",
     );
     add_blocks_to_chain_fork_state(
-        &chain_client,
+        &chain_clients,
         &raw_rpc_client,
         &mut state,
         BlockCheckMode::Startup,
@@ -949,7 +961,7 @@ pub async fn check_for_chain_forks(
 
     while let Some(block_seen) = new_blocks_rx.recv().await {
         add_blocks_to_chain_fork_state(
-            &chain_client,
+            &chain_clients,
             &raw_rpc_client,
             &mut state,
             BlockCheckMode::Current,
