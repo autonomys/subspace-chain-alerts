@@ -79,7 +79,7 @@ pub enum BlockCheckMode {
 
 impl BlockCheckMode {
     /// Whether we are checking current blocks.
-    pub fn is_current(&self) -> bool {
+    pub fn is_current(self) -> bool {
         match self {
             BlockCheckMode::Current => true,
             BlockCheckMode::Replay | BlockCheckMode::Startup => false,
@@ -88,12 +88,12 @@ impl BlockCheckMode {
 
     /// Whether we are checking replayed blocks.
     #[expect(dead_code, reason = "included for completeness")]
-    pub fn is_replay(&self) -> bool {
+    pub fn is_replay(self) -> bool {
         !self.is_current()
     }
 
     /// Whether we are checking startup blocks.
-    pub fn is_startup(&self) -> bool {
+    pub fn is_startup(self) -> bool {
         match self {
             BlockCheckMode::Current | BlockCheckMode::Replay => false,
             BlockCheckMode::Startup => true,
@@ -101,11 +101,11 @@ impl BlockCheckMode {
     }
 
     /// Returns this block check mode, modified for replaying blocks.
-    pub fn during_replay(&self) -> Self {
+    pub fn during_replay(self) -> Self {
         match self {
             // Blocks can't be current during a replay.
             BlockCheckMode::Current => BlockCheckMode::Replay,
-            BlockCheckMode::Replay | BlockCheckMode::Startup => *self,
+            BlockCheckMode::Replay | BlockCheckMode::Startup => self,
         }
     }
 }
@@ -962,7 +962,7 @@ pub async fn check_block(
     mode: BlockCheckMode,
     alert_tx: &mpsc::Sender<Alert>,
     block_info: &BlockInfo,
-    prev_block_info: &Option<BlockInfo>,
+    prev_block_info: Option<&BlockInfo>,
     prev_block_gap_status: BlockGapAlertStatus,
 ) -> anyhow::Result<BlockGapAlertStatus> {
     let mut gap_alert_status = prev_block_gap_status;
