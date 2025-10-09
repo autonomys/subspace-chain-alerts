@@ -1053,6 +1053,11 @@ pub async fn check_for_block_stall(
 
     // We handle channel errors by restarting all tasks.
     tokio::spawn(async move {
+        let Some(old_chain_time) = old_block_info.chain_time else {
+            // No chain time to check against.
+            return Ok(None);
+        };
+
         // Stall alerts without a resume are alarming, it looks like either the chain or alerter
         // has stopped. We've seen a spurious stall at exactly 60 seconds, but only once.
         sleep(MIN_STALL_BLOCK_GAP).await;
@@ -1063,7 +1068,12 @@ pub async fn check_for_block_stall(
                 .borrow()
                 .expect("never empty, a block is sent before spawning this task");
 
-        if latest_block_info.chain_time > old_block_info.chain_time {
+        let Some(latest_chain_time) = latest_block_info.chain_time else {
+            // No chain time to check against.
+            return Ok(None);
+        };
+
+        if latest_chain_time > old_chain_time {
             // There's a new block since we sent our block and spawned our task, so block
             // production hasn't stalled. But the latest block also spawned a task, so it
             // will alert if there is actually a stall.
