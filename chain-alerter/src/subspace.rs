@@ -674,8 +674,8 @@ pub fn local_time_gap_between_blocks(
 /// Returns `None` if either block info is missing, or a block is missing a timestamp.
 /// Returns a negative delta if the blocks are out of order.
 pub fn chain_time_gap_between_blocks(
-    block_info: impl Into<Option<BlockInfo>>,
-    prev_block_info: impl Into<Option<BlockInfo>>,
+    block_info: impl Into<Option<BlockInfo>> + Copy,
+    prev_block_info: impl Into<Option<BlockInfo>> + Copy,
 ) -> Option<TimeDelta> {
     let block_info = block_info.into()?;
     let prev_block_info = prev_block_info.into()?;

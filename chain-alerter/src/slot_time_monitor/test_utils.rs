@@ -6,8 +6,8 @@ use crate::subspace::{
 
 /// Create a mock block info for testing with a given time and slot.
 pub fn mock_block_info(
-    time: impl Into<Option<RawTime>>,
-    slot: impl Into<Option<Slot>>,
+    time: impl Into<Option<RawTime>> + Copy,
+    slot: impl Into<Option<Slot>> + Copy,
 ) -> BlockInfo {
     BlockInfo {
         link: BlockLink::new(

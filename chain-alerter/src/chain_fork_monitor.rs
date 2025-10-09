@@ -327,7 +327,11 @@ impl ChainForkState {
 
     /// Calculate the depth of a fork.
     /// `mode` is only used for logging.
-    pub fn fork_depth(&self, block: &BlockLink, mode: impl Into<Option<BlockCheckMode>>) -> usize {
+    pub fn fork_depth(
+        &self,
+        block: &BlockLink,
+        mode: impl Into<Option<BlockCheckMode>> + Copy,
+    ) -> usize {
         let mut depth = 1;
         let mut current_block = block;
 
@@ -433,7 +437,7 @@ impl ChainForkState {
         &mut self,
         block: &Arc<BlockLink>,
         is_best_block: bool,
-        mode: impl Into<Option<BlockCheckMode>>,
+        mode: impl Into<Option<BlockCheckMode>> + Copy,
     ) -> Result<Option<ChainForkEvent>, AddBlockError> {
         self.can_add_block(block)?;
 
