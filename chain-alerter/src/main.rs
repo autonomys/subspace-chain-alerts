@@ -412,6 +412,14 @@ async fn run_on_all_blocks_subscription(
 }
 
 /// Send blocks from the "best blocks" subscription to the fork monitor.
+///
+/// This subscription is redundant, because we get all the best blocks from the "all blocks"
+/// subscription, then the fork monitor checks if they are the best block. But subscribing to
+/// best blocks improves our latency, because we can skip an RPC call to the server to check if
+/// these blocks are the best block.
+///
+/// If small data volumes or server subscription load are more important than latency, this
+/// subscription can be disabled.
 async fn run_on_best_blocks_subscription(
     chain_client: SubspaceClient,
     new_blocks_tx: mpsc::Sender<BlockSeen>,
