@@ -211,6 +211,9 @@ async fn slack_poster(
     let mut alert_count = 0;
 
     while let Some(alert) = alert_rx.recv().await {
+        // Give best blocks a chance to win the subscription race.
+        task::yield_now().await;
+
         // Since we use the alert limit for testing, we always want to increment it, even if the
         // Slack alert would be duplicate or skipped. (We often disable Slack for testing.)
         alert_count += 1;
@@ -224,6 +227,7 @@ async fn slack_poster(
             // We have a large number of retries in the Slack poster, so it is unlikely to fail.
             let response = slack_client.post_message(&alert).await?;
             debug!(?response, %alert_count, ?alert_limit, ?test_startup, "posted alert to Slack");
+            task::yield_now().await;
         } else {
             info!(%alert_count, ?alert_limit, ?test_startup, "{alert}");
         }
@@ -326,6 +330,9 @@ async fn run(args: &Args) -> anyhow::Result<()> {
 
     // Tasks are listed in rough data flow order.
     select! {
+        // Make the best blocks win the subscription race, to save on best block check RPC calls.
+        biased;
+
         // Tasks that maintain internal library state, for example, subxt substrate metadata
         result = metadata_update_tasks.next() => {
             match result {
@@ -435,6 +442,9 @@ async fn run_on_all_blocks_subscription(
     let mut blocks_sub = chain_client.blocks().subscribe_all().await?;
 
     while let Some(block) = blocks_sub.next().await {
+        // Give best blocks a chance to win the subscription race.
+        task::yield_now().await;
+
         // These errors represent a connection failure or similar, and require a restart.
         let block = block?;
         let block = BlockLink::from_raw_block(&block);
@@ -452,7 +462,6 @@ async fn run_on_all_blocks_subscription(
         let block_seen = BlockSeen::from_any_block(Arc::new(block));
         new_blocks_tx.send(block_seen).await?;
 
-        // Give tasks (that are spawned by other tasks) an opportunity to run on any new blocks.
         task::yield_now().await;
     }
 
@@ -494,8 +503,8 @@ async fn run_on_best_blocks_subscription(
         let block_seen = BlockSeen::from_best_block(Arc::new(block));
         new_blocks_tx.send(block_seen).await?;
 
-        // Give tasks (that are spawned by other tasks) an opportunity to run on any new blocks.
-        task::yield_now().await;
+        // We don't give tasks an opportunity to run, because we want best blocks to win the
+        // subscription race.
     }
 
     Ok(())
