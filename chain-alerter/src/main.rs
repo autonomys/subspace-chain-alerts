@@ -31,7 +31,7 @@ use crate::slot_time_monitor::{
 use crate::subspace::{
     BlockInfo, BlockLink, BlockNumber, LOCAL_SUBSPACE_NODE_URL, MAX_RECONNECTION_ATTEMPTS,
     MAX_RECONNECTION_DELAY, RawBlock, RawEvent, RawExtrinsicList, RawRpcClient, SubspaceClient,
-    create_subspace_client, node_best_block_hash,
+    create_subspace_client,
 };
 use clap::{ArgAction, Parser, ValueHint};
 use slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor};
@@ -261,6 +261,7 @@ async fn run(args: &Args) -> anyhow::Result<()> {
     let chain_fork_monitor_task: AsyncJoinOnDrop<anyhow::Result<()>> = AsyncJoinOnDrop::new(
         tokio::spawn(check_for_chain_forks(
             chain_forks_client,
+            raw_rpc_client,
             new_blocks_rx,
             best_fork_tx,
             alert_tx,
@@ -281,7 +282,6 @@ async fn run(args: &Args) -> anyhow::Result<()> {
     let all_blocks_fut = AsyncJoinOnDrop::new(
         tokio::spawn(run_on_all_blocks_subscription(
             chain_client,
-            raw_rpc_client,
             new_blocks_tx.clone(),
         )),
         true,
@@ -385,7 +385,6 @@ async fn run(args: &Args) -> anyhow::Result<()> {
 /// Send blocks from the "all blocks" subscription to the fork monitor.
 async fn run_on_all_blocks_subscription(
     chain_client: SubspaceClient,
-    raw_rpc_client: RawRpcClient,
     new_blocks_tx: mpsc::Sender<BlockSeen>,
 ) -> anyhow::Result<()> {
     // Subscribe to all blocks, including side forks and best blocks.
@@ -396,26 +395,13 @@ async fn run_on_all_blocks_subscription(
         let block = block?;
         let block = BlockLink::from_block(&block);
 
-        let best_block_hash = node_best_block_hash(&raw_rpc_client).await?;
-        let is_best_block = block.hash() == best_block_hash;
-        debug!(
-            %is_best_block,
-            ?best_block_hash,
-            ?block,
-            "checking if block is the current best block",
-        );
-
         // Let the user know we're still alive.
         if block.height().is_multiple_of(BLOCK_UPDATE_LOGGING_INTERVAL) {
-            info!(%is_best_block, ?block, "Processed block from all blocks subscription");
+            info!(?block, "Processed block from all blocks subscription");
         }
 
         // Notify the fork monitor that we've seen a new block.
-        let block_seen = if is_best_block {
-            BlockSeen::from_best_block(Arc::new(block))
-        } else {
-            BlockSeen::from_any_block(Arc::new(block))
-        };
+        let block_seen = BlockSeen::from_any_block(Arc::new(block));
         new_blocks_tx.send(block_seen).await?;
 
         // Give tasks (that are spawned by other tasks) an opportunity to run on any new blocks.

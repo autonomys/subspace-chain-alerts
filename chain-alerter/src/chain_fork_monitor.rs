@@ -3,7 +3,7 @@
 use crate::alerts::{Alert, BlockCheckMode};
 use crate::subspace::{
     BlockHash, BlockInfo, BlockLink, BlockNumber, BlockPosition, PARENT_OF_GENESIS, RawBlock,
-    RawExtrinsicList, SubspaceClient,
+    RawExtrinsicList, RawRpcClient, SubspaceClient, node_best_block_hash,
 };
 use static_assertions::const_assert;
 use std::cmp::max;
@@ -622,38 +622,39 @@ pub enum BlockSeen {
     /// A new block has been seen, and we know it is a best block (part of a fork containing
     /// the best block).
     ///
-    /// These blocks can come from the best or all blocks subscriptions.
-    BestBlock(Arc<BlockLink>),
+    /// These blocks come from the best blocks subscription.
+    IsBestBlock(Arc<BlockLink>),
 
-    /// A new block has been seen, which is not a best block.
+    /// A new block has been seen, and we don't know if it is a best block yet.
     /// This block might be treated as the best block if it is received early enough.
     ///
-    /// This block only comes from the all blocks subscription.
-    AnyBlock(Arc<BlockLink>),
+    /// These blocks come from the all blocks subscription.
+    MaybeBestBlock(Arc<BlockLink>),
 }
 
 impl BlockSeen {
     /// Create a new `BestBlock` received message for a single block.
     pub fn from_best_block(block: Arc<BlockLink>) -> Self {
-        Self::BestBlock(block)
+        Self::IsBestBlock(block)
     }
 
     /// Create a new `AnyBlock` received message for a single block.
     pub fn from_any_block(block: Arc<BlockLink>) -> Self {
-        Self::AnyBlock(block)
+        Self::MaybeBestBlock(block)
     }
 
     /// Returns the block links for this message.
     pub fn into_block(self) -> Arc<BlockLink> {
         match self {
-            Self::BestBlock(block) => block,
-            Self::AnyBlock(block) => block,
+            Self::IsBestBlock(block) => block,
+            Self::MaybeBestBlock(block) => block,
         }
     }
 
-    /// Returns true if this is a best block.
+    /// Returns true if this is definitely a best block.
+    /// Returns false if we don't know if it is a best block.
     pub fn is_best_block(&self) -> bool {
-        matches!(self, Self::BestBlock(_))
+        matches!(self, Self::IsBestBlock(_))
     }
 }
 
@@ -678,14 +679,43 @@ pub async fn send_best_fork_block(
 /// Add a block and any missing ancestors to the chain fork state, sending alerts as needed.
 pub async fn add_blocks_to_chain_fork_state(
     chain_client: &SubspaceClient,
+    raw_rpc_client: &RawRpcClient,
     state: &mut ChainForkState,
     mode: BlockCheckMode,
-    is_best_block: bool,
-    block_seen: Arc<BlockLink>,
+    block_seen: BlockSeen,
     best_fork_tx: &mpsc::Sender<NewBestBlockMessage>,
     alert_tx: &mpsc::Sender<Alert>,
 ) -> anyhow::Result<()> {
-    let mut pending_blocks = BTreeSet::from([block_seen]);
+    let mut is_best_block = block_seen.is_best_block();
+    let block = block_seen.into_block();
+
+    let can_add_block = state.can_add_block(&block);
+    if let Err(err) = can_add_block
+        && !err.needs_parent_block()
+    {
+        trace!(
+            ?block,
+            ?is_best_block,
+            ?err,
+            "Block can't be added to the chain fork state, ignoring",
+        );
+        return Ok(());
+    }
+
+    if !is_best_block {
+        // We can add the block, but we don't know if this is the best block yet.
+        let best_block_hash = node_best_block_hash(raw_rpc_client).await?;
+        is_best_block = block.hash() == best_block_hash;
+
+        trace!(
+            ?block,
+            ?best_block_hash,
+            ?is_best_block,
+            "Checked if all blocks subscription sent the best block",
+        );
+    }
+
+    let mut pending_blocks = BTreeSet::from([block]);
 
     while let Some(block) = pending_blocks.pop_first() {
         let mode = if pending_blocks.is_empty() {
@@ -836,6 +866,7 @@ pub async fn add_blocks_to_chain_fork_state(
 /// - write tests for this, or for ChainForkState
 pub async fn check_for_chain_forks(
     chain_client: SubspaceClient,
+    raw_rpc_client: RawRpcClient,
     mut new_blocks_rx: mpsc::Receiver<BlockSeen>,
     best_fork_tx: mpsc::Sender<NewBestBlockMessage>,
     alert_tx: mpsc::Sender<Alert>,
@@ -855,6 +886,11 @@ pub async fn check_for_chain_forks(
     let parent_of_first_block =
         BlockLink::with_block_hash(first_block.parent_hash, &chain_client).await?;
     let parent_of_first_block = Arc::new(parent_of_first_block);
+    let parent_of_first_block = if is_best_block {
+        BlockSeen::from_best_block(parent_of_first_block)
+    } else {
+        BlockSeen::from_any_block(parent_of_first_block)
+    };
 
     // The first block is always a new tip, so we ignore that event.
     let mut state = ChainForkState::from_first_block(first_block.clone());
@@ -867,9 +903,9 @@ pub async fn check_for_chain_forks(
     );
     add_blocks_to_chain_fork_state(
         &chain_client,
+        &raw_rpc_client,
         &mut state,
         BlockCheckMode::Startup,
-        is_best_block,
         parent_of_first_block,
         &best_fork_tx,
         &alert_tx,
@@ -914,10 +950,10 @@ pub async fn check_for_chain_forks(
     while let Some(block_seen) = new_blocks_rx.recv().await {
         add_blocks_to_chain_fork_state(
             &chain_client,
+            &raw_rpc_client,
             &mut state,
             BlockCheckMode::Current,
-            block_seen.is_best_block(),
-            block_seen.into_block(),
+            block_seen,
             &best_fork_tx,
             &alert_tx,
         )
