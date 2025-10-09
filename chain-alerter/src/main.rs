@@ -13,7 +13,7 @@ mod slack;
 mod slot_time_monitor;
 mod subspace;
 
-use crate::alerts::{Alert, BlockCheckMode};
+use crate::alerts::{Alert, BlockCheckMode, BlockGapAlertStatus};
 use crate::chain_fork_monitor::{
     BlockSeen, CHAIN_FORK_BUFFER_SIZE, NewBestBlockMessage, check_for_chain_forks,
 };
@@ -90,6 +90,10 @@ struct Args {
     #[arg(long)]
     alert_limit: Option<usize>,
 
+    /// Exit after the startup alert, even if other alerts fired during the initial context load.
+    #[arg(long)]
+    test_startup: bool,
+
     /// Enable or disable Slack message posting.
     /// Slack is enabled by default, and required a Slack OAuth secret file named `slack-secret`.
     #[arg(long, default_value = "true", action = ArgAction::Set)]
@@ -164,17 +168,19 @@ async fn setup(
 async fn slack_poster(
     slack_client: Option<SlackClientInfo>,
     alert_limit: Option<usize>,
+    test_startup: bool,
     mut alert_rx: mpsc::Receiver<Alert>,
 ) -> anyhow::Result<()> {
     if slack_client.is_none() {
         warn!(
             ?alert_limit,
+            ?test_startup,
             "slack posting is disabled, only posting alerts to the terminal",
         );
     }
 
     if alert_limit == Some(0) {
-        info!("alert limit is zero, exiting immediately");
+        info!(?test_startup, "alert limit is zero, exiting immediately");
         return Ok(());
     }
 
@@ -186,22 +192,27 @@ async fn slack_poster(
         alert_count += 1;
 
         if alert.alert.is_duplicate() {
-            info!(%alert_count, ?alert_limit, "skipping posting duplicate alert message:\n{alert}");
+            info!(%alert_count, ?alert_limit, ?test_startup, "skipping posting duplicate alert message:\n{alert}");
             continue;
         }
 
         if let Some(slack_client) = slack_client.as_ref() {
             // We have a large number of retries in the Slack poster, so it is unlikely to fail.
-            let response = slack_client.post_message(alert).await?;
-            debug!(?response, %alert_count, ?alert_limit, "posted alert to Slack");
+            let response = slack_client.post_message(&alert).await?;
+            debug!(?response, %alert_count, ?alert_limit, ?test_startup, "posted alert to Slack");
         } else {
-            info!(%alert_count, ?alert_limit, "{}", alert);
+            info!(%alert_count, ?alert_limit, ?test_startup, "{alert}");
         }
 
         if let Some(alert_limit) = alert_limit
             && alert_count >= alert_limit
         {
-            info!(%alert_count, ?alert_limit, "alert limit reached, exiting");
+            info!(%alert_count, ?alert_limit, ?test_startup, "alert limit reached, exiting");
+            break;
+        }
+
+        if test_startup && alert.alert.is_test_alert() {
+            info!(%alert_count, ?alert_limit, ?test_startup, "startup alert reached, exiting");
             break;
         }
     }
@@ -222,7 +233,12 @@ async fn run(args: &Args) -> anyhow::Result<()> {
     // We don't need to wait for the task to finish, because it will panic on failure.
     let (alert_tx, alert_rx) = mpsc::channel(ALERT_BUFFER_SIZE);
     let slack_alert_task: AsyncJoinOnDrop<anyhow::Result<()>> = AsyncJoinOnDrop::new(
-        tokio::spawn(slack_poster(slack_client_info, args.alert_limit, alert_rx)),
+        tokio::spawn(slack_poster(
+            slack_client_info,
+            args.alert_limit,
+            args.test_startup,
+            alert_rx,
+        )),
         true,
     );
 
@@ -477,6 +493,9 @@ async fn check_best_blocks(
     // A channel that shares the latest block info with concurrently running tasks.
     let latest_block_tx = watch::Sender::new(None);
 
+    // Tracks the previous block's gap alert status.
+    let mut prev_block_gap_status = BlockGapAlertStatus::NoAlert;
+
     // Slot time monitor is used to check if the slot time is within the expected range.
     let mut slot_time_monitor = MemorySlotTimeMonitor::new(SlotTimeMonitorConfig::new(
         DEFAULT_CHECK_INTERVAL,
@@ -499,8 +518,9 @@ async fn check_best_blocks(
     });
 
     // Tasks spawned by the block stall alert.
-    let mut block_stall_join_handles: FuturesUnordered<JoinHandle<anyhow::Result<()>>> =
-        FuturesUnordered::new();
+    let mut block_stall_join_handles: FuturesUnordered<
+        JoinHandle<anyhow::Result<Option<BlockGapAlertStatus>>>,
+    > = FuturesUnordered::new();
 
     while let Some((mode, raw_block, raw_extrinsics, block_info)) = best_forks_rx.recv().await {
         // Let the user know we're still alive.
@@ -524,7 +544,7 @@ async fn check_best_blocks(
 
         // Notify spawned tasks that a new block has arrived, and give them time to process that
         // block. This is needed even if there is a block gap.
-        latest_block_tx.send_replace(Some(block_info));
+        latest_block_tx.send_replace(Some((block_info, prev_block_gap_status)));
         task::yield_now().await;
 
         // If there has been a reorg, replace the previous block with the correct (fork point)
@@ -550,12 +570,13 @@ async fn check_best_blocks(
         }
 
         // We check for other alerts in any mode.
-        run_on_best_block(
+        prev_block_gap_status = run_on_best_block(
             mode,
             &raw_block,
             &block_info,
             &raw_extrinsics,
-            &prev_block_info,
+            prev_block_info.as_ref(),
+            prev_block_gap_status,
             &mut slot_time_monitor,
             &mut farming_monitor,
             &alert_tx,
@@ -565,20 +586,23 @@ async fn check_best_blocks(
         // Give spawned tasks another opportunity to run.
         task::yield_now().await;
 
-        // There's no point checking for finished tasks when we're not creating any new ones.
-        if mode.is_current() {
-            trace!(block_stall_join_handles = %block_stall_join_handles.len(), "spawned tasks before joining");
+        trace!(block_stall_join_handles = %block_stall_join_handles.len(), ?prev_block_gap_status, "spawned tasks before joining");
 
-            // Join any spawned block stall tasks that have finished.
-            // When there are no more finished tasks, continue to the next block.
-            while let Some(block_stall_result) =
-                block_stall_join_handles.next().now_or_never().flatten()
-            {
-                block_stall_result??;
+        // Join any spawned block stall tasks that have finished.
+        // When there are no more finished tasks, continue to the next block.
+        while let Some(block_stall_result) =
+            block_stall_join_handles.next().now_or_never().flatten()
+        {
+            // We only want to reset the previous block gap status if the task actually issued an
+            // alert. In the absence of an alert, we can't assume there were no gaps (due to the
+            // slop). The most reliable indicators of a reset are the block gap checks in
+            // check_block().
+            if let Some(block_gap_status) = block_stall_result?? {
+                prev_block_gap_status = block_gap_status;
             }
-
-            trace!(block_stall_join_handles = %block_stall_join_handles.len(), "spawned tasks after joining");
         }
+
+        trace!(block_stall_join_handles = %block_stall_join_handles.len(), ?prev_block_gap_status, "spawned tasks after joining");
 
         prev_block_info = Some(block_info);
     }
@@ -596,11 +620,12 @@ async fn run_on_best_block(
     block: &RawBlock,
     block_info: &BlockInfo,
     extrinsics: &RawExtrinsicList,
-    prev_block_info: &Option<BlockInfo>,
+    prev_block_info: Option<&BlockInfo>,
+    prev_block_gap_status: BlockGapAlertStatus,
     slot_time_monitor: &mut MemorySlotTimeMonitor,
     farming_monitor: &mut MemoryFarmingMonitor,
     alert_tx: &mpsc::Sender<Alert>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<BlockGapAlertStatus> {
     let events = block.events().await?;
     let events = events
         .iter()
@@ -617,7 +642,14 @@ async fn run_on_best_block(
         .collect::<Vec<RawEvent>>();
 
     // Check the block itself for alerts, including stall resumes.
-    alerts::check_block(mode, alert_tx, block_info, prev_block_info).await?;
+    let block_gap_status = alerts::check_block(
+        mode,
+        alert_tx,
+        block_info,
+        prev_block_info,
+        prev_block_gap_status,
+    )
+    .await?;
     slot_time_monitor.process_block(mode, block_info).await?;
     farming_monitor
         .process_block(mode, block_info, &events)
@@ -643,7 +675,7 @@ async fn run_on_best_block(
         alerts::check_event(mode, alert_tx, event, block_info, extrinsic_info).await?;
     }
 
-    Ok(())
+    Ok(block_gap_status)
 }
 
 /// The main function, which runs the chain alerter process until Ctrl-C is pressed.
@@ -660,7 +692,7 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     // If we have an alert limit, we don't want to restart when it is reached.
-    let max_reconnection_attempts = if args.alert_limit.is_some() {
+    let max_reconnection_attempts = if args.alert_limit.is_some() || args.test_startup {
         0
     } else {
         MAX_RECONNECTION_ATTEMPTS

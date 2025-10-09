@@ -60,6 +60,13 @@ rustflags = [
     "-Wclippy::assertions_on_result_states",
     "-Wclippy::debug_assert_with_mut_call",
 
+    # Likely bugs or future issues
+    "-Wclippy::large_stack_arrays",
+    "-Wclippy::large_stack_frames",
+    "-Wclippy::large_types",
+    "-Wclippy::large_crate_files",
+    "-Wclippy::large_enum_variant",
+
     # Style
     "-Wclippy::from_iter_instead_of_collect",
     "-Wclippy::inconsistent_struct_constructor",
@@ -67,4 +74,9 @@ rustflags = [
     "-Wclippy::needless_pass_by_value",
     "-Wclippy::precedence_bits",
     "-Wclippy::let_underscore_untyped",
+    "-Wclippy::option_option",
+    "-Wclippy::ref_option",
+    "-Wclippy::ref_option_ref",
+    "-Wclippy::trivially_copy_pass_by_ref",
+    "-Wclippy::unnecessary_wraps",
 ]

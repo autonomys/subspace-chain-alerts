@@ -26,7 +26,7 @@ else
     NODE_URL=wss://rpc-0.mainnet.autonomys.xyz/ws
 fi
 
-cargo run --locked -- --slack=false --alert-limit=1 --node-rpc-url="$NODE_URL" \
+cargo run --locked -- --slack=false --test-startup --node-rpc-url="$NODE_URL" \
     | rg --fixed-strings --passthru "**Launched and connected to the node**"
 
 # Stop showing executed commands

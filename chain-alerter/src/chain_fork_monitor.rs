@@ -92,23 +92,23 @@ pub enum AddBlockError {
 impl AddBlockError {
     /// Returns true if the parent block should be fetched and added to the state.
     /// Returns false if the block and its ancestors can't be added to the state.
-    pub fn needs_parent_block(&self) -> bool {
+    pub fn needs_parent_block(self) -> bool {
         match self {
             AddBlockError::MissingParentBlock => true,
-            &AddBlockError::AlreadyInState
+            AddBlockError::AlreadyInState
             | AddBlockError::HeightTooLow
             | AddBlockError::ParentOfGenesis => false,
         }
     }
 
     /// Returns true if the error is serious (a likely bug).
-    pub fn log_error(&self) -> bool {
+    pub fn log_error(self) -> bool {
         match self {
             // An unexpected error which indicates a bug or invalid RPC data.
             AddBlockError::ParentOfGenesis => true,
             // Routine errors which happen during normal operation.
             AddBlockError::MissingParentBlock
-            | &AddBlockError::AlreadyInState
+            | AddBlockError::AlreadyInState
             | AddBlockError::HeightTooLow => false,
         }
     }
