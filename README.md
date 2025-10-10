@@ -37,7 +37,7 @@ When a block is received from the all blocks subscription on the primary node:
 
 For all other subscriptions:
 
-1. The block is either assumed to be the best block (best blocks subscription) or assumed not to be (all blocks on secondary servers)
+1. The block is either assumed to be the best block (best blocks subscription on the primary node) or assumed not to be (all blocks on secondary nodes)
   a. a separate block stall alerter is run for each connected node
 2. the fork monitor connects the block to the existing chain, fetching missing parent blocks as needed
   a. if there are too many missing blocks, the block is treated as a disconnected new fork
@@ -125,8 +125,8 @@ Alerts are de-duplicated between servers by connecting multiple servers to the s
 - Hardcoded Slack channel, workspace ID, and thresholds.
 - Minimal decoding/validation for extrinsics and events; fields are parsed best-effort.
 - Minimal stateful aggregation (e.g., summing multiple related transfers).
-- Alerts are partly de-duplicated on the same instance, but extrinsic and event alerts are not combined yet.
-- No alert deduplication when multiple instances are running.
+- Alerts are partly de-duplicated, but some duplicates might still happen (this is safer than accidentally ignoring important alerts).
+- No alert deduplication between multiple alerter instances.
 - Limited CLI configuration.
 - No persistent storage, no metrics, no dashboards.
 - Basic error handling: logs warnings on transient decode/metadata mismatches and continues.
@@ -138,9 +138,9 @@ Alerts are de-duplicated between servers by connecting multiple servers to the s
 
    - Rust (edition 2024 compatible)
    - A Slack bot token with permission to post to the target channel in the Autonomys workspace
-   - A running Subspace node (local dev is fine)
+   - A running Subspace node (a local non-archival node is fine)
 
-2. Prepare Slack secret file
+2. Optional: Prepare Slack secret file
 
    - Save the bot token to a file named `slack-secret` in the repository root
    - Restrict permissions (Unix):
@@ -148,18 +148,21 @@ Alerts are de-duplicated between servers by connecting multiple servers to the s
 
 3. Optional: Run a local Subspace node
 
+   - This is the most efficient way to run an instance, because it gives low latency for the block subscriptions, best blocks checks, extrinsics, and events retrieval.
    - Follow the Subspace monorepo docs to build/run a local node, or run a dev node suitable for testing.
      See the Subspace reference implementation for details: [Subspace monorepo](https://github.com/autonomys/subspace).
 
 4. Build and run
    - `cargo run -- --name "My Test Bot" --icon "warning" --node-rpc-url wss://rpc.mainnet.subspace.foundation/ws`
+     - to use multiple nodes, supply `--node-rpc-url` multiple times
      - public node URLs are [listed in subspace.rs](https://github.com/autonomys/subspace-chain-alerts/blob/ac33ed7d200a1fdc3b92c1919f7b9cfacfba37c6/chain-alerter/src/subspace.rs#L43-L49)
      - `--production` will sent alerts to the production channel (except for startup alerts, which always go to the test channel)
      - `--slack=false` will disable Slack message posting entirely, and just log alerts to the terminal.
+   - Testing options:
      - `--alert-limit=5` will exit after 5 alerts have been posted, including the startup alert.
      - `--test-startup` will always exit after the startup alert, even if other alerts fired during the initial context load.
-   - On first observed block, you should see a Slack message in `#chain-alerts-test` summarizing connection and block info.
-   - All arguments are optional.The default node is `localhost`, and the default icon is the instance external IP address country flag (looked up via an online GeoIP service, which can be wrong).
+   - After context blocks are loaded, you should see a Slack message in `#chain-alerts-test` summarizing connection and block info.
+   - All arguments are optional. The default node is `localhost`, and the default icon is the instance external IP address country flag (looked up via an online GeoIP service, which can be wrong).
    - `RUST_LOG` can be used to filter logs, see:
      <https://docs.rs/tracing-subscriber/0.3.19/tracing_subscriber/filter/struct.EnvFilter.html#directives>
 
@@ -168,13 +171,17 @@ Alerts are de-duplicated between servers by connecting multiple servers to the s
 - Crate `chain-alerter`
   - `chain_fork_monitor.rs`: reassembles received blocks into a coherent set of forks
   - `alerts.rs`: checks for alerts in each block and extrinsic
+    - `accounts.rs`: address-based alerts and address context for all alerts
+    - `subscan.rs`: links to Subscan.io for blocks, extrinsics, and events
+    - `transfer.rs`: amount transfer alerts and amount context for all alerts
     - `farming_monitor.rs`: unique farmer vote count monitoring
     - `slot_time_monitor.rs`: slot production rate monitoring for slot alerts
-    - `transfer.rs`: amount transfer and address alerts
   - `subspace.rs`: Uses `subxt` and `scale-value` for chain interaction
   - `slack.rs`: Uses `slack-morphism` to send messages to Slack
   - `main.rs`: main process logic and run loop
     - Depends on `subspace-process` for process handling utility functions
+  - `../test_utils.rs`: test support for alerts and subsystems.
+  - `../tests.rs`: tests for alerts and subsystems.
 
 ### References
 

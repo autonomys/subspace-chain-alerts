@@ -1,5 +1,5 @@
 use super::*;
-use crate::slot_time_monitor::test_utils::mock_block_info;
+use crate::subspace::test_utils::mock_block_info;
 use tokio::sync::mpsc;
 
 fn farmers() -> [FarmerPublicKey; 3] {
