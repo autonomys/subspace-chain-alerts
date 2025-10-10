@@ -735,10 +735,12 @@ pub async fn add_blocks_to_chain_fork_state(
             // Block was successfully added to the state, and there was a chain fork change or
             // reorg.
             // Continue to add any descendant blocks.
+            // TODO: silence these startup logs at a lower level (they only seem to happen with
+            // multiple RPC servers)
             Ok(Some(event)) => {
-                if event.needs_warn_log() {
+                if event.needs_warn_log() && !mode.is_startup() {
                     warn!(?mode, ?event, "Chain fork or reorg event");
-                } else if event.needs_info_log() {
+                } else if event.needs_info_log() && !mode.is_startup() {
                     info!(?mode, ?event, "Chain fork or reorg event");
                 } else {
                     debug!(?mode, ?event, "Chain fork or reorg event");
