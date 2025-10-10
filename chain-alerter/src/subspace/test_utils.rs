@@ -48,7 +48,7 @@ pub fn node_rpc_urls() -> Vec<String> {
 ///
 /// TODO: make this return the same struct as `main::setup()`
 pub async fn test_setup(
-    node_rpc_urls: Vec<String>,
+    node_rpc_urls: &mut Vec<String>,
 ) -> anyhow::Result<(
     Vec<SubspaceClient>,
     RawRpcClient,

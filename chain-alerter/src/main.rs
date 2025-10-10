@@ -117,7 +117,7 @@ async fn setup(
     production: bool,
     name: impl AsRef<str>,
     icon: Option<String>,
-    node_rpc_urls: Vec<String>,
+    node_rpc_urls: &mut Vec<String>,
 ) -> anyhow::Result<(
     Option<SlackClientInfo>,
     Vec<SubspaceClient>,
@@ -158,11 +158,12 @@ async fn setup(
     let mut chain_clients = Vec::new();
     let metadata_update_tasks = FuturesUnordered::new();
 
-    let (chain_client, raw_rpc_client, metadata_update_task) = if node_rpc_urls.is_empty() {
-        create_subspace_client(LOCAL_SUBSPACE_NODE_URL, true).await?
-    } else {
-        create_subspace_client(node_rpc_urls[0].as_str(), true).await?
-    };
+    if node_rpc_urls.is_empty() {
+        node_rpc_urls.push(LOCAL_SUBSPACE_NODE_URL.to_string());
+    }
+
+    let (chain_client, raw_rpc_client, metadata_update_task) =
+        create_subspace_client(node_rpc_urls[0].as_str(), true).await?;
 
     chain_clients.push(chain_client);
     metadata_update_tasks.push(metadata_update_task);
@@ -251,7 +252,7 @@ async fn slack_poster(
 /// Run the chain alerter process.
 ///
 /// Returns fatal errors like connection failures, but logs and ignores recoverable errors.
-async fn run(args: &Args) -> anyhow::Result<()> {
+async fn run(args: &mut Args) -> anyhow::Result<()> {
     info!(?args, "chain-alerter started");
 
     let (slack_client_info, chain_clients, raw_rpc_client, mut metadata_update_tasks) = setup(
@@ -259,7 +260,7 @@ async fn run(args: &Args) -> anyhow::Result<()> {
         args.production,
         &args.name,
         args.icon.clone(),
-        args.node_rpc_url.clone(),
+        &mut args.node_rpc_url,
     )
     .await?;
 
@@ -722,7 +723,7 @@ async fn main() -> anyhow::Result<()> {
     let shutdown_handle = shutdown_signal("chain-alerter").fuse();
     pin!(shutdown_handle);
 
-    let args = Args::parse();
+    let mut args = Args::parse();
 
     // If we have an alert limit, we don't want to restart when it is reached.
     let max_reconnection_attempts = if args.alert_limit.is_some() || args.test_startup {
@@ -741,7 +742,7 @@ async fn main() -> anyhow::Result<()> {
             // TODO:
             // - store the most recent block and pass it to run(), so we restart at the right place
             // - create the RPC client outside this method and re-use it (but this might be more error-prone)
-            result = run(&args) => {
+            result = run(&mut args) => {
                 let restart_message = if reconnection_attempt < max_reconnection_attempts {
                     ", restarting..."
                 } else {

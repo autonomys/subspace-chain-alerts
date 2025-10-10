@@ -172,7 +172,7 @@ const IMPORTANT_ADDRESS_ONLY_BLOCKS: [(
 #[tokio::test(flavor = "multi_thread")]
 async fn test_startup_alert() -> anyhow::Result<()> {
     let (subspace_clients, _, alert_tx, mut alert_rx, mut update_tasks) =
-        test_setup(node_rpc_urls()).await?;
+        test_setup(&mut node_rpc_urls()).await?;
 
     let block_info = BlockInfo::with_block_hash(None, &subspace_clients).await?;
 
@@ -205,7 +205,7 @@ async fn test_startup_alert() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_sudo_alerts() -> anyhow::Result<()> {
     let (subspace_clients, _, alert_tx, mut alert_rx, mut update_tasks) =
-        test_setup(node_rpc_urls()).await?;
+        test_setup(&mut node_rpc_urls()).await?;
 
     let (block_info, extrinsics, events) = fetch_block_info(
         BlockHash::from(SUDO_EXTRINSIC_BLOCK.1),
@@ -298,7 +298,7 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
     let (subspace_clients, _, alert_tx, mut alert_rx, mut update_tasks) =
-        test_setup(node_rpc_urls()).await?;
+        test_setup(&mut node_rpc_urls()).await?;
 
     for (block_number, block_hash, extrinsic_index, event_index, transfer_value, slot) in
         LARGE_TRANSFER_BLOCKS
@@ -389,7 +389,7 @@ async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_important_address_transfer_alerts() -> anyhow::Result<()> {
     let (subspace_clients, _, alert_tx, mut alert_rx, mut update_tasks) =
-        test_setup(node_rpc_urls()).await?;
+        test_setup(&mut node_rpc_urls()).await?;
 
     for (
         block_number,
@@ -523,7 +523,7 @@ async fn test_important_address_transfer_alerts() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_important_address_only_alerts() -> anyhow::Result<()> {
     let (subspace_clients, _, alert_tx, mut alert_rx, mut update_tasks) =
-        test_setup(node_rpc_urls()).await?;
+        test_setup(&mut node_rpc_urls()).await?;
 
     for (block_number, block_hash, extrinsic_index, address_kind, slot) in
         IMPORTANT_ADDRESS_ONLY_BLOCKS
