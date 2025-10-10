@@ -219,29 +219,62 @@ async fn slack_poster(
         // Slack alert would be duplicate or skipped. (We often disable Slack for testing.)
         alert_count += 1;
 
+        let node_rpc_urls = alert.node_rpc_urls();
+
         if alert.alert.is_duplicate() {
-            info!(%alert_count, ?alert_limit, ?test_startup, "skipping posting duplicate alert message:\n{alert}");
+            info!(
+                %alert_count,
+                ?alert_limit,
+                ?test_startup,
+                ?node_rpc_urls,
+                "skipping posting duplicate alert message:\n{alert}",
+            );
             continue;
         }
 
         if let Some(slack_client) = slack_client.as_ref() {
             // We have a large number of retries in the Slack poster, so it is unlikely to fail.
             let response = slack_client.post_message(&alert).await?;
-            debug!(?response, %alert_count, ?alert_limit, ?test_startup, "posted alert to Slack");
+            debug!(
+                ?response,
+                %alert_count,
+                ?alert_limit,
+                ?test_startup,
+                ?node_rpc_urls,
+                "posted alert to Slack",
+            );
             task::yield_now().await;
         } else {
-            info!(%alert_count, ?alert_limit, ?test_startup, "{alert}");
+            info!(
+                %alert_count,
+                ?alert_limit,
+                ?test_startup,
+                ?node_rpc_urls,
+                "{alert}",
+            );
         }
 
         if let Some(alert_limit) = alert_limit
             && alert_count >= alert_limit
         {
-            info!(%alert_count, ?alert_limit, ?test_startup, "alert limit reached, exiting");
+            info!(
+                %alert_count,
+                ?alert_limit,
+                ?test_startup,
+                ?node_rpc_urls,
+                "alert limit reached, exiting",
+            );
             break;
         }
 
         if test_startup && alert.alert.is_test_alert() {
-            info!(%alert_count, ?alert_limit, ?test_startup, "startup alert reached, exiting");
+            info!(
+                %alert_count,
+                ?alert_limit,
+                ?test_startup,
+                ?node_rpc_urls,
+                "startup alert reached, exiting",
+            );
             break;
         }
     }

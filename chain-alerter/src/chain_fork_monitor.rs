@@ -441,9 +441,9 @@ impl ChainForkState {
     #[expect(clippy::unwrap_in_result, reason = "panic can't actually happen")]
     pub fn add_block(
         &mut self,
-        block: &Arc<BlockLink>,
-        is_best_block: bool,
         mode: impl Into<Option<BlockCheckMode>> + Copy,
+        is_best_block: bool,
+        block: &Arc<BlockLink>,
     ) -> Result<Option<ChainForkEvent>, AddBlockError> {
         self.can_add_block(block)?;
 
@@ -769,7 +769,7 @@ pub async fn add_blocks_to_chain_fork_state(
             }
         }
 
-        let event = state.add_block(&block, is_best_block, mode);
+        let event = state.add_block(mode, is_best_block, &block);
 
         match event {
             // Block was successfully added to the state, and there was a chain fork change or
@@ -779,11 +779,11 @@ pub async fn add_blocks_to_chain_fork_state(
             // multiple RPC servers)
             Ok(Some(event)) => {
                 if event.needs_warn_log() && !mode.is_startup() {
-                    warn!(?mode, ?event, "Chain fork or reorg event");
+                    warn!(?mode, ?event, node_rpc_url = ?block_node_rpc_url, "Chain fork or reorg event");
                 } else if event.needs_info_log() && !mode.is_startup() {
-                    info!(?mode, ?event, "Chain fork or reorg event");
+                    info!(?mode, ?event, node_rpc_url = ?block_node_rpc_url, "Chain fork or reorg event");
                 } else {
-                    debug!(?mode, ?event, "Chain fork or reorg event");
+                    debug!(?mode, ?event, node_rpc_url = ?block_node_rpc_url, "Chain fork or reorg event");
                 }
 
                 let block_info = if is_best_block {
@@ -941,7 +941,7 @@ pub async fn check_for_chain_forks(
 ) -> anyhow::Result<()> {
     // The first block is always a new tip, and the alert is ignored, so we don't need the node RPC
     // URL.
-    let Some((first_block, _first_block_node_rpc_url)) = new_blocks_rx.recv().await else {
+    let Some((first_block, first_block_node_rpc_url)) = new_blocks_rx.recv().await else {
         info!("Channel disconnected before first block, exiting");
         return Ok(());
     };
@@ -967,6 +967,8 @@ pub async fn check_for_chain_forks(
     info!(
         ?is_best_block,
         ?first_block,
+        ?first_block_node_rpc_url,
+        ?all_node_rpc_urls,
         "Adding {MAX_BLOCK_DEPTH} previous blocks to chain fork state, this may take some time...",
     );
 
@@ -975,7 +977,10 @@ pub async fn check_for_chain_forks(
         &raw_rpc_client,
         &mut state,
         BlockCheckMode::Startup,
-        (parent_of_first_block, parent_of_first_block_node_rpc_url),
+        (
+            parent_of_first_block,
+            parent_of_first_block_node_rpc_url.clone(),
+        ),
         &best_fork_tx,
         &alert_tx,
         &all_node_rpc_urls,
@@ -1014,6 +1019,8 @@ pub async fn check_for_chain_forks(
     info!(
         ?is_best_block,
         %state,
+        ?first_block_node_rpc_url,
+        ?parent_of_first_block_node_rpc_url,
         "Successfully added context blocks to chain fork state",
     );
 
