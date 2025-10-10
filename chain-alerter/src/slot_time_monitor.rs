@@ -3,9 +3,6 @@
 //! This module tracks Subspace slot progression and checks whether observed slot timings
 //! exceed configured thresholds.
 
-#[cfg(test)]
-pub mod test_utils;
-
 use crate::alerts::{Alert, AlertKind, BlockCheckMode};
 use crate::subspace::BlockInfo;
 use anyhow::Ok;

@@ -5,11 +5,10 @@
 
 use crate::alerts::account::ImportantAccountRole;
 use crate::alerts::{self, Alert, AlertKind, BlockCheckMode, MIN_BALANCE_CHANGE};
-use crate::slot_time_monitor::test_utils::mock_block_info;
 use crate::slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor, SlotTimeMonitorConfig};
-use crate::subspace::tests::{
-    alert_channel_only_setup, decode_event, decode_extrinsic, fetch_block_info, node_rpc_urls,
-    test_setup,
+use crate::subspace::test_utils::{
+    alert_channel_only_setup, decode_event, decode_extrinsic, fetch_block_info, mock_block_info,
+    node_rpc_urls, test_setup,
 };
 use crate::subspace::{
     AI3, Balance, BlockHash, BlockInfo, BlockNumber, EventIndex, ExtrinsicIndex, RawBlockHash, Slot,

@@ -1,10 +1,11 @@
-//! Test setup for subspace node connections.
+//! Test setup and utilities for subspace node connections, blocks, extrinsics, and events.
 
 use crate::alerts::Alert;
 use crate::subspace::{
-    BlockHash, BlockInfo, BlockNumber, EventIndex, EventInfo, ExtrinsicIndex, ExtrinsicInfo,
-    FOUNDATION_SUBSPACE_NODE_URL, LABS_SUBSPACE_NODE_URL, RawEvent, RawEventList, RawExtrinsic,
-    RawExtrinsicList, RawRpcClient, SubspaceClient, block_full_from_hash,
+    BlockHash, BlockInfo, BlockLink, BlockNumber, BlockPosition, BlockTime, ChainTime, EventIndex,
+    EventInfo, ExtrinsicIndex, ExtrinsicInfo, FOUNDATION_SUBSPACE_NODE_URL, LABS_SUBSPACE_NODE_URL,
+    RawEvent, RawEventList, RawExtrinsic, RawExtrinsicList, RawRpcClient, RawTime, Slot,
+    SubspaceClient, block_full_from_hash,
 };
 use crate::{ALERT_BUFFER_SIZE, setup};
 use rand::{Rng, rng};
@@ -110,6 +111,26 @@ pub async fn fetch_block_info(
     );
 
     Ok((block_info, extrinsics, events))
+}
+
+/// Create a mock block info for testing with a given time and slot.
+pub fn mock_block_info(
+    time: impl Into<Option<RawTime>> + Copy,
+    slot: impl Into<Option<Slot>> + Copy,
+) -> BlockInfo {
+    BlockInfo {
+        link: BlockLink::new(
+            BlockPosition::new(100, BlockHash::zero()),
+            BlockHash::zero(),
+        ),
+        chain_time: time.into().map(|t| BlockTime {
+            unix_time: t,
+            source: ChainTime,
+        }),
+        local_time: BlockTime::new_from_local_time(),
+        slot: slot.into(),
+        genesis_hash: BlockHash::zero(),
+    }
 }
 
 /// Extract and decode an extrinsic from a block.

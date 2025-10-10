@@ -2,7 +2,7 @@
 
 pub mod decode;
 #[cfg(test)]
-pub mod tests;
+pub mod test_utils;
 
 use crate::alerts::account::Accounts;
 use crate::alerts::subscan::{BlockUrl, EventUrl, ExtrinsicUrl};
