@@ -301,7 +301,6 @@ impl ChainForkState {
     ///
     /// Automatically handles blocks above or below the best tip.
     /// Assumes that the chain is connected, and there are no missing blocks.
-    #[expect(dead_code, reason = "included for completeness")]
     pub fn is_on_best_fork(&self, block: &BlockLink) -> bool {
         self.is_on_same_fork(&self.best_tip, block)
     }
@@ -706,21 +705,6 @@ pub async fn add_blocks_to_chain_fork_state(
         return Ok(());
     }
 
-    if !is_best_block {
-        // We can add the block, but we don't know if this is the best block yet.
-        let best_block_hash = node_best_block_hash(raw_rpc_client).await?;
-        // Handle a multiple server race condition, where the primary server has the parent of the
-        // best block, but doesn't have the next block yet.
-        is_best_block = block.hash() == best_block_hash || block.parent_hash == best_block_hash;
-
-        trace!(
-            ?block,
-            ?best_block_hash,
-            ?is_best_block,
-            "Checked if all blocks subscription sent the best block",
-        );
-    }
-
     let mut pending_blocks = BTreeSet::from([block]);
 
     while let Some(block) = pending_blocks.pop_first() {
@@ -730,6 +714,31 @@ pub async fn add_blocks_to_chain_fork_state(
             // There is at least one pending block ahead of us, so we must be a replayed block.
             mode.during_replay()
         };
+
+        // We can add the block, but we don't know if this is the best block yet.
+        if state.can_add_block(&block).is_ok() && !is_best_block {
+            // First, check if the block is a descendant of the best block.
+            // This is a common case, where we can avoid an RPC call to fetch the best block hash.
+            if state.is_on_best_fork(&block) {
+                is_best_block = true;
+            } else {
+                let best_block_hash = node_best_block_hash(raw_rpc_client).await?;
+                // Handle a multiple server race condition, where the primary server has the parent
+                // of the best block, but doesn't have the next block yet.
+                //
+                // TODO: this could be expensive for a long side chain, if that happens a lot, turn
+                // is_best_block into a Yes/No/Unknown tri-state, and only RPC if Unknown.
+                is_best_block =
+                    block.hash() == best_block_hash || block.parent_hash == best_block_hash;
+
+                trace!(
+                    ?block,
+                    ?best_block_hash,
+                    ?is_best_block,
+                    "Checked if an all blocks subscription sent the best block",
+                );
+            }
+        }
 
         let event = state.add_block(&block, is_best_block, mode);
 
