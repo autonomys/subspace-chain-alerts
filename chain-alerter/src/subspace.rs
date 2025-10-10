@@ -216,11 +216,12 @@ pub async fn node_best_block_hash(raw_rpc_client: &RawRpcClient) -> anyhow::Resu
 async fn raw_block_from_hash(
     block_hash: impl Into<Option<BlockHash>> + Copy,
     chain_clients: &[SubspaceClient],
-) -> anyhow::Result<RawBlock> {
+    node_rpc_urls: &[String],
+) -> anyhow::Result<(RawBlock, String)> {
     let block_hash = block_hash.into();
     let mut result = None;
 
-    for chain_client in chain_clients {
+    for (chain_client, node_rpc_url) in chain_clients.iter().zip(node_rpc_urls) {
         let raw_block = if let Some(block_hash) = block_hash {
             chain_client.blocks().at(block_hash).await
         } else {
@@ -229,7 +230,7 @@ async fn raw_block_from_hash(
 
         match raw_block {
             Ok(block) => {
-                result = Some(Ok(block));
+                result = Some(Ok((block, node_rpc_url)));
                 break;
             }
             Err(e) => {
@@ -239,9 +240,9 @@ async fn raw_block_from_hash(
         }
     }
 
-    let block = result.expect("always at least one RPC server")?;
+    let (block, node_rpc_url) = result.expect("always at least one RPC server")?;
 
-    Ok(block)
+    Ok((block, node_rpc_url.to_string()))
 }
 
 /// Get a block, its extrinsics, and events from a block hash, using the first chain client that
@@ -330,14 +331,18 @@ impl BlockPosition {
     }
 
     /// Create a block position, given its hash.
+    ///
+    /// Returns the block position, and node RPC URL that provided the block.
     #[expect(dead_code, reason = "included for completeness")]
     pub async fn with_block_hash(
         block_hash: BlockHash,
         chain_clients: &[SubspaceClient],
-    ) -> anyhow::Result<Self> {
-        let block = raw_block_from_hash(block_hash, chain_clients).await?;
+        node_rpc_urls: &[String],
+    ) -> anyhow::Result<(Self, String)> {
+        let (block, node_rpc_url) =
+            raw_block_from_hash(block_hash, chain_clients, node_rpc_urls).await?;
 
-        Ok(Self::from_block(&block))
+        Ok((Self::from_block(&block), node_rpc_url))
     }
 
     /// Returns the minimum possible block position for a block height.
@@ -397,13 +402,17 @@ impl BlockLink {
     }
 
     /// Create a block link, given its hash.
+    ///
+    /// Returns the block, and node RPC URL that provided the block.
     pub async fn with_block_hash(
         block_hash: BlockHash,
         chain_clients: &[SubspaceClient],
-    ) -> anyhow::Result<Self> {
-        let block = raw_block_from_hash(block_hash, chain_clients).await?;
+        node_rpc_urls: &[String],
+    ) -> anyhow::Result<(Self, String)> {
+        let (block, node_rpc_url) =
+            raw_block_from_hash(block_hash, chain_clients, node_rpc_urls).await?;
 
-        Ok(Self::from_raw_block(&block))
+        Ok((Self::from_raw_block(&block), node_rpc_url))
     }
 
     /// Returns the block hash.

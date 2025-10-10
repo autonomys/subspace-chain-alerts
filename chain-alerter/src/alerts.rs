@@ -121,18 +121,28 @@ pub struct Alert {
     /// The type of alert.
     pub alert: AlertKind,
 
+    /// The mode the alert was triggered in.
+    pub mode: BlockCheckMode,
+
     /// The block the alert occurred in.
     pub block_info: BlockInfo,
 
-    /// The mode the alert was triggered in.
-    pub mode: BlockCheckMode,
+    /// The RPC node that received the block that triggered the alert.
+    pub node_rpc_url: String,
 }
 
 impl Display for Alert {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Mode: {:?}", self.mode)?;
-        write!(f, "\n{}", self.alert)?;
-        write!(f, "\nBlock: {}", self.block_info)?;
+        let Self {
+            alert,
+            mode,
+            block_info,
+            // Displayed by the logs or in the Slack context.
+            node_rpc_url: _,
+        } = self;
+
+        write!(f, "{mode:?} {alert}")?;
+        write!(f, "\nBlock: {block_info}")?;
 
         Ok(())
     }
@@ -140,19 +150,26 @@ impl Display for Alert {
 
 impl Alert {
     /// Create a new alert.
-    pub fn new(alert: AlertKind, block_info: BlockInfo, mode: BlockCheckMode) -> Self {
+    pub fn new(
+        alert: AlertKind,
+        mode: BlockCheckMode,
+        block_info: BlockInfo,
+        node_rpc_url: &str,
+    ) -> Self {
         Self {
             alert,
-            block_info,
             mode,
+            block_info,
+            node_rpc_url: node_rpc_url.to_string(),
         }
     }
 
     /// Create a new alert from a chain fork event.
     pub fn from_chain_fork_event(
         event: ChainForkEvent,
-        block_info: BlockInfo,
         mode: BlockCheckMode,
+        block_info: BlockInfo,
+        node_rpc_url: &str,
     ) -> Self {
         let backwards_reorg_depth = event.backwards_reorg_depth();
 
@@ -192,7 +209,21 @@ impl Alert {
             }
         };
 
-        Self::new(alert_kind, block_info, mode)
+        Self::new(alert_kind, mode, block_info, node_rpc_url)
+    }
+
+    /// Returns the node RPC URLs that triggered this alert.
+    pub fn node_rpc_urls(&self) -> Vec<String> {
+        if let Some(node_rpc_urls) = self.alert.node_rpc_urls() {
+            assert!(
+                node_rpc_urls.contains(&self.node_rpc_url),
+                "Alert.node_rpc_url must be in the additional URLs in the AlertKind",
+            );
+
+            node_rpc_urls
+        } else {
+            vec![self.node_rpc_url.clone()]
+        }
     }
 }
 
@@ -200,17 +231,25 @@ impl Alert {
 #[derive(Clone, Debug, PartialEq)]
 pub enum AlertKind {
     /// The alerter has started.
-    Startup,
+    Startup {
+        /// All the connected RPC nodes.
+        node_rpc_urls: Vec<String>,
+    },
 
     /// A node has stopped receiving blocks.
+    ///
+    /// The previous block is `Alert.block_info`, and the stalled node is
+    /// `Alert.node_rpc_url`.
     BlockReceiveGap {
         /// The gap since the previous block from the node, based on alerter local time.
-        ///
-        /// Note: the previous block is `Alert.block_info`.
         local_time_gap: TimeDelta,
     },
 
-    /// A node has started receiving blocks again.
+    /// There was a gap where none of the node subscriptions sent blocks, and now a node has started
+    /// sending blocks again.
+    ///
+    /// The associated `Alert.node_rpc_url` is the RPC node that resumed receiving blocks.
+    /// Other nodes might have also received blocks, or might still be stalled.
     BlockReceiveResumed {
         /// The full gap between the blocks, based on alerter local time.
         local_time_gap: TimeDelta,
@@ -234,14 +273,20 @@ pub enum AlertKind {
     },
 
     /// A new chain fork was seen, which was not started by a best block.
-    /// The tip of the fork is `Alert.block_info`.
+    ///
+    /// The tip of the fork is `Alert.block_info`, and the RPC node that received the latest
+    /// block on the side fork is `Alert.node_rpc_url`.
     NewSideFork {
         /// The number of blocks from the fork tip to the fork point.
+        /// This is typically 1 for new side forks, but might be greater if we filled in missed
+        /// blocks.
         fork_depth: usize,
     },
 
     /// A chain fork was extended by a non-best block.
-    /// The tip of the fork is `Alert.block_info`.
+    ///
+    /// The tip of the fork is `Alert.block_info`, and the RPC node that received the latest
+    /// block on the side fork is `Alert.node_rpc_url`.
     SideForkExtended {
         /// The number of blocks from the fork tip to the fork point.
         fork_depth: usize,
@@ -249,7 +294,10 @@ pub enum AlertKind {
 
     /// A reorg was seen to a best block on a side chain.
     /// This takes priority over fork events.
-    /// The new best block is `Alert.block_info`.
+    ///
+    /// The new best block is `Alert.block_info`, and the RPC node that received the latest
+    /// block on the new best chain is `Alert.node_rpc_url`. This is almost always the primary
+    /// RPC node.
     Reorg {
         /// The old best block.
         old_best_block: BlockPosition,
@@ -353,6 +401,9 @@ pub enum AlertKind {
     },
 
     /// Slot timing is slower than expected.
+    ///
+    /// The associated `Alert.node_rpc_url` is the RPC node that received the last block in the
+    /// state, which triggered this alert.
     SlowSlotTime {
         /// The amount of slots.
         slot_amount: u64,
@@ -368,6 +419,9 @@ pub enum AlertKind {
     },
 
     /// Slot timing is faster than expected.
+    ///
+    /// The associated `Alert.node_rpc_url` is the RPC node that received the last block in the
+    /// state, which triggered this alert.
     FastSlotTime {
         /// The amount of slots.
         slot_amount: u64,
@@ -383,6 +437,9 @@ pub enum AlertKind {
     },
 
     /// Farmers count has decreased suddenly.
+    ///
+    /// The associated `Alert.node_rpc_url` is the RPC node that received the last block in the
+    /// state, which triggered this alert.
     FarmersDecreasedSuddenly {
         /// The number of farmers with votes.
         number_of_farmers_with_votes: usize,
@@ -395,6 +452,9 @@ pub enum AlertKind {
     },
 
     /// Farmers count has increased suddenly.
+    ///
+    /// The associated `Alert.node_rpc_url` is the RPC node that received the last block in the
+    /// state, which triggered this alert.
     FarmersIncreasedSuddenly {
         /// The number of farmers with votes.
         number_of_farmers_with_votes: usize,
@@ -410,8 +470,11 @@ pub enum AlertKind {
 impl Display for AlertKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Startup => {
-                write!(f, "**Launched and connected to the node**")
+            Self::Startup {
+                // Already printed as part of the alert context.
+                node_rpc_urls: _,
+            } => {
+                write!(f, "**Launched and connected to the nodes**")
             }
 
             Self::BlockReceiveGap { local_time_gap } => {
@@ -677,7 +740,7 @@ impl AlertKind {
     /// Returns true if the alert always goes to the test channel.
     pub fn is_test_alert(&self) -> bool {
         match self {
-            Self::Startup => true,
+            Self::Startup { .. } => true,
             Self::BlockReceiveGap { .. }
             | Self::BlockReceiveResumed { .. }
             | Self::BlockChainTimeGap { .. }
@@ -717,7 +780,7 @@ impl AlertKind {
             } else {
                 true
             },
-            Self::Startup
+            Self::Startup { .. }
             | Self::BlockReceiveGap { .. }
             | Self::BlockReceiveResumed { .. }
             | Self::BlockChainTimeGap { .. }
@@ -751,7 +814,7 @@ impl AlertKind {
             } => Some(prev_block_info),
             // Deliberately repeat each enum variant here, so we can't forget to update this
             // method when adding new variants.
-            Self::Startup
+            Self::Startup { .. }
             | Self::BlockReceiveGap { .. }
             | Self::NewSideFork { .. }
             | Self::SideForkExtended { .. }
@@ -790,7 +853,7 @@ impl AlertKind {
                 prev_block_info: _, ..
             } => unreachable!("already handled above"),
             Self::Reorg { old_best_block, .. } => Some(*old_best_block),
-            Self::Startup
+            Self::Startup { .. }
             | Self::BlockReceiveGap { .. }
             | Self::NewSideFork { .. }
             | Self::SideForkExtended { .. }
@@ -820,7 +883,7 @@ impl AlertKind {
             | Self::ImportantAddressTransfer { extrinsic_info, .. }
             | Self::ImportantAddressExtrinsic { extrinsic_info, .. }
             | Self::SudoCall { extrinsic_info } => Some(extrinsic_info),
-            Self::Startup
+            Self::Startup { .. }
             | Self::BlockReceiveGap { .. }
             | Self::BlockReceiveResumed { .. }
             | Self::BlockChainTimeGap { .. }
@@ -848,7 +911,7 @@ impl AlertKind {
             | Self::ImportantAddressTransferEvent { transfer_value, .. } => *transfer_value,
             Self::LargeBalanceTransfer { transfer_value, .. }
             | Self::LargeBalanceTransferEvent { transfer_value, .. } => Some(*transfer_value),
-            Self::Startup
+            Self::Startup { .. }
             | Self::BlockReceiveGap { .. }
             | Self::BlockReceiveResumed { .. }
             | Self::BlockChainTimeGap { .. }
@@ -876,7 +939,7 @@ impl AlertKind {
             | Self::SudoEvent { event_info }
             | Self::OperatorSlashed { event_info }
             | Self::ImportantAddressEvent { event_info, .. } => Some(event_info),
-            Self::Startup
+            Self::Startup { .. }
             | Self::BlockReceiveGap { .. }
             | Self::BlockReceiveResumed { .. }
             | Self::BlockChainTimeGap { .. }
@@ -894,6 +957,33 @@ impl AlertKind {
             | Self::FarmersIncreasedSuddenly { .. } => None,
         }
     }
+
+    /// Extract the node RPC URLs from the alert, if present.
+    fn node_rpc_urls(&self) -> Option<Vec<String>> {
+        match self {
+            Self::Startup { node_rpc_urls } => Some(node_rpc_urls.clone()),
+            Self::BlockReceiveGap { .. }
+            | Self::BlockReceiveResumed { .. }
+            | Self::BlockChainTimeGap { .. }
+            | Self::NewSideFork { .. }
+            | Self::SideForkExtended { .. }
+            | Self::Reorg { .. }
+            | Self::ForceBalanceTransfer { .. }
+            | Self::LargeBalanceTransfer { .. }
+            | Self::LargeBalanceTransferEvent { .. }
+            | Self::ImportantAddressTransfer { .. }
+            | Self::ImportantAddressTransferEvent { .. }
+            | Self::ImportantAddressExtrinsic { .. }
+            | Self::ImportantAddressEvent { .. }
+            | Self::SudoCall { .. }
+            | Self::SudoEvent { .. }
+            | Self::OperatorSlashed { .. }
+            | Self::SlowSlotTime { .. }
+            | Self::FastSlotTime { .. }
+            | Self::FarmersDecreasedSuddenly { .. }
+            | Self::FarmersIncreasedSuddenly { .. } => None,
+        }
+    }
 }
 
 /// Post a startup alert.
@@ -901,8 +991,9 @@ impl AlertKind {
 /// Any returned errors are fatal and require a restart.
 pub async fn startup_alert(
     mode: BlockCheckMode,
-    alert_tx: &mpsc::Sender<Alert>,
     block_info: &BlockInfo,
+    alert_tx: &mpsc::Sender<Alert>,
+    node_rpc_urls: Vec<String>,
 ) -> anyhow::Result<()> {
     // We could check this is only called once, but that's a low priority.
     assert!(
@@ -915,7 +1006,15 @@ pub async fn startup_alert(
     // - link to the prod channel from this message: <https://docs.slack.dev/messaging/formatting-message-text/#linking-channels>
 
     alert_tx
-        .send(Alert::new(AlertKind::Startup, *block_info, mode))
+        .send(Alert::new(
+            AlertKind::Startup {
+                node_rpc_urls: node_rpc_urls.clone(),
+            },
+            mode,
+            *block_info,
+            // This is ignored in alerts, so we might as well use the primary node.
+            &node_rpc_urls[0],
+        ))
         .await?;
 
     Ok(())
@@ -962,10 +1061,11 @@ impl BlockGapAlertStatus {
 pub async fn check_block(
     // TODO: when we add a check that doesn't work on replayed blocks, skip it using mode
     mode: BlockCheckMode,
-    alert_tx: &mpsc::Sender<Alert>,
     block_info: &BlockInfo,
     prev_block_info: Option<&BlockInfo>,
     prev_block_gap_status: BlockGapAlertStatus,
+    alert_tx: &mpsc::Sender<Alert>,
+    node_rpc_url: &str,
 ) -> anyhow::Result<BlockGapAlertStatus> {
     let mut gap_alert_status = prev_block_gap_status;
 
@@ -991,8 +1091,9 @@ pub async fn check_block(
                         chain_time_gap,
                         prev_block_info: *prev_block_info,
                     },
-                    *block_info,
                     mode,
+                    *block_info,
+                    node_rpc_url,
                 ))
                 .await?;
         }
@@ -1008,8 +1109,9 @@ pub async fn check_block(
                         chain_time_gap,
                         prev_block_info: *prev_block_info,
                     },
-                    *block_info,
                     mode,
+                    *block_info,
+                    node_rpc_url,
                 ))
                 .await?;
         }
@@ -1046,6 +1148,7 @@ pub async fn check_for_block_stall(
     genesis_hash: &BlockHash,
     alert_tx: mpsc::Sender<Alert>,
     latest_block_rx: watch::Receiver<Option<(BlockLink, bool)>>,
+    node_rpc_url: String,
 ) -> JoinHandle<anyhow::Result<Option<bool>>> {
     // It doesn't make sense to check the local clock for stalls on replayed blocks, because we
     // already know there's a new current block. It's expensive to spawn a task, so return
@@ -1081,8 +1184,9 @@ pub async fn check_for_block_stall(
         alert_tx
             .send(Alert::new(
                 AlertKind::BlockReceiveGap { local_time_gap },
-                old_block,
                 mode,
+                old_block,
+                &node_rpc_url,
             ))
             .await?;
 
@@ -1101,9 +1205,10 @@ pub async fn check_for_block_stall(
 pub async fn check_extrinsic(
     // TODO: when we add a check that doesn't work on replayed blocks, skip it using mode
     mode: BlockCheckMode,
-    alert_tx: &mpsc::Sender<Alert>,
     extrinsic: &RawExtrinsic,
     block_info: &BlockInfo,
+    alert_tx: &mpsc::Sender<Alert>,
+    node_rpc_url: &str,
 ) -> anyhow::Result<Option<Arc<ExtrinsicInfo>>> {
     let Some(extrinsic_info) = ExtrinsicInfo::new(extrinsic, block_info) else {
         // Invalid extrinsic, skip it.
@@ -1147,8 +1252,9 @@ pub async fn check_extrinsic(
                 AlertKind::SudoCall {
                     extrinsic_info: extrinsic_info.clone(),
                 },
-                *block_info,
                 mode,
+                *block_info,
+                node_rpc_url,
             ))
             .await?;
     } else if let Some(transfer_value) = transfer_value
@@ -1160,8 +1266,9 @@ pub async fn check_extrinsic(
                     extrinsic_info: extrinsic_info.clone(),
                     transfer_value,
                 },
-                *block_info,
                 mode,
+                *block_info,
+                node_rpc_url,
             ))
             .await?;
     } else if extrinsic_info.pallet == "Balances" && extrinsic_info.call.starts_with("force") {
@@ -1175,8 +1282,9 @@ pub async fn check_extrinsic(
                     extrinsic_info: extrinsic_info.clone(),
                     transfer_value,
                 },
-                *block_info,
                 mode,
+                *block_info,
+                node_rpc_url,
             ))
             .await?;
     } else if (extrinsic_info.pallet == "Balances" || transfer_value.is_some())
@@ -1190,8 +1298,9 @@ pub async fn check_extrinsic(
                     // The transfer value can be missing for a transfer_all call.
                     transfer_value,
                 },
-                *block_info,
                 mode,
+                *block_info,
+                node_rpc_url,
             ))
             .await?;
     } else if let Some(initiator_account_kind) = initiator_account_kind {
@@ -1201,8 +1310,9 @@ pub async fn check_extrinsic(
                     address_kind: initiator_account_kind.to_string(),
                     extrinsic_info: extrinsic_info.clone(),
                 },
-                *block_info,
                 mode,
+                *block_info,
+                node_rpc_url,
             ))
             .await?;
     }
@@ -1233,10 +1343,11 @@ pub async fn check_extrinsic(
 pub async fn check_event(
     // TODO: when we add a check that doesn't work on replayed blocks, skip it using mode
     mode: BlockCheckMode,
-    alert_tx: &mpsc::Sender<Alert>,
     event: &RawEvent,
     block_info: &BlockInfo,
     extrinsic_info: Option<Arc<ExtrinsicInfo>>,
+    alert_tx: &mpsc::Sender<Alert>,
+    node_rpc_url: &str,
 ) -> anyhow::Result<()> {
     let event_info = EventInfo::new(event, block_info, extrinsic_info);
 
@@ -1272,8 +1383,9 @@ pub async fn check_event(
                 AlertKind::OperatorSlashed {
                     event_info: event_info.clone(),
                 },
-                *block_info,
                 mode,
+                *block_info,
+                node_rpc_url,
             ))
             .await?;
     }
@@ -1288,8 +1400,9 @@ pub async fn check_event(
                 AlertKind::SudoEvent {
                     event_info: event_info.clone(),
                 },
-                *block_info,
                 mode,
+                *block_info,
+                node_rpc_url,
             ))
             .await?;
     } else if let Some(transfer_value) = transfer_value
@@ -1303,8 +1416,9 @@ pub async fn check_event(
                     event_info: event_info.clone(),
                     transfer_value,
                 },
-                *block_info,
                 mode,
+                *block_info,
+                node_rpc_url,
             ))
             .await?;
     } else if transfer_value.is_some()
@@ -1319,8 +1433,9 @@ pub async fn check_event(
                     // format.
                     transfer_value,
                 },
-                *block_info,
                 mode,
+                *block_info,
+                node_rpc_url,
             ))
             .await?;
     } else if let Some(initiator_account_kind) = initiator_account_kind {
@@ -1330,8 +1445,9 @@ pub async fn check_event(
                     address_kind: initiator_account_kind.to_string(),
                     event_info: event_info.clone(),
                 },
-                *block_info,
                 mode,
+                *block_info,
+                node_rpc_url,
             ))
             .await?;
     }

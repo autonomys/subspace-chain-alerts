@@ -15,7 +15,7 @@ mod subspace;
 
 use crate::alerts::{Alert, BlockCheckMode, BlockGapAlertStatus};
 use crate::chain_fork_monitor::{
-    BlockSeen, CHAIN_FORK_BUFFER_SIZE, NewBestBlockMessage, check_for_chain_forks,
+    BlockSeen, BlockSeenMessage, CHAIN_FORK_BUFFER_SIZE, NewBestBlockMessage, check_for_chain_forks,
 };
 use crate::farming_monitor::{
     DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD, DEFAULT_FARMING_MAX_HISTORY_BLOCK_INTERVAL,
@@ -285,6 +285,7 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
             check_best_blocks_clients,
             best_fork_rx,
             alert_tx.clone(),
+            args.node_rpc_url.clone(),
         )),
         true,
     );
@@ -300,6 +301,7 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
             new_blocks_rx,
             best_fork_tx,
             alert_tx.clone(),
+            args.node_rpc_url.clone(),
         )),
         true,
     );
@@ -308,9 +310,9 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
     let best_chain_client = chain_clients[0].clone();
     let best_blocks_task = AsyncJoinOnDrop::new(
         tokio::spawn(run_on_best_blocks_subscription(
-            args.node_rpc_url[0].clone(),
             best_chain_client,
             new_blocks_tx.clone(),
+            args.node_rpc_url[0].clone(),
         )),
         true,
     );
@@ -320,10 +322,10 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
     for (chain_client, node_rpc_url) in chain_clients.iter().zip(args.node_rpc_url.iter()) {
         let all_blocks_task = AsyncJoinOnDrop::new(
             tokio::spawn(run_on_all_blocks_subscription(
-                node_rpc_url.clone(),
                 chain_client.clone(),
                 new_blocks_tx.clone(),
                 alert_tx.clone(),
+                node_rpc_url.to_string(),
             )),
             true,
         );
@@ -436,10 +438,10 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
 
 /// Send blocks from an "all blocks" subscription to the fork monitor.
 async fn run_on_all_blocks_subscription(
-    node_rpc_url: String,
     chain_client: SubspaceClient,
-    new_blocks_tx: mpsc::Sender<BlockSeen>,
+    new_blocks_tx: mpsc::Sender<BlockSeenMessage>,
     alert_tx: mpsc::Sender<Alert>,
+    node_rpc_url: String,
 ) -> anyhow::Result<()> {
     let genesis_hash = chain_client.genesis_hash();
 
@@ -487,6 +489,7 @@ async fn run_on_all_blocks_subscription(
                 &genesis_hash,
                 alert_tx.clone(),
                 latest_block_tx.subscribe(),
+                node_rpc_url.to_string(),
             )
             .await;
 
@@ -495,7 +498,9 @@ async fn run_on_all_blocks_subscription(
 
         // Notify the fork monitor that we've seen a new block.
         let block_seen = BlockSeen::from_any_block(Arc::new(block));
-        new_blocks_tx.send(block_seen).await?;
+        new_blocks_tx
+            .send((block_seen, node_rpc_url.clone()))
+            .await?;
 
         trace!(block_stall_join_handles = %block_stall_join_handles.len(), ?is_stalled, "spawned tasks before joining");
 
@@ -529,9 +534,9 @@ async fn run_on_all_blocks_subscription(
 /// If small data volumes or server subscription load are more important than latency, this
 /// subscription can be disabled.
 async fn run_on_best_blocks_subscription(
-    node_rpc_url: String,
     chain_client: SubspaceClient,
-    new_blocks_tx: mpsc::Sender<BlockSeen>,
+    new_blocks_tx: mpsc::Sender<BlockSeenMessage>,
+    node_rpc_url: String,
 ) -> anyhow::Result<()> {
     // Subscribe blocks that are the best block when they are received.
     let mut blocks_sub = chain_client.blocks().subscribe_best().await?;
@@ -552,7 +557,9 @@ async fn run_on_best_blocks_subscription(
 
         // Notify the fork monitor that we've seen a new block.
         let block_seen = BlockSeen::from_best_block(Arc::new(block));
-        new_blocks_tx.send(block_seen).await?;
+        new_blocks_tx
+            .send((block_seen, node_rpc_url.clone()))
+            .await?;
 
         // We don't give tasks an opportunity to run, because we want best blocks to win the
         // subscription race.
@@ -567,6 +574,7 @@ async fn check_best_blocks(
     chain_clients: Vec<SubspaceClient>,
     mut best_forks_rx: mpsc::Receiver<NewBestBlockMessage>,
     alert_tx: mpsc::Sender<Alert>,
+    all_node_rpc_urls: Vec<String>,
 ) -> anyhow::Result<()> {
     // TODO: add a network name table and look up the network name by genesis hash
 
@@ -600,7 +608,9 @@ async fn check_best_blocks(
         minimum_block_interval: DEFAULT_FARMING_MIN_ALERT_BLOCK_INTERVAL,
     });
 
-    while let Some((mode, block_info, raw_extrinsics, raw_events)) = best_forks_rx.recv().await {
+    while let Some((mode, block_info, raw_extrinsics, raw_events, node_rpc_url)) =
+        best_forks_rx.recv().await
+    {
         // Let the user know we're still alive.
         if block_info
             .height()
@@ -610,7 +620,7 @@ async fn check_best_blocks(
         }
 
         if first_block && mode.is_current() {
-            alerts::startup_alert(mode, &alert_tx, &block_info).await?;
+            alerts::startup_alert(mode, &block_info, &alert_tx, all_node_rpc_urls.clone()).await?;
             first_block = false;
         } else if block_info
             .height()
@@ -642,6 +652,7 @@ async fn check_best_blocks(
             &mut slot_time_monitor,
             &mut farming_monitor,
             &alert_tx,
+            &node_rpc_url,
         )
         .await?;
 
@@ -668,6 +679,7 @@ async fn run_on_best_block(
     slot_time_monitor: &mut MemorySlotTimeMonitor,
     farming_monitor: &mut MemoryFarmingMonitor,
     alert_tx: &mpsc::Sender<Alert>,
+    node_rpc_url: &str,
 ) -> anyhow::Result<BlockGapAlertStatus> {
     let events = events
         .iter()
@@ -686,22 +698,25 @@ async fn run_on_best_block(
     // Check the block itself for alerts, including stall resumes.
     let block_gap_status = alerts::check_block(
         mode,
-        alert_tx,
         block_info,
         prev_block_info,
         prev_block_gap_status,
+        alert_tx,
+        node_rpc_url,
     )
     .await?;
-    slot_time_monitor.process_block(mode, block_info).await?;
+    slot_time_monitor
+        .process_block(mode, block_info, node_rpc_url)
+        .await?;
     farming_monitor
-        .process_block(mode, block_info, &events)
+        .process_block(mode, block_info, &events, node_rpc_url)
         .await?;
 
     // Check each extrinsic and event for alerts.
     let mut extrinsic_infos = HashMap::new();
     for extrinsic in extrinsics.iter() {
         let extrinsic_info =
-            alerts::check_extrinsic(mode, alert_tx, &extrinsic, block_info).await?;
+            alerts::check_extrinsic(mode, &extrinsic, block_info, alert_tx, node_rpc_url).await?;
         if let Some(extrinsic_info) = extrinsic_info {
             extrinsic_infos.insert(extrinsic.index(), extrinsic_info);
         }
@@ -714,7 +729,15 @@ async fn run_on_best_block(
             None
         };
 
-        alerts::check_event(mode, alert_tx, event, block_info, extrinsic_info).await?;
+        alerts::check_event(
+            mode,
+            event,
+            block_info,
+            extrinsic_info,
+            alert_tx,
+            node_rpc_url,
+        )
+        .await?;
     }
 
     Ok(block_gap_status)

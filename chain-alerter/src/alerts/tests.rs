@@ -171,16 +171,30 @@ const IMPORTANT_ADDRESS_ONLY_BLOCKS: [(
 /// Check that the startup alert works on the latest block.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_startup_alert() -> anyhow::Result<()> {
+    let mut node_rpc_urls = node_rpc_urls();
     let (subspace_clients, _, alert_tx, mut alert_rx, mut update_tasks) =
-        test_setup(&mut node_rpc_urls()).await?;
+        test_setup(&mut node_rpc_urls).await?;
 
     let block_info = BlockInfo::with_block_hash(None, &subspace_clients).await?;
 
-    alerts::startup_alert(BlockCheckMode::Current, &alert_tx, &block_info).await?;
+    alerts::startup_alert(
+        BlockCheckMode::Current,
+        &block_info,
+        &alert_tx,
+        node_rpc_urls.clone(),
+    )
+    .await?;
     let alert = alert_rx.try_recv().expect("no alert received");
     assert_eq!(
         alert,
-        Alert::new(AlertKind::Startup, block_info, BlockCheckMode::Current),
+        Alert::new(
+            AlertKind::Startup {
+                node_rpc_urls: node_rpc_urls.clone(),
+            },
+            BlockCheckMode::Current,
+            block_info,
+            &node_rpc_urls[0],
+        ),
     );
 
     // There should be no other alerts.
@@ -204,8 +218,9 @@ async fn test_startup_alert() -> anyhow::Result<()> {
 /// Check that the sudo call and event alerts work on a known sudo block.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_sudo_alerts() -> anyhow::Result<()> {
+    let mut node_rpc_urls = node_rpc_urls();
     let (subspace_clients, _, alert_tx, mut alert_rx, mut update_tasks) =
-        test_setup(&mut node_rpc_urls()).await?;
+        test_setup(&mut node_rpc_urls).await?;
 
     let (block_info, extrinsics, events) = fetch_block_info(
         BlockHash::from(SUDO_EXTRINSIC_BLOCK.1),
@@ -218,8 +233,14 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
     let (extrinsic, extrinsic_info) =
         decode_extrinsic(&block_info, &extrinsics, SUDO_EXTRINSIC_BLOCK.2)?;
 
-    let checked_extrinsic_info =
-        alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info).await?;
+    let checked_extrinsic_info = alerts::check_extrinsic(
+        BlockCheckMode::Replay,
+        &extrinsic,
+        &block_info,
+        &alert_tx,
+        &node_rpc_urls[0],
+    )
+    .await?;
     assert_eq!(
         Some(&extrinsic_info),
         checked_extrinsic_info.as_ref(),
@@ -233,8 +254,9 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
             AlertKind::SudoCall {
                 extrinsic_info: extrinsic_info.clone(),
             },
-            block_info,
             BlockCheckMode::Replay,
+            block_info,
+            &node_rpc_urls[0],
         )
     );
     assert_eq!(
@@ -254,10 +276,11 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
 
     alerts::check_event(
         BlockCheckMode::Replay,
-        &alert_tx,
         &event,
         &block_info,
         Some(extrinsic_info),
+        &alert_tx,
+        &node_rpc_urls[0],
     )
     .await?;
     let alert = alert_rx.try_recv().expect("no alert received");
@@ -265,8 +288,9 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
         alert,
         Alert::new(
             AlertKind::SudoEvent { event_info },
-            block_info,
             BlockCheckMode::Replay,
+            block_info,
+            &node_rpc_urls[0],
         )
     );
     assert_eq!(
@@ -297,8 +321,9 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
 /// Check that the large balance transfer alert works on known transfer blocks.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
+    let mut node_rpc_urls = node_rpc_urls();
     let (subspace_clients, _, alert_tx, mut alert_rx, mut update_tasks) =
-        test_setup(&mut node_rpc_urls()).await?;
+        test_setup(&mut node_rpc_urls).await?;
 
     for (block_number, block_hash, extrinsic_index, event_index, transfer_value, slot) in
         LARGE_TRANSFER_BLOCKS
@@ -320,9 +345,14 @@ async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
             event_index,
         )?;
 
-        let checked_extrinsic_info =
-            alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info)
-                .await?;
+        let checked_extrinsic_info = alerts::check_extrinsic(
+            BlockCheckMode::Replay,
+            &extrinsic,
+            &block_info,
+            &alert_tx,
+            &node_rpc_urls[0],
+        )
+        .await?;
         assert_eq!(
             Some(&extrinsic_info),
             checked_extrinsic_info.as_ref(),
@@ -337,8 +367,9 @@ async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
                     extrinsic_info: extrinsic_info.clone(),
                     transfer_value,
                 },
-                block_info,
                 BlockCheckMode::Replay,
+                block_info,
+                &node_rpc_urls[0],
             )
         );
 
@@ -348,10 +379,11 @@ async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
 
         alerts::check_event(
             BlockCheckMode::Replay,
-            &alert_tx,
             &event,
             &block_info,
             Some(extrinsic_info),
+            &alert_tx,
+            &node_rpc_urls[0],
         )
         .await?;
         let alert = alert_rx.try_recv().expect("no event alert received");
@@ -362,8 +394,9 @@ async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
                     event_info,
                     transfer_value,
                 },
-                block_info,
                 BlockCheckMode::Replay,
+                block_info,
+                &node_rpc_urls[0],
             )
         );
 
@@ -388,8 +421,9 @@ async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
 /// Check that important address transfer alerts work on known important address transfer blocks.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_important_address_transfer_alerts() -> anyhow::Result<()> {
+    let mut node_rpc_urls = node_rpc_urls();
     let (subspace_clients, _, alert_tx, mut alert_rx, mut update_tasks) =
-        test_setup(&mut node_rpc_urls()).await?;
+        test_setup(&mut node_rpc_urls).await?;
 
     for (
         block_number,
@@ -420,9 +454,14 @@ async fn test_important_address_transfer_alerts() -> anyhow::Result<()> {
             event_index,
         )?;
 
-        let checked_extrinsic_info =
-            alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info)
-                .await?;
+        let checked_extrinsic_info = alerts::check_extrinsic(
+            BlockCheckMode::Replay,
+            &extrinsic,
+            &block_info,
+            &alert_tx,
+            &node_rpc_urls[0],
+        )
+        .await?;
         assert_eq!(
             Some(&extrinsic_info),
             checked_extrinsic_info.as_ref(),
@@ -441,8 +480,9 @@ async fn test_important_address_transfer_alerts() -> anyhow::Result<()> {
                         extrinsic_info: extrinsic_info.clone(),
                         transfer_value: extrinsic_transfer_value,
                     },
-                    block_info,
                     BlockCheckMode::Replay,
+                    block_info,
+                    &node_rpc_urls[0],
                 )
             );
         } else {
@@ -454,8 +494,9 @@ async fn test_important_address_transfer_alerts() -> anyhow::Result<()> {
                         extrinsic_info: extrinsic_info.clone(),
                         transfer_value: Some(extrinsic_transfer_value),
                     },
-                    block_info,
                     BlockCheckMode::Replay,
+                    block_info,
+                    &node_rpc_urls[0],
                 )
             );
         }
@@ -466,10 +507,11 @@ async fn test_important_address_transfer_alerts() -> anyhow::Result<()> {
 
         alerts::check_event(
             BlockCheckMode::Replay,
-            &alert_tx,
             &event,
             &block_info,
             Some(extrinsic_info),
+            &alert_tx,
+            &node_rpc_urls[0],
         )
         .await?;
         let alert = alert_rx.try_recv().expect("no event alert received");
@@ -482,8 +524,9 @@ async fn test_important_address_transfer_alerts() -> anyhow::Result<()> {
                         event_info: event_info.clone(),
                         transfer_value: event_transfer_value,
                     },
-                    block_info,
                     BlockCheckMode::Replay,
+                    block_info,
+                    &node_rpc_urls[0],
                 )
             );
         } else {
@@ -495,8 +538,9 @@ async fn test_important_address_transfer_alerts() -> anyhow::Result<()> {
                         event_info,
                         transfer_value: Some(event_transfer_value),
                     },
-                    block_info,
                     BlockCheckMode::Replay,
+                    block_info,
+                    &node_rpc_urls[0],
                 )
             );
         }
@@ -522,8 +566,9 @@ async fn test_important_address_transfer_alerts() -> anyhow::Result<()> {
 /// Check that the important address alert works on known important address blocks.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_important_address_only_alerts() -> anyhow::Result<()> {
+    let mut node_rpc_urls = node_rpc_urls();
     let (subspace_clients, _, alert_tx, mut alert_rx, mut update_tasks) =
-        test_setup(&mut node_rpc_urls()).await?;
+        test_setup(&mut node_rpc_urls).await?;
 
     for (block_number, block_hash, extrinsic_index, address_kind, slot) in
         IMPORTANT_ADDRESS_ONLY_BLOCKS
@@ -539,9 +584,14 @@ async fn test_important_address_only_alerts() -> anyhow::Result<()> {
         let (extrinsic, extrinsic_info) =
             decode_extrinsic(&block_info, &extrinsics, extrinsic_index)?;
 
-        let checked_extrinsic_info =
-            alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info)
-                .await?;
+        let checked_extrinsic_info = alerts::check_extrinsic(
+            BlockCheckMode::Replay,
+            &extrinsic,
+            &block_info,
+            &alert_tx,
+            &node_rpc_urls[0],
+        )
+        .await?;
         assert_eq!(
             Some(&extrinsic_info),
             checked_extrinsic_info.as_ref(),
@@ -557,8 +607,9 @@ async fn test_important_address_only_alerts() -> anyhow::Result<()> {
                     address_kind: address_kind.to_string(),
                     extrinsic_info: extrinsic_info.clone(),
                 },
-                block_info,
                 BlockCheckMode::Replay,
+                block_info,
+                &node_rpc_urls[0],
             )
         );
 
@@ -583,6 +634,7 @@ async fn test_important_address_only_alerts() -> anyhow::Result<()> {
 /// Check that the slot time alert is not triggered when the time per slot is below the threshold.
 #[tokio::test(flavor = "multi_thread")]
 async fn no_expected_test_slot_time_alert() -> anyhow::Result<()> {
+    let node_rpc_url = node_rpc_urls().pop().expect("no RPC URL");
     let (alert_tx, mut alert_rx) = alert_channel_only_setup();
 
     let first_block = mock_block_info(100000, Slot(100));
@@ -598,10 +650,10 @@ async fn no_expected_test_slot_time_alert() -> anyhow::Result<()> {
 
     // Process blocks to fill the buffer
     naive_slot_time_monitor
-        .process_block(BlockCheckMode::Replay, &first_block)
+        .process_block(BlockCheckMode::Replay, &first_block, &node_rpc_url)
         .await?;
     naive_slot_time_monitor
-        .process_block(BlockCheckMode::Replay, &second_block)
+        .process_block(BlockCheckMode::Replay, &second_block, &node_rpc_url)
         .await?;
 
     alert_rx
@@ -615,6 +667,7 @@ async fn no_expected_test_slot_time_alert() -> anyhow::Result<()> {
 /// has elapsed enough time.
 #[tokio::test(flavor = "multi_thread")]
 async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
+    let node_rpc_url = node_rpc_urls().pop().expect("no RPC URL");
     let (alert_tx, mut alert_rx) = alert_channel_only_setup();
 
     let first_block = mock_block_info(100000, Slot(100));
@@ -630,10 +683,10 @@ async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
 
     // Process blocks to fill the buffer
     strict_slot_time_monitor
-        .process_block(BlockCheckMode::Replay, &first_block)
+        .process_block(BlockCheckMode::Replay, &first_block, &node_rpc_url)
         .await?;
     strict_slot_time_monitor
-        .process_block(BlockCheckMode::Replay, &second_block)
+        .process_block(BlockCheckMode::Replay, &second_block, &node_rpc_url)
         .await?;
 
     let alert = alert_rx
@@ -649,8 +702,9 @@ async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
                 threshold: 5.0,
                 interval: Duration::from_secs(1),
             },
-            second_block,
             BlockCheckMode::Replay,
+            second_block,
+            &node_rpc_url,
         )
     );
 
@@ -665,6 +719,7 @@ async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
 /// when the slot per time ratio gets above the slow threshold.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_slot_time_above_slow_threshold() -> anyhow::Result<()> {
+    let node_rpc_url = node_rpc_urls().pop().expect("no RPC URL");
     let (alert_tx, mut alert_rx) = alert_channel_only_setup();
 
     // Create blocks with a very fast slot progression (high ratio)
@@ -684,10 +739,10 @@ async fn test_slot_time_above_slow_threshold() -> anyhow::Result<()> {
 
     // Process blocks to fill the buffer
     slot_time_monitor
-        .process_block(BlockCheckMode::Replay, &first_block)
+        .process_block(BlockCheckMode::Replay, &first_block, &node_rpc_url)
         .await?;
     slot_time_monitor
-        .process_block(BlockCheckMode::Replay, &second_block)
+        .process_block(BlockCheckMode::Replay, &second_block, &node_rpc_url)
         .await?;
 
     let alert = alert_rx
@@ -703,8 +758,9 @@ async fn test_slot_time_above_slow_threshold() -> anyhow::Result<()> {
                 threshold: 0.5,
                 interval: Duration::from_secs(1),
             },
-            second_block,
             BlockCheckMode::Replay,
+            second_block,
+            &node_rpc_url,
         )
     );
 
@@ -719,6 +775,7 @@ async fn test_slot_time_above_slow_threshold() -> anyhow::Result<()> {
 /// threshold.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_slot_time_below_fast_threshold() -> anyhow::Result<()> {
+    let node_rpc_url = node_rpc_urls().pop().expect("no RPC URL");
     let (alert_tx, mut alert_rx) = alert_channel_only_setup();
 
     // Create blocks with a very slow slot progression (low ratio)
@@ -738,10 +795,10 @@ async fn test_slot_time_below_fast_threshold() -> anyhow::Result<()> {
 
     // Process blocks to fill the buffer
     slot_time_monitor
-        .process_block(BlockCheckMode::Replay, &first_block)
+        .process_block(BlockCheckMode::Replay, &first_block, &node_rpc_url)
         .await?;
     slot_time_monitor
-        .process_block(BlockCheckMode::Replay, &second_block)
+        .process_block(BlockCheckMode::Replay, &second_block, &node_rpc_url)
         .await?;
 
     let alert = alert_rx
@@ -757,8 +814,9 @@ async fn test_slot_time_below_fast_threshold() -> anyhow::Result<()> {
                 threshold: 0.5,
                 interval: Duration::from_secs(1),
             },
-            second_block,
             BlockCheckMode::Replay,
+            second_block,
+            &node_rpc_url,
         )
     );
 
@@ -772,6 +830,7 @@ async fn test_slot_time_below_fast_threshold() -> anyhow::Result<()> {
 /// Check that slot time alerts are ignored during startup mode.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_slot_time_alerts_ignored_during_startup() -> anyhow::Result<()> {
+    let node_rpc_url = node_rpc_urls().pop().expect("no RPC URL");
     let (alert_tx, mut alert_rx) = alert_channel_only_setup();
 
     // Create blocks that would normally trigger an alert
@@ -788,10 +847,10 @@ async fn test_slot_time_alerts_ignored_during_startup() -> anyhow::Result<()> {
 
     // Process blocks in Startup mode - should not trigger alerts
     slot_time_monitor
-        .process_block(BlockCheckMode::Startup, &first_block)
+        .process_block(BlockCheckMode::Startup, &first_block, &node_rpc_url)
         .await?;
     slot_time_monitor
-        .process_block(BlockCheckMode::Startup, &second_block)
+        .process_block(BlockCheckMode::Startup, &second_block, &node_rpc_url)
         .await?;
 
     // No alerts should be received during startup
@@ -805,6 +864,7 @@ async fn test_slot_time_alerts_ignored_during_startup() -> anyhow::Result<()> {
 /// Check that slot time alerts are not triggered when the buffer is not full.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_slot_time_alerts_not_triggered_when_buffer_not_full() -> anyhow::Result<()> {
+    let node_rpc_url = node_rpc_urls().pop().expect("no RPC URL");
     let (alert_tx, mut alert_rx) = alert_channel_only_setup();
 
     // Create blocks that would normally trigger an alert
@@ -821,10 +881,10 @@ async fn test_slot_time_alerts_not_triggered_when_buffer_not_full() -> anyhow::R
 
     // Process only 2 blocks - buffer not full, so no alerts should be triggered
     slot_time_monitor
-        .process_block(BlockCheckMode::Replay, &first_block)
+        .process_block(BlockCheckMode::Replay, &first_block, &node_rpc_url)
         .await?;
     slot_time_monitor
-        .process_block(BlockCheckMode::Replay, &second_block)
+        .process_block(BlockCheckMode::Replay, &second_block, &node_rpc_url)
         .await?;
 
     // No alerts should be received when buffer is not full
