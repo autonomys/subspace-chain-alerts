@@ -70,7 +70,14 @@ pub const ESTIMATED_TIP_COUNT: usize = ESTIMATED_BLOCK_COUNT.saturating_sub(MAX_
 /// The message sent when the fork monitor has loaded a best block and its ancestors.
 ///
 /// TODO: make this into a struct
-pub type NewBestBlockMessage = (BlockCheckMode, BlockInfo, RawExtrinsicList, RawEventList);
+pub type NewBestBlockMessage = (
+    BlockCheckMode,
+    BlockInfo,
+    RawExtrinsicList,
+    RawEventList,
+    // The RPC node that received the block.
+    String,
+);
 
 /// Errors encountered when trying to add a block to the chain fork state.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -434,9 +441,9 @@ impl ChainForkState {
     #[expect(clippy::unwrap_in_result, reason = "panic can't actually happen")]
     pub fn add_block(
         &mut self,
-        block: &Arc<BlockLink>,
-        is_best_block: bool,
         mode: impl Into<Option<BlockCheckMode>> + Copy,
+        is_best_block: bool,
+        block: &Arc<BlockLink>,
     ) -> Result<Option<ChainForkEvent>, AddBlockError> {
         self.can_add_block(block)?;
 
@@ -618,6 +625,13 @@ impl ChainForkState {
     }
 }
 
+/// A block seen message, containing the block and the node RPC URL that provided it.
+pub type BlockSeenMessage = (
+    BlockSeen,
+    // The node RPC URL that provided the block.
+    String,
+);
+
 /// The message sent when a node subscription sees a block.
 /// Used to detect reorgs and forks.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -669,10 +683,17 @@ pub async fn send_best_fork_block(
     extrinsics: RawExtrinsicList,
     events: RawEventList,
     best_fork_tx: &mpsc::Sender<NewBestBlockMessage>,
+    node_rpc_url: &str,
 ) -> anyhow::Result<()> {
     if is_best_block {
         best_fork_tx
-            .send((mode, block_info, extrinsics, events))
+            .send((
+                mode,
+                block_info,
+                extrinsics,
+                events,
+                node_rpc_url.to_string(),
+            ))
             .await?;
     }
 
@@ -680,15 +701,21 @@ pub async fn send_best_fork_block(
 }
 
 /// Add a block and any missing ancestors to the chain fork state, sending alerts as needed.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "TODO: turn some of these into structs"
+)]
 pub async fn add_blocks_to_chain_fork_state(
     chain_clients: &[SubspaceClient],
     raw_rpc_client: &RawRpcClient,
     state: &mut ChainForkState,
     mode: BlockCheckMode,
-    block_seen: BlockSeen,
+    block_seen: BlockSeenMessage,
     best_fork_tx: &mpsc::Sender<NewBestBlockMessage>,
     alert_tx: &mpsc::Sender<Alert>,
+    all_node_rpc_urls: &[String],
 ) -> anyhow::Result<()> {
+    let (block_seen, block_seen_node_rpc_url) = block_seen;
     let mut is_best_block = block_seen.is_best_block();
     let block = block_seen.into_block();
 
@@ -700,14 +727,15 @@ pub async fn add_blocks_to_chain_fork_state(
             ?block,
             ?is_best_block,
             ?err,
+            node_rpc_url = ?block_seen_node_rpc_url,
             "Block can't be added to the chain fork state, ignoring",
         );
         return Ok(());
     }
 
-    let mut pending_blocks = BTreeSet::from([block]);
+    let mut pending_blocks = BTreeMap::from([(block, block_seen_node_rpc_url.to_string())]);
 
-    while let Some(block) = pending_blocks.pop_first() {
+    while let Some((block, block_node_rpc_url)) = pending_blocks.pop_first() {
         let mode = if pending_blocks.is_empty() {
             mode
         } else {
@@ -735,12 +763,13 @@ pub async fn add_blocks_to_chain_fork_state(
                     ?block,
                     ?best_block_hash,
                     ?is_best_block,
+                    node_rpc_url = ?block_node_rpc_url,
                     "Checked if an all blocks subscription sent the best block",
                 );
             }
         }
 
-        let event = state.add_block(&block, is_best_block, mode);
+        let event = state.add_block(mode, is_best_block, &block);
 
         match event {
             // Block was successfully added to the state, and there was a chain fork change or
@@ -750,11 +779,11 @@ pub async fn add_blocks_to_chain_fork_state(
             // multiple RPC servers)
             Ok(Some(event)) => {
                 if event.needs_warn_log() && !mode.is_startup() {
-                    warn!(?mode, ?event, "Chain fork or reorg event");
+                    warn!(?mode, ?event, node_rpc_url = ?block_node_rpc_url, "Chain fork or reorg event");
                 } else if event.needs_info_log() && !mode.is_startup() {
-                    info!(?mode, ?event, "Chain fork or reorg event");
+                    info!(?mode, ?event, node_rpc_url = ?block_node_rpc_url, "Chain fork or reorg event");
                 } else {
-                    debug!(?mode, ?event, "Chain fork or reorg event");
+                    debug!(?mode, ?event, node_rpc_url = ?block_node_rpc_url, "Chain fork or reorg event");
                 }
 
                 let block_info = if is_best_block {
@@ -776,6 +805,7 @@ pub async fn add_blocks_to_chain_fork_state(
                         extrinsics,
                         events.expect("asked for events"),
                         best_fork_tx,
+                        &block_node_rpc_url,
                     )
                     .await?;
 
@@ -796,7 +826,12 @@ pub async fn add_blocks_to_chain_fork_state(
                     };
 
                     alert_tx
-                        .send(Alert::from_chain_fork_event(event, block_info, mode))
+                        .send(Alert::from_chain_fork_event(
+                            event,
+                            mode,
+                            block_info,
+                            &block_node_rpc_url,
+                        ))
                         .await?;
                 }
             }
@@ -823,6 +858,7 @@ pub async fn add_blocks_to_chain_fork_state(
                         extrinsics,
                         events.expect("asked for events"),
                         best_fork_tx,
+                        &block_node_rpc_url,
                     )
                     .await?;
                 }
@@ -836,6 +872,7 @@ pub async fn add_blocks_to_chain_fork_state(
                     ?block,
                     ?error,
                     pending_block_count = %pending_blocks.len(),
+                    node_rpc_url = ?block_node_rpc_url,
                     "Block needs ancestors before being added to the chain fork state",
                 );
 
@@ -843,8 +880,9 @@ pub async fn add_blocks_to_chain_fork_state(
                 // The insertion order doesn't matter here, because we're using a BTreeSet.
                 // TODO: if the node has pruned this block, just stop here and insert the rest of
                 // the pending blocks
-                let parent_block =
-                    BlockLink::with_block_hash(block.parent_hash, chain_clients).await?;
+                let (parent_block, parent_block_node_rpc_url) =
+                    BlockLink::with_block_hash(block.parent_hash, chain_clients, all_node_rpc_urls)
+                        .await?;
                 let parent_block = Arc::new(parent_block);
 
                 if parent_block.height() >= block.height() {
@@ -856,8 +894,8 @@ pub async fn add_blocks_to_chain_fork_state(
                     break;
                 }
 
-                pending_blocks.insert(parent_block);
-                pending_blocks.insert(block);
+                pending_blocks.insert(parent_block, parent_block_node_rpc_url);
+                pending_blocks.insert(block, block_node_rpc_url);
             }
 
             // Block and its ancestors can never be added to the state, so skip it and all pending
@@ -896,11 +934,14 @@ pub async fn add_blocks_to_chain_fork_state(
 pub async fn check_for_chain_forks(
     chain_clients: Vec<SubspaceClient>,
     raw_rpc_client: RawRpcClient,
-    mut new_blocks_rx: mpsc::Receiver<BlockSeen>,
+    mut new_blocks_rx: mpsc::Receiver<BlockSeenMessage>,
     best_fork_tx: mpsc::Sender<NewBestBlockMessage>,
     alert_tx: mpsc::Sender<Alert>,
+    all_node_rpc_urls: Vec<String>,
 ) -> anyhow::Result<()> {
-    let Some(first_block) = new_blocks_rx.recv().await else {
+    // The first block is always a new tip, and the alert is ignored, so we don't need the node RPC
+    // URL.
+    let Some((first_block, first_block_node_rpc_url)) = new_blocks_rx.recv().await else {
         info!("Channel disconnected before first block, exiting");
         return Ok(());
     };
@@ -912,19 +953,22 @@ pub async fn check_for_chain_forks(
     // the state with the first block as the tip, then adding its parent block as well.
     // This will fetch the context for the parent block (and therefore the first block), and fix up
     // the duplicate tips as needed.
-    let parent_of_first_block =
-        BlockLink::with_block_hash(first_block.parent_hash, &chain_clients).await?;
+    let (parent_of_first_block, parent_of_first_block_node_rpc_url) =
+        BlockLink::with_block_hash(first_block.parent_hash, &chain_clients, &all_node_rpc_urls)
+            .await?;
     let parent_of_first_block = Arc::new(parent_of_first_block);
     // We treat the context blocks as best blocks, because that simplifies the code.
     let parent_of_first_block = BlockSeen::from_best_block(parent_of_first_block);
 
-    // The first block is always a new tip, so we ignore that event.
+    // The first block is always a new tip, so we ignore that alert.
     let mut state = ChainForkState::from_first_block(first_block.clone());
 
     // The context blocks shouldn't have any alerts, because we've gone back using a single chain.
     info!(
         ?is_best_block,
         ?first_block,
+        ?first_block_node_rpc_url,
+        ?all_node_rpc_urls,
         "Adding {MAX_BLOCK_DEPTH} previous blocks to chain fork state, this may take some time...",
     );
 
@@ -933,9 +977,13 @@ pub async fn check_for_chain_forks(
         &raw_rpc_client,
         &mut state,
         BlockCheckMode::Startup,
-        parent_of_first_block,
+        (
+            parent_of_first_block,
+            parent_of_first_block_node_rpc_url.clone(),
+        ),
         &best_fork_tx,
         &alert_tx,
+        &all_node_rpc_urls,
     )
     .await?;
     state.prune_blocks();
@@ -971,6 +1019,8 @@ pub async fn check_for_chain_forks(
     info!(
         ?is_best_block,
         %state,
+        ?first_block_node_rpc_url,
+        ?parent_of_first_block_node_rpc_url,
         "Successfully added context blocks to chain fork state",
     );
 
@@ -983,6 +1033,7 @@ pub async fn check_for_chain_forks(
             block_seen,
             &best_fork_tx,
             &alert_tx,
+            &all_node_rpc_urls,
         )
         .await?;
 

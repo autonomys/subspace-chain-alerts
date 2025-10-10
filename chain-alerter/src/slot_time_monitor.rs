@@ -36,6 +36,7 @@ pub trait SlotTimeMonitor {
         &mut self,
         mode: BlockCheckMode,
         block: &BlockInfo,
+        node_rpc_url: &str,
     ) -> anyhow::Result<()>;
 }
 
@@ -116,10 +117,11 @@ impl SlotTimeMonitor for MemorySlotTimeMonitor {
         &mut self,
         mode: BlockCheckMode,
         block_info: &BlockInfo,
+        node_rpc_url: &str,
     ) -> anyhow::Result<()> {
         self.push_block_to_buffer(*block_info);
 
-        let result = self.check_slot_time(mode, block_info).await;
+        let result = self.check_slot_time(mode, block_info, node_rpc_url).await;
         if result.is_err() {
             warn!("error checking slot time: {result:?}");
         }
@@ -159,6 +161,7 @@ impl MemorySlotTimeMonitor {
         &mut self,
         mode: BlockCheckMode,
         block_info: &BlockInfo,
+        node_rpc_url: &str,
     ) -> anyhow::Result<()> {
         // Ignore alerts during startup mode
         if mode.is_startup() {
@@ -218,11 +221,23 @@ impl MemorySlotTimeMonitor {
         let slot_diff_per_time_diff = slot_diff as f64 / time_diff as f64;
 
         if slot_diff_per_time_diff < self.config.slow_slots_threshold {
-            self.send_slow_slot_time_alert(slot_diff, slot_diff_per_time_diff, *block_info, mode)
-                .await?;
+            self.send_slow_slot_time_alert(
+                mode,
+                *block_info,
+                slot_diff,
+                slot_diff_per_time_diff,
+                node_rpc_url,
+            )
+            .await?;
         } else if slot_diff_per_time_diff > self.config.fast_slots_threshold {
-            self.send_fast_slot_time_alert(slot_diff, slot_diff_per_time_diff, *block_info, mode)
-                .await?;
+            self.send_fast_slot_time_alert(
+                mode,
+                *block_info,
+                slot_diff,
+                slot_diff_per_time_diff,
+                node_rpc_url,
+            )
+            .await?;
         } else {
             self.set_alerting_status(AlertingStatus::NotAlerting);
         }
@@ -233,10 +248,11 @@ impl MemorySlotTimeMonitor {
     /// Send a slot time alert with the computed ratio and block info.
     async fn send_slow_slot_time_alert(
         &mut self,
+        mode: BlockCheckMode,
+        block_info: BlockInfo,
         slot_diff: u64,
         slot_diff_per_time_diff: f64,
-        block_info: BlockInfo,
-        mode: BlockCheckMode,
+        node_rpc_url: &str,
     ) -> anyhow::Result<()> {
         // Only send alert if we're not already alerting for slow slot time
         if let Some(state) = self.state.as_mut()
@@ -252,8 +268,9 @@ impl MemorySlotTimeMonitor {
                         threshold: self.config.slow_slots_threshold,
                         interval: self.config.check_interval,
                     },
-                    block_info,
                     mode,
+                    block_info,
+                    node_rpc_url,
                 ))
                 .await?;
         }
@@ -263,10 +280,11 @@ impl MemorySlotTimeMonitor {
     /// Send a fast slot time alert with the computed ratio and block info.
     async fn send_fast_slot_time_alert(
         &mut self,
+        mode: BlockCheckMode,
+        block_info: BlockInfo,
         slot_diff: u64,
         slot_diff_per_time_diff: f64,
-        block_info: BlockInfo,
-        mode: BlockCheckMode,
+        node_rpc_url: &str,
     ) -> anyhow::Result<()> {
         // Only send alert if we're not already alerting for fast slot time
         if let Some(state) = self.state.as_mut()
@@ -282,8 +300,9 @@ impl MemorySlotTimeMonitor {
                         threshold: self.config.fast_slots_threshold,
                         interval: self.config.check_interval,
                     },
-                    block_info,
                     mode,
+                    block_info,
+                    node_rpc_url,
                 ))
                 .await?;
         }
