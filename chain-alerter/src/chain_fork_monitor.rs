@@ -709,7 +709,9 @@ pub async fn add_blocks_to_chain_fork_state(
     if !is_best_block {
         // We can add the block, but we don't know if this is the best block yet.
         let best_block_hash = node_best_block_hash(raw_rpc_client).await?;
-        is_best_block = block.hash() == best_block_hash;
+        // Handle a multiple server race condition, where the primary server has the parent of the
+        // best block, but doesn't have the next block yet.
+        is_best_block = block.hash() == best_block_hash || block.parent_hash == best_block_hash;
 
         trace!(
             ?block,
@@ -904,11 +906,8 @@ pub async fn check_for_chain_forks(
     let parent_of_first_block =
         BlockLink::with_block_hash(first_block.parent_hash, &chain_clients).await?;
     let parent_of_first_block = Arc::new(parent_of_first_block);
-    let parent_of_first_block = if is_best_block {
-        BlockSeen::from_best_block(parent_of_first_block)
-    } else {
-        BlockSeen::from_any_block(parent_of_first_block)
-    };
+    // We treat the context blocks as best blocks, because that simplifies the code.
+    let parent_of_first_block = BlockSeen::from_best_block(parent_of_first_block);
 
     // The first block is always a new tip, so we ignore that event.
     let mut state = ChainForkState::from_first_block(first_block.clone());
@@ -919,6 +918,7 @@ pub async fn check_for_chain_forks(
         ?first_block,
         "Adding {MAX_BLOCK_DEPTH} previous blocks to chain fork state, this may take some time...",
     );
+
     add_blocks_to_chain_fork_state(
         &chain_clients,
         &raw_rpc_client,
