@@ -462,21 +462,15 @@ impl Display for BlockInfo {
 
         // Show truncated block hash, link to Subscan with full hash.
         writeln!(f, "Block: [{hash}]({}) ({height})", hash.block_url())?;
-        writeln!(
-            f,
-            "{}",
-            chain_time
-                .as_ref()
-                .map(|bt| bt.to_string())
-                .unwrap_or_else(|| "unknown".to_string())
-        )?;
+
+        if let Some(chain_time) = chain_time {
+            writeln!(f, "{chain_time}")?;
+        }
         writeln!(f, "{local_time}")?;
-        writeln!(
-            f,
-            "Slot: {}",
-            slot.map(|bs| bs.to_string())
-                .unwrap_or_else(|| "unknown".to_string())
-        )?;
+
+        if let Some(slot) = slot {
+            writeln!(f, "Slot: {slot}")?;
+        }
 
         Ok(())
     }
@@ -490,6 +484,17 @@ impl BlockInfo {
             chain_time: BlockTime::new_from_extrinsics(extrinsics),
             local_time: BlockTime::new_from_local_time(),
             slot: Slot::new(block),
+            genesis_hash: *genesis_hash,
+        }
+    }
+
+    /// Create a minimal block info from a block link.
+    pub fn minimal_from_link(link: BlockLink, genesis_hash: &BlockHash) -> Self {
+        Self {
+            link,
+            chain_time: None,
+            local_time: BlockTime::new_from_local_time(),
+            slot: None,
             genesis_hash: *genesis_hash,
         }
     }
@@ -647,6 +652,15 @@ pub fn local_time_gap_since_block(block_info: BlockInfo) -> TimeDelta {
             .date_time()
             .expect("local time is always valid, was originally from a DateTime"),
     )
+}
+
+/// Calculates the local time since an arbitrary time.
+///
+/// Returns a negative delta if the times are out of order, which can happen if the local clock has
+/// changed.
+#[expect(dead_code, reason = "included for completeness")]
+pub fn local_time_gap_since_time(time: DateTime<Utc>) -> TimeDelta {
+    gap_since_time(Utc::now(), time)
 }
 
 /// Calculates the local time gap between two blocks being received.

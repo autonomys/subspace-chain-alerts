@@ -299,7 +299,7 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
             raw_rpc_client,
             new_blocks_rx,
             best_fork_tx,
-            alert_tx,
+            alert_tx.clone(),
         )),
         true,
     );
@@ -323,6 +323,7 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
                 node_rpc_url.clone(),
                 chain_client.clone(),
                 new_blocks_tx.clone(),
+                alert_tx.clone(),
             )),
             true,
         );
@@ -438,7 +439,20 @@ async fn run_on_all_blocks_subscription(
     node_rpc_url: String,
     chain_client: SubspaceClient,
     new_blocks_tx: mpsc::Sender<BlockSeen>,
+    alert_tx: mpsc::Sender<Alert>,
 ) -> anyhow::Result<()> {
+    let genesis_hash = chain_client.genesis_hash();
+
+    // A channel that shares the latest block info with concurrently running block stall tasks.
+    let latest_block_tx = watch::Sender::new(None);
+
+    // Tasks spawned for the block stall alert.
+    let mut block_stall_join_handles: FuturesUnordered<JoinHandle<anyhow::Result<Option<bool>>>> =
+        FuturesUnordered::new();
+
+    // Tracks the previous block's stall alert status.
+    let mut is_stalled = false;
+
     // Subscribe to all blocks, including side forks and best blocks.
     let mut blocks_sub = chain_client.blocks().subscribe_all().await?;
 
@@ -459,9 +473,45 @@ async fn run_on_all_blocks_subscription(
             );
         }
 
+        // Notify spawned tasks that a new block has arrived, and give them time to process that
+        // block. This is needed even if there is a block gap.
+        latest_block_tx.send_replace(Some((block, is_stalled)));
+        task::yield_now().await;
+
+        // We only check for block stalls on current subscription blocks, and only if we're not
+        // stalled already.
+        if !is_stalled {
+            let stall_task_join_handle = alerts::check_for_block_stall(
+                BlockCheckMode::Current,
+                block,
+                &genesis_hash,
+                alert_tx.clone(),
+                latest_block_tx.subscribe(),
+            )
+            .await;
+
+            block_stall_join_handles.push(stall_task_join_handle);
+        }
+
         // Notify the fork monitor that we've seen a new block.
         let block_seen = BlockSeen::from_any_block(Arc::new(block));
         new_blocks_tx.send(block_seen).await?;
+
+        trace!(block_stall_join_handles = %block_stall_join_handles.len(), ?is_stalled, "spawned tasks before joining");
+
+        // Join any spawned block stall tasks that have finished.
+        // When there are no more finished tasks, continue to the next block.
+        while let Some(block_stall_result) =
+            block_stall_join_handles.next().now_or_never().flatten()
+        {
+            // We only want to set or reset the stall status if the task issued an alert,
+            // or came out of the stall.
+            if let Some(block_gap_status) = block_stall_result?? {
+                is_stalled = block_gap_status;
+            }
+        }
+
+        trace!(block_stall_join_handles = %block_stall_join_handles.len(), ?is_stalled, "spawned tasks after joining");
 
         task::yield_now().await;
     }
@@ -525,8 +575,6 @@ async fn check_best_blocks(
 
     // Keep the previous block's info for block to block alerts.
     let mut prev_block_info: Option<BlockInfo> = None;
-    // A channel that shares the latest block info with concurrently running tasks.
-    let latest_block_tx = watch::Sender::new(None);
 
     // Tracks the previous block's gap alert status.
     let mut prev_block_gap_status = BlockGapAlertStatus::NoAlert;
@@ -552,11 +600,6 @@ async fn check_best_blocks(
         minimum_block_interval: DEFAULT_FARMING_MIN_ALERT_BLOCK_INTERVAL,
     });
 
-    // Tasks spawned by the block stall alert.
-    let mut block_stall_join_handles: FuturesUnordered<
-        JoinHandle<anyhow::Result<Option<BlockGapAlertStatus>>>,
-    > = FuturesUnordered::new();
-
     while let Some((mode, block_info, raw_extrinsics, raw_events)) = best_forks_rx.recv().await {
         // Let the user know we're still alive.
         if block_info
@@ -576,10 +619,7 @@ async fn check_best_blocks(
             // Let the user know we're still alive.
             debug!(?block_info, "Processed best block from fork monitor");
         }
-
-        // Notify spawned tasks that a new block has arrived, and give them time to process that
-        // block. This is needed even if there is a block gap.
-        latest_block_tx.send_replace(Some((block_info, prev_block_gap_status)));
+        // Give the best blocks subscription time to run.
         task::yield_now().await;
 
         // If there has been a reorg, replace the previous block with the correct (fork point)
@@ -591,20 +631,7 @@ async fn check_best_blocks(
                 BlockInfo::with_block_hash(block_info.parent_hash(), &chain_clients).await?;
         }
 
-        // We only check for block stalls on current blocks.
-        if mode.is_current() {
-            let stall_task_join_handle = alerts::check_for_block_stall(
-                mode,
-                alert_tx.clone(),
-                block_info,
-                latest_block_tx.subscribe(),
-            )
-            .await;
-
-            block_stall_join_handles.push(stall_task_join_handle);
-        }
-
-        // We check for other alerts in any mode.
+        // We check for most alerts in any mode.
         prev_block_gap_status = run_on_best_block(
             mode,
             &block_info,
@@ -618,26 +645,7 @@ async fn check_best_blocks(
         )
         .await?;
 
-        // Give spawned tasks another opportunity to run.
         task::yield_now().await;
-
-        trace!(block_stall_join_handles = %block_stall_join_handles.len(), ?prev_block_gap_status, "spawned tasks before joining");
-
-        // Join any spawned block stall tasks that have finished.
-        // When there are no more finished tasks, continue to the next block.
-        while let Some(block_stall_result) =
-            block_stall_join_handles.next().now_or_never().flatten()
-        {
-            // We only want to reset the previous block gap status if the task actually issued an
-            // alert. In the absence of an alert, we can't assume there were no gaps (due to the
-            // slop). The most reliable indicators of a reset are the block gap checks in
-            // check_block().
-            if let Some(block_gap_status) = block_stall_result?? {
-                prev_block_gap_status = block_gap_status;
-            }
-        }
-
-        trace!(block_stall_join_handles = %block_stall_join_handles.len(), ?prev_block_gap_status, "spawned tasks after joining");
 
         prev_block_info = Some(block_info);
     }

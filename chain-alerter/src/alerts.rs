@@ -12,8 +12,9 @@ use crate::alerts::transfer::TransferValue;
 use crate::chain_fork_monitor::ChainForkEvent;
 use crate::format::{fmt_amount, fmt_duration, fmt_time_delta};
 use crate::subspace::{
-    AI3, Balance, BlockInfo, BlockPosition, EventInfo, ExtrinsicInfo, RawEvent, RawExtrinsic,
-    chain_time_gap_between_blocks, local_time_gap_between_blocks, local_time_gap_since_block,
+    AI3, Balance, BlockHash, BlockInfo, BlockLink, BlockPosition, EventInfo, ExtrinsicInfo,
+    RawEvent, RawExtrinsic, chain_time_gap_between_blocks, local_time_gap_between_blocks,
+    local_time_gap_since_block,
 };
 use chrono::TimeDelta;
 use std::fmt::{self, Display};
@@ -55,6 +56,10 @@ mod internal {
         };
 
     /// The minimum stall block gap to alert on.
+    ///
+    /// Stall alerts without a resume are alarming to users, it looks like either the chain or
+    /// alerter has stopped. So we add some slop to suppress borderline alerts. We've seen
+    /// spurious stalls at exactly 60 seconds without the slop.
     pub const MIN_STALL_BLOCK_GAP: Duration = MIN_BLOCK_GAP.saturating_add(BLOCK_GAP_SLOP);
 }
 
@@ -923,9 +928,6 @@ pub async fn startup_alert(
 #[must_use = "the status must be tracked"]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum BlockGapAlertStatus {
-    /// A local stall alert was issued during a block receive gap.
-    LocalStall,
-
     /// A local resume alert was issued after a block receive gap.
     LocalResume,
 
@@ -1040,62 +1042,52 @@ pub async fn check_block(
 #[must_use = "the spawned task must be joined"]
 pub async fn check_for_block_stall(
     mode: BlockCheckMode,
+    block: BlockLink,
+    genesis_hash: &BlockHash,
     alert_tx: mpsc::Sender<Alert>,
-    block_info: BlockInfo,
-    latest_block_rx: watch::Receiver<Option<(BlockInfo, BlockGapAlertStatus)>>,
-) -> JoinHandle<anyhow::Result<Option<BlockGapAlertStatus>>> {
+    latest_block_rx: watch::Receiver<Option<(BlockLink, bool)>>,
+) -> JoinHandle<anyhow::Result<Option<bool>>> {
     // It doesn't make sense to check the local clock for stalls on replayed blocks, because we
     // already know there's a new current block. It's expensive to spawn a task, so return
     // early.
     assert!(mode.is_current(), "should only be called on current blocks");
 
-    let old_block_info = block_info;
+    let old_block = BlockInfo::minimal_from_link(block, genesis_hash);
 
     // We handle channel errors by restarting all tasks.
     tokio::spawn(async move {
-        let Some(old_chain_time) = old_block_info.chain_time else {
-            // No chain time to check against.
-            return Ok(None);
-        };
-
-        // Stall alerts without a resume are alarming, it looks like either the chain or alerter
-        // has stopped. We've seen a spurious stall at exactly 60 seconds, but only once.
         sleep(MIN_STALL_BLOCK_GAP).await;
 
         // Avoid a potential deadlock by copying the watched value immediately.
-        let (latest_block_info, latest_block_gap_status): (BlockInfo, BlockGapAlertStatus) =
-            latest_block_rx
-                .borrow()
-                .expect("never empty, a block is sent before spawning this task");
+        let (latest_block, is_stalled_already): (BlockLink, bool) = latest_block_rx
+            .borrow()
+            .expect("never empty, a block is sent before spawning this task");
 
-        let Some(latest_chain_time) = latest_block_info.chain_time else {
-            // No chain time to check against.
-            return Ok(None);
-        };
-
-        if latest_chain_time > old_chain_time {
+        if latest_block.height() > old_block.height() {
             // There's a new block since we sent our block and spawned our task, so block
-            // production hasn't stalled. But the latest block also spawned a task, so it
-            // will alert if there is actually a stall.
+            // production hasn't stalled. Start spawning tasks again if we were in a stall.
+            return Ok(Some(false));
+        }
+
+        if is_stalled_already {
+            // We've already sent an alert, so we don't need to send another.
+            // But we want to stay in the stall if no other task resets it.
             return Ok(None);
         }
 
-        let local_time_gap = local_time_gap_since_block(old_block_info);
+        let local_time_gap = local_time_gap_since_block(old_block);
 
-        if latest_block_gap_status.needs_new_alert(BlockGapAlertStatus::LocalStall) {
-            // If there is an error, we will restart, and the new alerter will replay missed blocks.
-            alert_tx
-                .send(Alert::new(
-                    AlertKind::BlockReceiveGap { local_time_gap },
-                    old_block_info,
-                    mode,
-                ))
-                .await?;
+        // If there is an error, we will restart, and the new alerter will replay missed blocks.
+        alert_tx
+            .send(Alert::new(
+                AlertKind::BlockReceiveGap { local_time_gap },
+                old_block,
+                mode,
+            ))
+            .await?;
 
-            Ok(Some(BlockGapAlertStatus::LocalStall))
-        } else {
-            Ok(None)
-        }
+        // We are in a stall.
+        Ok(Some(true))
     })
 }
 
