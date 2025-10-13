@@ -283,7 +283,7 @@ impl MemorySlotTimeMonitor {
         mode: BlockCheckMode,
         block_info: BlockInfo,
         slot_diff: u64,
-        slot_diff_per_time_diff: f64,
+        time_per_slot: f64,
         node_rpc_url: &str,
     ) -> anyhow::Result<()> {
         // Only send alert if we're not already alerting for fast slot time
@@ -296,7 +296,7 @@ impl MemorySlotTimeMonitor {
                 .send(Alert::new(
                     AlertKind::FastSlotTime {
                         slot_amount: slot_diff,
-                        current_ratio: slot_diff_per_time_diff,
+                        current_ratio: time_per_slot,
                         threshold: self.config.fast_slots_threshold,
                         interval: self.config.check_interval,
                     },
