@@ -27,7 +27,7 @@ else
 fi
 
 cargo run --locked -- --slack=false --test-startup --node-rpc-url="$NODE_URL" \
-    | rg --fixed-strings --passthru "**Launched and connected to the node**"
+    | rg --fixed-strings --passthru "**Launched and connected to the nodes**"
 
 # Stop showing executed commands
 set +x
