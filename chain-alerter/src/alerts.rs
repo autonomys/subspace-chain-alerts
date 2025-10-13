@@ -683,8 +683,8 @@ impl Display for AlertKind {
                 write!(
                     f,
                     "**Slow slot time alert**\n\
-                    Current ratio: {current_ratio:.2} slots per second\n\
-                    Threshold: {threshold:.2} slots per second\n\
+                    Current ratio: {current_ratio:.2} seconds per slot\n\
+                    Threshold: {threshold:.2} seconds per slot\n\
                     Slot amount: {slot_amount}\n\
                     Interval: {}",
                     fmt_duration(*interval),
@@ -700,8 +700,8 @@ impl Display for AlertKind {
                 write!(
                     f,
                     "**Fast slot time alert**\n\
-                    Current ratio: {current_ratio:.2} slots per second\n\
-                    Threshold: {threshold:.2} slots per second\n\
+                    Current ratio: {current_ratio:.2} seconds per slot\n\
+                    Threshold: {threshold:.2} seconds per slot\n\
                     Slot amount: {slot_amount}\n\
                     Interval: {}",
                     fmt_duration(*interval),
