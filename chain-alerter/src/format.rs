@@ -30,7 +30,7 @@ pub fn truncate(s: &mut String, max_chars: usize) {
 ///
 /// Returns a placeholder value if the input is missing.
 #[expect(clippy::cast_precision_loss, reason = "loss is acceptable for display")]
-pub fn fmt_amount(val: impl Into<Option<Balance>>) -> String {
+pub fn fmt_amount(val: impl Into<Option<Balance>> + Copy) -> String {
     if let Some(val) = val.into() {
         format!("{} AI3", (val as f64) / (AI3 as f64))
     } else {
@@ -41,7 +41,7 @@ pub fn fmt_amount(val: impl Into<Option<Balance>>) -> String {
 /// Format a timestamp (a moment in time) as a human-readable string.
 ///
 /// Returns a placeholder value if the input is missing.
-pub fn fmt_timestamp(date_time: impl Into<Option<DateTime<Utc>>>) -> String {
+pub fn fmt_timestamp(date_time: impl Into<Option<DateTime<Utc>>> + Clone) -> String {
     if let Some(date_time) = date_time.into() {
         date_time.format("%Y-%m-%d %H:%M:%S UTC").to_string()
     } else {
@@ -52,7 +52,7 @@ pub fn fmt_timestamp(date_time: impl Into<Option<DateTime<Utc>>>) -> String {
 /// Format a duration (an unsigned amount of time) as a human-readable string.
 ///
 /// Returns a placeholder value if the input is missing.
-pub fn fmt_duration(duration: impl Into<Option<Duration>>) -> String {
+pub fn fmt_duration(duration: impl Into<Option<Duration>> + Copy) -> String {
     let Some(duration) = duration.into() else {
         return "missing".to_string();
     };
@@ -66,7 +66,7 @@ pub fn fmt_duration(duration: impl Into<Option<Duration>>) -> String {
 /// Format a time delta (a signed amount of time) as a human-readable string.
 ///
 /// Returns a placeholder value if the input is missing or out of range.
-pub fn fmt_time_delta(time_delta: impl Into<Option<TimeDelta>>) -> String {
+pub fn fmt_time_delta(time_delta: impl Into<Option<TimeDelta>> + Copy) -> String {
     let Some(time_delta) = time_delta.into() else {
         return "missing".to_string();
     };

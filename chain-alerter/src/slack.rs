@@ -96,9 +96,6 @@ pub struct SlackClientInfo {
     /// The IP address and country code used to identify the bot instance.
     pub bot_ip_cc: Option<String>,
 
-    /// The RPC URL of the node used by the bot instance.
-    pub node_rpc_url: String,
-
     /// The secret required to post to Slack.
     secret: SlackSecret,
 }
@@ -173,8 +170,7 @@ impl SlackClientInfo {
     pub async fn new(
         is_production: bool,
         bot_name: impl AsRef<str>,
-        bot_icon: impl Into<Option<String>>,
-        node_rpc_url: impl AsRef<str>,
+        bot_icon: Option<String>,
         secret_path: impl AsRef<str>,
     ) -> Result<Self, anyhow::Error> {
         let secret = SlackSecret::new(secret_path.as_ref()).await?;
@@ -205,7 +201,7 @@ impl SlackClientInfo {
             }
         };
 
-        let bot_icon = match bot_icon.into() {
+        let bot_icon = match bot_icon {
             Some(icon) => icon,
             None => match geoip.1 {
                 Some(bot_country_flag) => bot_country_flag,
@@ -222,7 +218,6 @@ impl SlackClientInfo {
             alert_channel_id: channel_ids[alert_channel_name].clone(),
             bot_name: bot_name.as_ref().to_string(),
             bot_ip_cc: geoip.0,
-            node_rpc_url: node_rpc_url.as_ref().to_string(),
             bot_icon,
             secret,
         })
@@ -345,7 +340,8 @@ impl SlackClientInfo {
             String::new()
         };
 
-        context.push_str(&format!("📞 {} ", self.node_rpc_url));
+        // TODO: add node RPC URL here
+        // context.push_str(&format!("📞 {} ", self.node_rpc_url));
         // TODO: add git commit hash here
         context.push_str(&format!("🔗 {}", env!("CARGO_PKG_VERSION")));
 

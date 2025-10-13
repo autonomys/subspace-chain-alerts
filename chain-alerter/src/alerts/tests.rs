@@ -5,20 +5,18 @@
 
 use crate::alerts::account::ImportantAccountRole;
 use crate::alerts::{self, Alert, AlertKind, BlockCheckMode, MIN_BALANCE_CHANGE};
-use crate::slot_time_monitor::test_utils::mock_block_info;
 use crate::slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor, SlotTimeMonitorConfig};
-use crate::subspace::tests::{
-    alert_channel_only_setup, decode_event, decode_extrinsic, fetch_block_info, node_rpc_url,
-    test_setup,
+use crate::subspace::test_utils::{
+    alert_channel_only_setup, decode_event, decode_extrinsic, fetch_block_info, mock_block_info,
+    node_rpc_urls, test_setup,
 };
 use crate::subspace::{
-    AI3, Balance, BlockHash, BlockNumber, EventIndex, ExtrinsicIndex, RawBlockHash, Slot,
+    AI3, Balance, BlockHash, BlockInfo, BlockNumber, EventIndex, ExtrinsicIndex, RawBlockHash, Slot,
 };
 use anyhow::Ok;
 use std::assert_matches::assert_matches;
-use std::sync::Arc;
 use std::time::Duration;
-use subxt::ext::futures::FutureExt;
+use subxt::ext::futures::{FutureExt, StreamExt};
 
 /// The extrinsic and event for a recent sudo call.
 /// <https://github.com/autonomys/subspace/releases/tag/runtime-mainnet-2025-jul-31>
@@ -173,10 +171,10 @@ const IMPORTANT_ADDRESS_ONLY_BLOCKS: [(
 /// Check that the startup alert works on the latest block.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_startup_alert() -> anyhow::Result<()> {
-    let (subspace_client, _, alert_tx, mut alert_rx, update_task) =
-        test_setup(node_rpc_url()).await?;
+    let (subspace_clients, _, alert_tx, mut alert_rx, mut update_tasks) =
+        test_setup(&mut node_rpc_urls()).await?;
 
-    let (block_info, _, _) = fetch_block_info(&subspace_client, None, None).await?;
+    let block_info = BlockInfo::with_block_hash(None, &subspace_clients).await?;
 
     alerts::startup_alert(BlockCheckMode::Current, &alert_tx, &block_info).await?;
     let alert = alert_rx.try_recv().expect("no alert received");
@@ -193,8 +191,7 @@ async fn test_startup_alert() -> anyhow::Result<()> {
     // Check block slot parsing works on real blocks.
     assert_matches!(alert.block_info.slot, Some(Slot(_)));
 
-    if let Some(update_task) = Arc::into_inner(update_task) {
-        let result = update_task.now_or_never();
+    while let Some(result) = update_tasks.next().now_or_never() {
         assert!(
             result.is_none(),
             "metadata update task exited unexpectedly with: {result:?}"
@@ -207,18 +204,19 @@ async fn test_startup_alert() -> anyhow::Result<()> {
 /// Check that the sudo call and event alerts work on a known sudo block.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_sudo_alerts() -> anyhow::Result<()> {
-    let (subspace_client, _, alert_tx, mut alert_rx, update_task) =
-        test_setup(node_rpc_url()).await?;
+    let (subspace_clients, _, alert_tx, mut alert_rx, mut update_tasks) =
+        test_setup(&mut node_rpc_urls()).await?;
 
     let (block_info, extrinsics, events) = fetch_block_info(
-        &subspace_client,
         BlockHash::from(SUDO_EXTRINSIC_BLOCK.1),
+        true,
+        &subspace_clients,
         SUDO_EXTRINSIC_BLOCK.0,
     )
     .await?;
 
     let (extrinsic, extrinsic_info) =
-        decode_extrinsic(&block_info, &extrinsics, SUDO_EXTRINSIC_BLOCK.2).await?;
+        decode_extrinsic(&block_info, &extrinsics, SUDO_EXTRINSIC_BLOCK.2)?;
 
     let checked_extrinsic_info =
         alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info).await?;
@@ -250,10 +248,9 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
     let (event, event_info) = decode_event(
         &block_info,
         Some(extrinsic_info.clone()),
-        &events,
+        &events.unwrap(),
         SUDO_EXTRINSIC_BLOCK.3,
-    )
-    .await?;
+    )?;
 
     alerts::check_event(
         BlockCheckMode::Replay,
@@ -287,8 +284,7 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
     // Check block slot parsing works on a known slot value.
     assert_eq!(alert.block_info.slot, Some(SUDO_EXTRINSIC_BLOCK.4));
 
-    if let Some(update_task) = Arc::into_inner(update_task) {
-        let result = update_task.now_or_never();
+    while let Some(result) = update_tasks.next().now_or_never() {
         assert!(
             result.is_none(),
             "metadata update task exited unexpectedly with: {result:?}"
@@ -301,24 +297,28 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
 /// Check that the large balance transfer alert works on known transfer blocks.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
-    let (subspace_client, _, alert_tx, mut alert_rx, update_task) =
-        test_setup(node_rpc_url()).await?;
+    let (subspace_clients, _, alert_tx, mut alert_rx, mut update_tasks) =
+        test_setup(&mut node_rpc_urls()).await?;
 
     for (block_number, block_hash, extrinsic_index, event_index, transfer_value, slot) in
         LARGE_TRANSFER_BLOCKS
     {
-        let (block_info, extrinsics, events) =
-            fetch_block_info(&subspace_client, BlockHash::from(block_hash), block_number).await?;
+        let (block_info, extrinsics, events) = fetch_block_info(
+            BlockHash::from(block_hash),
+            true,
+            &subspace_clients,
+            block_number,
+        )
+        .await?;
 
         let (extrinsic, extrinsic_info) =
-            decode_extrinsic(&block_info, &extrinsics, extrinsic_index).await?;
+            decode_extrinsic(&block_info, &extrinsics, extrinsic_index)?;
         let (event, event_info) = decode_event(
             &block_info,
             Some(extrinsic_info.clone()),
-            &events,
+            &events.unwrap(),
             event_index,
-        )
-        .await?;
+        )?;
 
         let checked_extrinsic_info =
             alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info)
@@ -375,8 +375,7 @@ async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
         assert_eq!(alert.block_info.slot, Some(slot));
     }
 
-    if let Some(update_task) = Arc::into_inner(update_task) {
-        let result = update_task.now_or_never();
+    while let Some(result) = update_tasks.next().now_or_never() {
         assert!(
             result.is_none(),
             "metadata update task exited unexpectedly with: {result:?}"
@@ -389,8 +388,8 @@ async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
 /// Check that important address transfer alerts work on known important address transfer blocks.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_important_address_transfer_alerts() -> anyhow::Result<()> {
-    let (subspace_client, _, alert_tx, mut alert_rx, update_task) =
-        test_setup(node_rpc_url()).await?;
+    let (subspace_clients, _, alert_tx, mut alert_rx, mut update_tasks) =
+        test_setup(&mut node_rpc_urls()).await?;
 
     for (
         block_number,
@@ -404,18 +403,22 @@ async fn test_important_address_transfer_alerts() -> anyhow::Result<()> {
         slot,
     ) in IMPORTANT_ADDRESS_TRANSFER_BLOCKS
     {
-        let (block_info, extrinsics, events) =
-            fetch_block_info(&subspace_client, BlockHash::from(block_hash), block_number).await?;
+        let (block_info, extrinsics, events) = fetch_block_info(
+            BlockHash::from(block_hash),
+            true,
+            &subspace_clients,
+            block_number,
+        )
+        .await?;
 
         let (extrinsic, extrinsic_info) =
-            decode_extrinsic(&block_info, &extrinsics, extrinsic_index).await?;
+            decode_extrinsic(&block_info, &extrinsics, extrinsic_index)?;
         let (event, event_info) = decode_event(
             &block_info,
             Some(extrinsic_info.clone()),
-            &events,
+            &events.unwrap(),
             event_index,
-        )
-        .await?;
+        )?;
 
         let checked_extrinsic_info =
             alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info)
@@ -506,8 +509,7 @@ async fn test_important_address_transfer_alerts() -> anyhow::Result<()> {
         assert_eq!(alert.block_info.slot, Some(slot));
     }
 
-    if let Some(update_task) = Arc::into_inner(update_task) {
-        let result = update_task.now_or_never();
+    while let Some(result) = update_tasks.next().now_or_never() {
         assert!(
             result.is_none(),
             "metadata update task exited unexpectedly with: {result:?}"
@@ -520,17 +522,22 @@ async fn test_important_address_transfer_alerts() -> anyhow::Result<()> {
 /// Check that the important address alert works on known important address blocks.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_important_address_only_alerts() -> anyhow::Result<()> {
-    let (subspace_client, _, alert_tx, mut alert_rx, update_task) =
-        test_setup(node_rpc_url()).await?;
+    let (subspace_clients, _, alert_tx, mut alert_rx, mut update_tasks) =
+        test_setup(&mut node_rpc_urls()).await?;
 
     for (block_number, block_hash, extrinsic_index, address_kind, slot) in
         IMPORTANT_ADDRESS_ONLY_BLOCKS
     {
-        let (block_info, extrinsics, _events) =
-            fetch_block_info(&subspace_client, BlockHash::from(block_hash), block_number).await?;
+        let (block_info, extrinsics, _no_events) = fetch_block_info(
+            BlockHash::from(block_hash),
+            false,
+            &subspace_clients,
+            block_number,
+        )
+        .await?;
 
         let (extrinsic, extrinsic_info) =
-            decode_extrinsic(&block_info, &extrinsics, extrinsic_index).await?;
+            decode_extrinsic(&block_info, &extrinsics, extrinsic_index)?;
 
         let checked_extrinsic_info =
             alerts::check_extrinsic(BlockCheckMode::Replay, &alert_tx, &extrinsic, &block_info)
@@ -563,8 +570,7 @@ async fn test_important_address_only_alerts() -> anyhow::Result<()> {
         assert_eq!(alert.block_info.slot, Some(slot));
     }
 
-    if let Some(update_task) = Arc::into_inner(update_task) {
-        let result = update_task.now_or_never();
+    while let Some(result) = update_tasks.next().now_or_never() {
         assert!(
             result.is_none(),
             "metadata update task exited unexpectedly with: {result:?}"
