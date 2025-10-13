@@ -754,7 +754,7 @@ async fn test_slot_time_above_slow_threshold() -> anyhow::Result<()> {
         Alert::new(
             AlertKind::SlowSlotTime {
                 slot_amount: 1,
-                current_ratio: 100.0, // 1000ms / 1 slots = 1000 seconds per slot
+                current_ratio: 100.0, // 100_000ms / 1 slots = 100 seconds per slot
                 threshold: 2f64,
                 interval: Duration::from_secs(1),
             },
