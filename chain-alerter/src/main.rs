@@ -15,7 +15,7 @@ mod subspace;
 
 use crate::alerts::{Alert, BlockCheckMode, BlockGapAlertStatus};
 use crate::chain_fork_monitor::{
-    BlockSeen, CHAIN_FORK_BUFFER_SIZE, NewBestBlockMessage, check_for_chain_forks,
+    BlockSeen, BlockSeenMessage, CHAIN_FORK_BUFFER_SIZE, NewBestBlockMessage, check_for_chain_forks,
 };
 use crate::farming_monitor::{
     DEFAULT_FARMING_INACTIVE_BLOCK_THRESHOLD, DEFAULT_FARMING_MAX_HISTORY_BLOCK_INTERVAL,
@@ -219,29 +219,62 @@ async fn slack_poster(
         // Slack alert would be duplicate or skipped. (We often disable Slack for testing.)
         alert_count += 1;
 
+        let node_rpc_urls = alert.node_rpc_urls();
+
         if alert.alert.is_duplicate() {
-            info!(%alert_count, ?alert_limit, ?test_startup, "skipping posting duplicate alert message:\n{alert}");
+            info!(
+                %alert_count,
+                ?alert_limit,
+                ?test_startup,
+                ?node_rpc_urls,
+                "skipping posting duplicate alert message:\n{alert}",
+            );
             continue;
         }
 
         if let Some(slack_client) = slack_client.as_ref() {
             // We have a large number of retries in the Slack poster, so it is unlikely to fail.
             let response = slack_client.post_message(&alert).await?;
-            debug!(?response, %alert_count, ?alert_limit, ?test_startup, "posted alert to Slack");
+            debug!(
+                ?response,
+                %alert_count,
+                ?alert_limit,
+                ?test_startup,
+                ?node_rpc_urls,
+                "posted alert to Slack",
+            );
             task::yield_now().await;
         } else {
-            info!(%alert_count, ?alert_limit, ?test_startup, "{alert}");
+            info!(
+                %alert_count,
+                ?alert_limit,
+                ?test_startup,
+                ?node_rpc_urls,
+                "{alert}",
+            );
         }
 
         if let Some(alert_limit) = alert_limit
             && alert_count >= alert_limit
         {
-            info!(%alert_count, ?alert_limit, ?test_startup, "alert limit reached, exiting");
+            info!(
+                %alert_count,
+                ?alert_limit,
+                ?test_startup,
+                ?node_rpc_urls,
+                "alert limit reached, exiting",
+            );
             break;
         }
 
         if test_startup && alert.alert.is_test_alert() {
-            info!(%alert_count, ?alert_limit, ?test_startup, "startup alert reached, exiting");
+            info!(
+                %alert_count,
+                ?alert_limit,
+                ?test_startup,
+                ?node_rpc_urls,
+                "startup alert reached, exiting",
+            );
             break;
         }
     }
@@ -285,6 +318,7 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
             check_best_blocks_clients,
             best_fork_rx,
             alert_tx.clone(),
+            args.node_rpc_url.clone(),
         )),
         true,
     );
@@ -299,7 +333,8 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
             raw_rpc_client,
             new_blocks_rx,
             best_fork_tx,
-            alert_tx,
+            alert_tx.clone(),
+            args.node_rpc_url.clone(),
         )),
         true,
     );
@@ -308,9 +343,9 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
     let best_chain_client = chain_clients[0].clone();
     let best_blocks_task = AsyncJoinOnDrop::new(
         tokio::spawn(run_on_best_blocks_subscription(
-            args.node_rpc_url[0].clone(),
             best_chain_client,
             new_blocks_tx.clone(),
+            args.node_rpc_url[0].clone(),
         )),
         true,
     );
@@ -320,9 +355,10 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
     for (chain_client, node_rpc_url) in chain_clients.iter().zip(args.node_rpc_url.iter()) {
         let all_blocks_task = AsyncJoinOnDrop::new(
             tokio::spawn(run_on_all_blocks_subscription(
-                node_rpc_url.clone(),
                 chain_client.clone(),
                 new_blocks_tx.clone(),
+                alert_tx.clone(),
+                node_rpc_url.to_string(),
             )),
             true,
         );
@@ -435,10 +471,23 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
 
 /// Send blocks from an "all blocks" subscription to the fork monitor.
 async fn run_on_all_blocks_subscription(
-    node_rpc_url: String,
     chain_client: SubspaceClient,
-    new_blocks_tx: mpsc::Sender<BlockSeen>,
+    new_blocks_tx: mpsc::Sender<BlockSeenMessage>,
+    alert_tx: mpsc::Sender<Alert>,
+    node_rpc_url: String,
 ) -> anyhow::Result<()> {
+    let genesis_hash = chain_client.genesis_hash();
+
+    // A channel that shares the latest block info with concurrently running block stall tasks.
+    let latest_block_tx = watch::Sender::new(None);
+
+    // Tasks spawned for the block stall alert.
+    let mut block_stall_join_handles: FuturesUnordered<JoinHandle<anyhow::Result<Option<bool>>>> =
+        FuturesUnordered::new();
+
+    // Tracks the previous block's stall alert status.
+    let mut is_stalled = false;
+
     // Subscribe to all blocks, including side forks and best blocks.
     let mut blocks_sub = chain_client.blocks().subscribe_all().await?;
 
@@ -459,9 +508,48 @@ async fn run_on_all_blocks_subscription(
             );
         }
 
+        // Notify spawned tasks that a new block has arrived, and give them time to process that
+        // block. This is needed even if there is a block gap.
+        latest_block_tx.send_replace(Some((block, is_stalled)));
+        task::yield_now().await;
+
+        // We only check for block stalls on current subscription blocks, and only if we're not
+        // stalled already.
+        if !is_stalled {
+            let stall_task_join_handle = alerts::check_for_block_stall(
+                BlockCheckMode::Current,
+                block,
+                &genesis_hash,
+                alert_tx.clone(),
+                latest_block_tx.subscribe(),
+                node_rpc_url.to_string(),
+            )
+            .await;
+
+            block_stall_join_handles.push(stall_task_join_handle);
+        }
+
         // Notify the fork monitor that we've seen a new block.
         let block_seen = BlockSeen::from_any_block(Arc::new(block));
-        new_blocks_tx.send(block_seen).await?;
+        new_blocks_tx
+            .send((block_seen, node_rpc_url.clone()))
+            .await?;
+
+        trace!(block_stall_join_handles = %block_stall_join_handles.len(), ?is_stalled, "spawned tasks before joining");
+
+        // Join any spawned block stall tasks that have finished.
+        // When there are no more finished tasks, continue to the next block.
+        while let Some(block_stall_result) =
+            block_stall_join_handles.next().now_or_never().flatten()
+        {
+            // We only want to set or reset the stall status if the task issued an alert,
+            // or came out of the stall.
+            if let Some(block_gap_status) = block_stall_result?? {
+                is_stalled = block_gap_status;
+            }
+        }
+
+        trace!(block_stall_join_handles = %block_stall_join_handles.len(), ?is_stalled, "spawned tasks after joining");
 
         task::yield_now().await;
     }
@@ -479,9 +567,9 @@ async fn run_on_all_blocks_subscription(
 /// If small data volumes or server subscription load are more important than latency, this
 /// subscription can be disabled.
 async fn run_on_best_blocks_subscription(
-    node_rpc_url: String,
     chain_client: SubspaceClient,
-    new_blocks_tx: mpsc::Sender<BlockSeen>,
+    new_blocks_tx: mpsc::Sender<BlockSeenMessage>,
+    node_rpc_url: String,
 ) -> anyhow::Result<()> {
     // Subscribe blocks that are the best block when they are received.
     let mut blocks_sub = chain_client.blocks().subscribe_best().await?;
@@ -502,7 +590,9 @@ async fn run_on_best_blocks_subscription(
 
         // Notify the fork monitor that we've seen a new block.
         let block_seen = BlockSeen::from_best_block(Arc::new(block));
-        new_blocks_tx.send(block_seen).await?;
+        new_blocks_tx
+            .send((block_seen, node_rpc_url.clone()))
+            .await?;
 
         // We don't give tasks an opportunity to run, because we want best blocks to win the
         // subscription race.
@@ -517,6 +607,7 @@ async fn check_best_blocks(
     chain_clients: Vec<SubspaceClient>,
     mut best_forks_rx: mpsc::Receiver<NewBestBlockMessage>,
     alert_tx: mpsc::Sender<Alert>,
+    all_node_rpc_urls: Vec<String>,
 ) -> anyhow::Result<()> {
     // TODO: add a network name table and look up the network name by genesis hash
 
@@ -525,8 +616,6 @@ async fn check_best_blocks(
 
     // Keep the previous block's info for block to block alerts.
     let mut prev_block_info: Option<BlockInfo> = None;
-    // A channel that shares the latest block info with concurrently running tasks.
-    let latest_block_tx = watch::Sender::new(None);
 
     // Tracks the previous block's gap alert status.
     let mut prev_block_gap_status = BlockGapAlertStatus::NoAlert;
@@ -552,12 +641,9 @@ async fn check_best_blocks(
         minimum_block_interval: DEFAULT_FARMING_MIN_ALERT_BLOCK_INTERVAL,
     });
 
-    // Tasks spawned by the block stall alert.
-    let mut block_stall_join_handles: FuturesUnordered<
-        JoinHandle<anyhow::Result<Option<BlockGapAlertStatus>>>,
-    > = FuturesUnordered::new();
-
-    while let Some((mode, block_info, raw_extrinsics, raw_events)) = best_forks_rx.recv().await {
+    while let Some((mode, block_info, raw_extrinsics, raw_events, node_rpc_url)) =
+        best_forks_rx.recv().await
+    {
         // Let the user know we're still alive.
         if block_info
             .height()
@@ -567,7 +653,7 @@ async fn check_best_blocks(
         }
 
         if first_block && mode.is_current() {
-            alerts::startup_alert(mode, &alert_tx, &block_info).await?;
+            alerts::startup_alert(mode, &block_info, &alert_tx, all_node_rpc_urls.clone()).await?;
             first_block = false;
         } else if block_info
             .height()
@@ -576,10 +662,7 @@ async fn check_best_blocks(
             // Let the user know we're still alive.
             debug!(?block_info, "Processed best block from fork monitor");
         }
-
-        // Notify spawned tasks that a new block has arrived, and give them time to process that
-        // block. This is needed even if there is a block gap.
-        latest_block_tx.send_replace(Some((block_info, prev_block_gap_status)));
+        // Give the best blocks subscription time to run.
         task::yield_now().await;
 
         // If there has been a reorg, replace the previous block with the correct (fork point)
@@ -591,20 +674,7 @@ async fn check_best_blocks(
                 BlockInfo::with_block_hash(block_info.parent_hash(), &chain_clients).await?;
         }
 
-        // We only check for block stalls on current blocks.
-        if mode.is_current() {
-            let stall_task_join_handle = alerts::check_for_block_stall(
-                mode,
-                alert_tx.clone(),
-                block_info,
-                latest_block_tx.subscribe(),
-            )
-            .await;
-
-            block_stall_join_handles.push(stall_task_join_handle);
-        }
-
-        // We check for other alerts in any mode.
+        // We check for most alerts in any mode.
         prev_block_gap_status = run_on_best_block(
             mode,
             &block_info,
@@ -615,29 +685,11 @@ async fn check_best_blocks(
             &mut slot_time_monitor,
             &mut farming_monitor,
             &alert_tx,
+            &node_rpc_url,
         )
         .await?;
 
-        // Give spawned tasks another opportunity to run.
         task::yield_now().await;
-
-        trace!(block_stall_join_handles = %block_stall_join_handles.len(), ?prev_block_gap_status, "spawned tasks before joining");
-
-        // Join any spawned block stall tasks that have finished.
-        // When there are no more finished tasks, continue to the next block.
-        while let Some(block_stall_result) =
-            block_stall_join_handles.next().now_or_never().flatten()
-        {
-            // We only want to reset the previous block gap status if the task actually issued an
-            // alert. In the absence of an alert, we can't assume there were no gaps (due to the
-            // slop). The most reliable indicators of a reset are the block gap checks in
-            // check_block().
-            if let Some(block_gap_status) = block_stall_result?? {
-                prev_block_gap_status = block_gap_status;
-            }
-        }
-
-        trace!(block_stall_join_handles = %block_stall_join_handles.len(), ?prev_block_gap_status, "spawned tasks after joining");
 
         prev_block_info = Some(block_info);
     }
@@ -660,6 +712,7 @@ async fn run_on_best_block(
     slot_time_monitor: &mut MemorySlotTimeMonitor,
     farming_monitor: &mut MemoryFarmingMonitor,
     alert_tx: &mpsc::Sender<Alert>,
+    node_rpc_url: &str,
 ) -> anyhow::Result<BlockGapAlertStatus> {
     let events = events
         .iter()
@@ -678,22 +731,25 @@ async fn run_on_best_block(
     // Check the block itself for alerts, including stall resumes.
     let block_gap_status = alerts::check_block(
         mode,
-        alert_tx,
         block_info,
         prev_block_info,
         prev_block_gap_status,
+        alert_tx,
+        node_rpc_url,
     )
     .await?;
-    slot_time_monitor.process_block(mode, block_info).await?;
+    slot_time_monitor
+        .process_block(mode, block_info, node_rpc_url)
+        .await?;
     farming_monitor
-        .process_block(mode, block_info, &events)
+        .process_block(mode, block_info, &events, node_rpc_url)
         .await?;
 
     // Check each extrinsic and event for alerts.
     let mut extrinsic_infos = HashMap::new();
     for extrinsic in extrinsics.iter() {
         let extrinsic_info =
-            alerts::check_extrinsic(mode, alert_tx, &extrinsic, block_info).await?;
+            alerts::check_extrinsic(mode, &extrinsic, block_info, alert_tx, node_rpc_url).await?;
         if let Some(extrinsic_info) = extrinsic_info {
             extrinsic_infos.insert(extrinsic.index(), extrinsic_info);
         }
@@ -706,7 +762,15 @@ async fn run_on_best_block(
             None
         };
 
-        alerts::check_event(mode, alert_tx, event, block_info, extrinsic_info).await?;
+        alerts::check_event(
+            mode,
+            event,
+            block_info,
+            extrinsic_info,
+            alert_tx,
+            node_rpc_url,
+        )
+        .await?;
     }
 
     Ok(block_gap_status)

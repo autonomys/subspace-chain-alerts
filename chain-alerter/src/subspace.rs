@@ -216,11 +216,12 @@ pub async fn node_best_block_hash(raw_rpc_client: &RawRpcClient) -> anyhow::Resu
 async fn raw_block_from_hash(
     block_hash: impl Into<Option<BlockHash>> + Copy,
     chain_clients: &[SubspaceClient],
-) -> anyhow::Result<RawBlock> {
+    node_rpc_urls: &[String],
+) -> anyhow::Result<(RawBlock, String)> {
     let block_hash = block_hash.into();
     let mut result = None;
 
-    for chain_client in chain_clients {
+    for (chain_client, node_rpc_url) in chain_clients.iter().zip(node_rpc_urls) {
         let raw_block = if let Some(block_hash) = block_hash {
             chain_client.blocks().at(block_hash).await
         } else {
@@ -229,7 +230,7 @@ async fn raw_block_from_hash(
 
         match raw_block {
             Ok(block) => {
-                result = Some(Ok(block));
+                result = Some(Ok((block, node_rpc_url)));
                 break;
             }
             Err(e) => {
@@ -239,9 +240,9 @@ async fn raw_block_from_hash(
         }
     }
 
-    let block = result.expect("always at least one RPC server")?;
+    let (block, node_rpc_url) = result.expect("always at least one RPC server")?;
 
-    Ok(block)
+    Ok((block, node_rpc_url.to_string()))
 }
 
 /// Get a block, its extrinsics, and events from a block hash, using the first chain client that
@@ -330,14 +331,18 @@ impl BlockPosition {
     }
 
     /// Create a block position, given its hash.
+    ///
+    /// Returns the block position, and node RPC URL that provided the block.
     #[expect(dead_code, reason = "included for completeness")]
     pub async fn with_block_hash(
         block_hash: BlockHash,
         chain_clients: &[SubspaceClient],
-    ) -> anyhow::Result<Self> {
-        let block = raw_block_from_hash(block_hash, chain_clients).await?;
+        node_rpc_urls: &[String],
+    ) -> anyhow::Result<(Self, String)> {
+        let (block, node_rpc_url) =
+            raw_block_from_hash(block_hash, chain_clients, node_rpc_urls).await?;
 
-        Ok(Self::from_block(&block))
+        Ok((Self::from_block(&block), node_rpc_url))
     }
 
     /// Returns the minimum possible block position for a block height.
@@ -397,13 +402,17 @@ impl BlockLink {
     }
 
     /// Create a block link, given its hash.
+    ///
+    /// Returns the block, and node RPC URL that provided the block.
     pub async fn with_block_hash(
         block_hash: BlockHash,
         chain_clients: &[SubspaceClient],
-    ) -> anyhow::Result<Self> {
-        let block = raw_block_from_hash(block_hash, chain_clients).await?;
+        node_rpc_urls: &[String],
+    ) -> anyhow::Result<(Self, String)> {
+        let (block, node_rpc_url) =
+            raw_block_from_hash(block_hash, chain_clients, node_rpc_urls).await?;
 
-        Ok(Self::from_raw_block(&block))
+        Ok((Self::from_raw_block(&block), node_rpc_url))
     }
 
     /// Returns the block hash.
@@ -462,21 +471,15 @@ impl Display for BlockInfo {
 
         // Show truncated block hash, link to Subscan with full hash.
         writeln!(f, "Block: [{hash}]({}) ({height})", hash.block_url())?;
-        writeln!(
-            f,
-            "{}",
-            chain_time
-                .as_ref()
-                .map(|bt| bt.to_string())
-                .unwrap_or_else(|| "unknown".to_string())
-        )?;
+
+        if let Some(chain_time) = chain_time {
+            writeln!(f, "{chain_time}")?;
+        }
         writeln!(f, "{local_time}")?;
-        writeln!(
-            f,
-            "Slot: {}",
-            slot.map(|bs| bs.to_string())
-                .unwrap_or_else(|| "unknown".to_string())
-        )?;
+
+        if let Some(slot) = slot {
+            writeln!(f, "Slot: {slot}")?;
+        }
 
         Ok(())
     }
@@ -490,6 +493,17 @@ impl BlockInfo {
             chain_time: BlockTime::new_from_extrinsics(extrinsics),
             local_time: BlockTime::new_from_local_time(),
             slot: Slot::new(block),
+            genesis_hash: *genesis_hash,
+        }
+    }
+
+    /// Create a minimal block info from a block link.
+    pub fn minimal_from_link(link: BlockLink, genesis_hash: &BlockHash) -> Self {
+        Self {
+            link,
+            chain_time: None,
+            local_time: BlockTime::new_from_local_time(),
+            slot: None,
             genesis_hash: *genesis_hash,
         }
     }
@@ -647,6 +661,15 @@ pub fn local_time_gap_since_block(block_info: BlockInfo) -> TimeDelta {
             .date_time()
             .expect("local time is always valid, was originally from a DateTime"),
     )
+}
+
+/// Calculates the local time since an arbitrary time.
+///
+/// Returns a negative delta if the times are out of order, which can happen if the local clock has
+/// changed.
+#[expect(dead_code, reason = "included for completeness")]
+pub fn local_time_gap_since_time(time: DateTime<Utc>) -> TimeDelta {
+    gap_since_time(Utc::now(), time)
 }
 
 /// Calculates the local time gap between two blocks being received.

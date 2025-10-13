@@ -48,6 +48,7 @@ pub trait FarmingMonitor {
         mode: BlockCheckMode,
         block_info: &BlockInfo,
         events: &[RawEvent],
+        node_rpc_url: &str,
     ) -> anyhow::Result<()>;
 }
 
@@ -116,6 +117,7 @@ impl FarmingMonitor for MemoryFarmingMonitor {
         mode: BlockCheckMode,
         block_info: &BlockInfo,
         events: &[RawEvent],
+        node_rpc_url: &str,
     ) -> anyhow::Result<()> {
         // Update the last voted block for each farmer that voted in this block.
         self.update_last_voted_block(events, block_info.height());
@@ -128,7 +130,8 @@ impl FarmingMonitor for MemoryFarmingMonitor {
 
         // Run checks on the number of farmers.
         if self.has_passed_minimum_block_interval() {
-            self.check_farmer_count(block_info, mode).await?;
+            self.check_farmer_count(mode, block_info, node_rpc_url)
+                .await?;
         }
 
         Ok(())
@@ -261,8 +264,9 @@ impl MemoryFarmingMonitor {
     /// and emit alerts if the number of farmers with votes is outside the alert thresholds.
     async fn check_farmer_count(
         &mut self,
-        block_info: &BlockInfo,
         mode: BlockCheckMode,
+        block_info: &BlockInfo,
+        node_rpc_url: &str,
     ) -> anyhow::Result<()> {
         let Some((
             number_of_farmers_with_votes,
@@ -287,8 +291,9 @@ impl MemoryFarmingMonitor {
                             )
                             .expect("farmers should fit in a u32 integer"),
                         },
-                        *block_info,
                         mode,
+                        *block_info,
+                        node_rpc_url,
                     ))
                     .await?;
                 self.state.status = FarmingMonitorStatus::AlertingDecrease;
@@ -306,8 +311,9 @@ impl MemoryFarmingMonitor {
                             )
                             .expect("farmers should fit in a u32 integer"),
                         },
-                        *block_info,
                         mode,
+                        *block_info,
+                        node_rpc_url,
                     ))
                     .await?;
                 self.state.status = FarmingMonitorStatus::AlertingIncrease;

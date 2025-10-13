@@ -315,10 +315,12 @@ impl SlackClientInfo {
     ) -> Result<SlackApiChatPostMessageResponse, anyhow::Error> {
         let slack_session = self.open_session();
 
+        let node_rpc_urls = alert.node_rpc_urls();
         let Alert {
             alert,
             block_info,
             mode,
+            node_rpc_url: _,
         } = alert;
 
         // Format the message as Slack message blocks:
@@ -340,8 +342,7 @@ impl SlackClientInfo {
             String::new()
         };
 
-        // TODO: add node RPC URL here
-        // context.push_str(&format!("📞 {} ", self.node_rpc_url));
+        context.push_str(&format!("📞 {} ", node_rpc_urls.join(", ")));
         // TODO: add git commit hash here
         context.push_str(&format!("🔗 {}", env!("CARGO_PKG_VERSION")));
 

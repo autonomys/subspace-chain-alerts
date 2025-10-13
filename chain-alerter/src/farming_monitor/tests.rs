@@ -1,6 +1,10 @@
+//! Tests for the farming monitor.
+
 use super::*;
 use crate::subspace::test_utils::mock_block_info;
 use tokio::sync::mpsc;
+
+const FAKE_NODE_RPC_URL: &str = "test";
 
 fn farmers() -> [FarmerPublicKey; 3] {
     [
@@ -33,7 +37,7 @@ async fn simulate_block_votes(
     let mock_block_info = mock_block_info(None, None);
     if farming_monitor.has_passed_minimum_block_interval() {
         farming_monitor
-            .check_farmer_count(&mock_block_info, BlockCheckMode::Current)
+            .check_farmer_count(BlockCheckMode::Current, &mock_block_info, FAKE_NODE_RPC_URL)
             .await?;
     }
 
@@ -123,7 +127,7 @@ async fn test_alert_emitted_on_drop_in_active_farmers() -> anyhow::Result<()> {
     let mock_block_info = mock_block_info(None, None);
     farming_monitor.update_number_of_farmers_with_votes();
     farming_monitor
-        .check_farmer_count(&mock_block_info, BlockCheckMode::Current)
+        .check_farmer_count(BlockCheckMode::Current, &mock_block_info, FAKE_NODE_RPC_URL)
         .await?;
 
     let alert = alert_rx.recv().await.expect("expected decrease alert");
@@ -136,8 +140,9 @@ async fn test_alert_emitted_on_drop_in_active_farmers() -> anyhow::Result<()> {
                 average_number_of_farmers_with_votes: f64::from(10 + 10 + 10 + 5) / 4.0f64,
                 number_of_blocks: 4,
             },
-            mock_block_info,
             BlockCheckMode::Current,
+            mock_block_info,
+            FAKE_NODE_RPC_URL,
         )
     );
 
@@ -148,7 +153,7 @@ async fn test_alert_emitted_on_drop_in_active_farmers() -> anyhow::Result<()> {
 
     // Check that no alert is emitted again after the alert has been emitted.
     farming_monitor
-        .check_farmer_count(&mock_block_info, BlockCheckMode::Current)
+        .check_farmer_count(BlockCheckMode::Current, &mock_block_info, FAKE_NODE_RPC_URL)
         .await?;
 
     alert_rx.try_recv().unwrap_err();
@@ -186,7 +191,7 @@ async fn test_alert_emitted_on_increase_in_active_farmers() -> anyhow::Result<()
     let mock_block_info = mock_block_info(None, None);
     farming_monitor.update_number_of_farmers_with_votes();
     farming_monitor
-        .check_farmer_count(&mock_block_info, BlockCheckMode::Current)
+        .check_farmer_count(BlockCheckMode::Current, &mock_block_info, FAKE_NODE_RPC_URL)
         .await?;
 
     let alert = alert_rx.recv().await.expect("expected increase alert");
@@ -199,8 +204,9 @@ async fn test_alert_emitted_on_increase_in_active_farmers() -> anyhow::Result<()
                 average_number_of_farmers_with_votes: f64::from(10 + 10 + 10 + 15) / 4.0f64,
                 number_of_blocks: 4,
             },
-            mock_block_info,
             BlockCheckMode::Current,
+            mock_block_info,
+            FAKE_NODE_RPC_URL,
         )
     );
 
@@ -211,7 +217,7 @@ async fn test_alert_emitted_on_increase_in_active_farmers() -> anyhow::Result<()
 
     // Check that no alert is emitted again after the alert has been emitted.
     farming_monitor
-        .check_farmer_count(&mock_block_info, BlockCheckMode::Current)
+        .check_farmer_count(BlockCheckMode::Current, &mock_block_info, FAKE_NODE_RPC_URL)
         .await?;
 
     alert_rx.try_recv().unwrap_err();
@@ -250,7 +256,7 @@ async fn test_no_alert_within_thresholds() -> anyhow::Result<()> {
     let mock_block_info = mock_block_info(None, None);
     farming_monitor.update_number_of_farmers_with_votes();
     farming_monitor
-        .check_farmer_count(&mock_block_info, BlockCheckMode::Current)
+        .check_farmer_count(BlockCheckMode::Current, &mock_block_info, FAKE_NODE_RPC_URL)
         .await?;
 
     // No alert expected
