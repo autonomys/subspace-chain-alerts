@@ -21,7 +21,7 @@ pub const DEFAULT_SLOW_SLOTS_THRESHOLD: f64 = 1.06;
 ///
 /// Decreased from 0.95 on 10 October 2025, this threshold alerts occasionally when one timekeeper
 /// is down.
-pub const DEFAULT_FAST_SLOTS_THRESHOLD: f64 = 0.91;
+pub const DEFAULT_FAST_SLOTS_THRESHOLD: f64 = 0.94;
 
 /// The default maximum block buffer size.
 pub const DEFAULT_MAX_BLOCK_BUFFER: usize = 100;
