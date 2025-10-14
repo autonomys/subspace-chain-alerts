@@ -15,7 +15,7 @@ use tracing::warn;
 ///
 /// Increased from 1.05 on 10 October 2025, this threshold alerts occasionally when one timekeeper
 /// is down.
-pub const DEFAULT_SLOW_SLOTS_THRESHOLD: f64 = 1.06;
+pub const DEFAULT_SLOW_SLOTS_THRESHOLD: f64 = 1.10;
 
 /// The default fast slots threshold for the slot time alert.
 ///
