@@ -63,6 +63,8 @@ rustflags = [
     # Likely bugs or future issues
     "-Wclippy::large_stack_arrays",
     "-Wclippy::large_stack_frames",
+    "-Wclippy::large_futures",
+    "-Wclippy::large_include_file",
     "-Wclippy::large_enum_variant",
 
     # Style
