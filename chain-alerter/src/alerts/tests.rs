@@ -642,9 +642,9 @@ async fn no_expected_test_slot_time_alert() -> anyhow::Result<()> {
 
     let mut naive_slot_time_monitor = MemorySlotTimeMonitor::new(SlotTimeMonitorConfig::new(
         Duration::from_secs(1),
-        2,       // max_block_buffer - small buffer for testing
-        0.5f64,  // slow_slots_threshold
-        10.0f64, // fast_slots_threshold
+        2,      // max_block_buffer - small buffer for testing
+        2f64,   // slow_slots_threshold
+        0.1f64, // fast_slots_threshold
         alert_tx.clone(),
     ));
 
@@ -675,9 +675,9 @@ async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
 
     let mut strict_slot_time_monitor = MemorySlotTimeMonitor::new(SlotTimeMonitorConfig::new(
         Duration::from_secs(1),
-        2,       // max_block_buffer - small buffer for testing
-        5.0f64,  // slow_slots_threshold
-        10.0f64, // fast_slots_threshold
+        2,      // max_block_buffer - small buffer for testing
+        0.2f64, // slow_slots_threshold
+        0.1f64, // fast_slots_threshold
         alert_tx.clone(),
     ));
 
@@ -699,7 +699,7 @@ async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
             AlertKind::SlowSlotTime {
                 slot_amount: 100,
                 current_ratio: 1.0,
-                threshold: 5.0,
+                threshold: 0.2f64,
                 interval: Duration::from_secs(1),
             },
             BlockCheckMode::Replay,
@@ -716,7 +716,7 @@ async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
 }
 
 /// Check that the slot time alert is triggered
-/// when the slot per time ratio gets above the slow threshold.
+/// when the time per slot ratio gets above the slow threshold.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_slot_time_above_slow_threshold() -> anyhow::Result<()> {
     let node_rpc_url = node_rpc_urls().pop().expect("no RPC URL");
@@ -731,9 +731,9 @@ async fn test_slot_time_above_slow_threshold() -> anyhow::Result<()> {
 
     let mut slot_time_monitor = MemorySlotTimeMonitor::new(SlotTimeMonitorConfig::new(
         Duration::from_secs(1),
-        2,      // max_block_buffer - small buffer for testing
-        0.5f64, // slow_slots_threshold (1.0 > 0.5, so should trigger)
-        100f64, // fast_slots_threshold
+        2,       // max_block_buffer - small buffer for testing
+        2f64,    // slow_slots_threshold
+        0.01f64, // fast_slots_threshold
         alert_tx.clone(),
     ));
 
@@ -754,8 +754,8 @@ async fn test_slot_time_above_slow_threshold() -> anyhow::Result<()> {
         Alert::new(
             AlertKind::SlowSlotTime {
                 slot_amount: 1,
-                current_ratio: 1.0 / 100.0, // 1 slots / 1000ms = 0.01 slots per second
-                threshold: 0.5,
+                current_ratio: 100.0, // 100_000ms / 1 slots = 100 seconds per slot
+                threshold: 2f64,
                 interval: Duration::from_secs(1),
             },
             BlockCheckMode::Replay,
@@ -771,7 +771,7 @@ async fn test_slot_time_above_slow_threshold() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Check that the slot time alert is triggered when the slot per time ratio gets below the fast
+/// Check that the slot time alert is triggered when the time per slot ratio gets below the fast
 /// threshold.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_slot_time_below_fast_threshold() -> anyhow::Result<()> {
@@ -787,9 +787,9 @@ async fn test_slot_time_below_fast_threshold() -> anyhow::Result<()> {
 
     let mut slot_time_monitor = MemorySlotTimeMonitor::new(SlotTimeMonitorConfig::new(
         Duration::from_secs(1),
-        2,      // max_block_buffer - small buffer for testing
-        0.1f64, // slow_slots_threshold
-        0.5f64, // fast_slots_threshold
+        2,     // max_block_buffer - small buffer for testing
+        10f64, // slow_slots_threshold
+        2f64,  // fast_slots_threshold
         alert_tx.clone(),
     ));
 
@@ -811,7 +811,7 @@ async fn test_slot_time_below_fast_threshold() -> anyhow::Result<()> {
             AlertKind::FastSlotTime {
                 slot_amount: 100,
                 current_ratio: 1.0, // 100 slots / 100000ms = 1.0 slots per second
-                threshold: 0.5,
+                threshold: 2f64,
                 interval: Duration::from_secs(1),
             },
             BlockCheckMode::Replay,

@@ -13,15 +13,15 @@ use tracing::warn;
 
 /// The default threshold for the slot time alert.
 ///
-/// Decreased from 0.95 on 10 October 2025, this threshold alerts occasionally when one timekeeper
+/// Increased from 1.05 on 10 October 2025, this threshold alerts occasionally when one timekeeper
 /// is down.
-pub const DEFAULT_SLOW_SLOTS_THRESHOLD: f64 = 0.91;
+pub const DEFAULT_SLOW_SLOTS_THRESHOLD: f64 = 1.10;
 
 /// The default fast slots threshold for the slot time alert.
 ///
-/// Increased from 1.05 on 10 October 2025, this threshold alerts occasionally when one timekeeper
+/// Decreased from 0.95 on 10 October 2025, this threshold alerts occasionally when one timekeeper
 /// is down.
-pub const DEFAULT_FAST_SLOTS_THRESHOLD: f64 = 1.06;
+pub const DEFAULT_FAST_SLOTS_THRESHOLD: f64 = 0.94;
 
 /// The default maximum block buffer size.
 pub const DEFAULT_MAX_BLOCK_BUFFER: usize = 100;
@@ -218,23 +218,23 @@ impl MemorySlotTimeMonitor {
             clippy::cast_precision_loss,
             reason = "The range of slot diff and time diff is small enough that precision loss is acceptable"
         )]
-        let slot_diff_per_time_diff = slot_diff as f64 / time_diff as f64;
+        let time_per_slot = time_diff as f64 / slot_diff as f64;
 
-        if slot_diff_per_time_diff < self.config.slow_slots_threshold {
+        if time_per_slot > self.config.slow_slots_threshold {
             self.send_slow_slot_time_alert(
                 mode,
                 *block_info,
                 slot_diff,
-                slot_diff_per_time_diff,
+                time_per_slot,
                 node_rpc_url,
             )
             .await?;
-        } else if slot_diff_per_time_diff > self.config.fast_slots_threshold {
+        } else if time_per_slot < self.config.fast_slots_threshold {
             self.send_fast_slot_time_alert(
                 mode,
                 *block_info,
                 slot_diff,
-                slot_diff_per_time_diff,
+                time_per_slot,
                 node_rpc_url,
             )
             .await?;
@@ -251,7 +251,7 @@ impl MemorySlotTimeMonitor {
         mode: BlockCheckMode,
         block_info: BlockInfo,
         slot_diff: u64,
-        slot_diff_per_time_diff: f64,
+        time_per_slot: f64,
         node_rpc_url: &str,
     ) -> anyhow::Result<()> {
         // Only send alert if we're not already alerting for slow slot time
@@ -264,7 +264,7 @@ impl MemorySlotTimeMonitor {
                 .send(Alert::new(
                     AlertKind::SlowSlotTime {
                         slot_amount: slot_diff,
-                        current_ratio: slot_diff_per_time_diff,
+                        current_ratio: time_per_slot,
                         threshold: self.config.slow_slots_threshold,
                         interval: self.config.check_interval,
                     },
@@ -283,7 +283,7 @@ impl MemorySlotTimeMonitor {
         mode: BlockCheckMode,
         block_info: BlockInfo,
         slot_diff: u64,
-        slot_diff_per_time_diff: f64,
+        time_per_slot: f64,
         node_rpc_url: &str,
     ) -> anyhow::Result<()> {
         // Only send alert if we're not already alerting for fast slot time
@@ -296,7 +296,7 @@ impl MemorySlotTimeMonitor {
                 .send(Alert::new(
                     AlertKind::FastSlotTime {
                         slot_amount: slot_diff,
-                        current_ratio: slot_diff_per_time_diff,
+                        current_ratio: time_per_slot,
                         threshold: self.config.fast_slots_threshold,
                         interval: self.config.check_interval,
                     },
