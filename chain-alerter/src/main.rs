@@ -30,7 +30,7 @@ use crate::slot_time_monitor::{
 };
 use crate::subspace::{
     BlockInfo, BlockLink, BlockNumber, LOCAL_SUBSPACE_NODE_URL, MAX_RECONNECTION_ATTEMPTS,
-    MAX_RECONNECTION_DELAY, RawEvent, RawEventList, RawExtrinsicList, RawRpcClient, SubspaceClient,
+    MAX_RECONNECTION_DELAY, RawEvent, RawEventList, RawExtrinsicList, RpcClientList,
     create_subspace_client,
 };
 use clap::{ArgAction, Parser, ValueHint};
@@ -117,11 +117,10 @@ async fn setup(
     production: bool,
     name: impl AsRef<str>,
     icon: Option<String>,
-    node_rpc_urls: &mut Vec<String>,
+    mut node_rpc_urls: Vec<String>,
 ) -> anyhow::Result<(
     Option<SlackClientInfo>,
-    Vec<SubspaceClient>,
-    RawRpcClient,
+    RpcClientList,
     FuturesUnordered<AsyncJoinOnDrop<anyhow::Result<()>>>,
 )> {
     // Display addresses in Subspace format.
@@ -180,12 +179,15 @@ async fn setup(
         metadata_update_tasks.push(metadata_update_task);
     }
 
-    Ok((
-        slack_client_info,
+    // The RPC clients must be created once, then cloned via the inner Arc, to avoid "The background
+    // task closed" RPC client errors.
+    let rpc_server_list = RpcClientList::new(
         chain_clients,
+        node_rpc_urls,
         raw_rpc_client.expect("primary raw RPC client is always created"),
-        metadata_update_tasks,
-    ))
+    );
+
+    Ok((slack_client_info, rpc_server_list, metadata_update_tasks))
 }
 
 /// Receives alerts on a channel and posts them to Slack.
@@ -288,12 +290,12 @@ async fn slack_poster(
 async fn run(args: &mut Args) -> anyhow::Result<()> {
     info!(?args, "chain-alerter started");
 
-    let (slack_client_info, chain_clients, raw_rpc_client, mut metadata_update_tasks) = setup(
+    let (slack_client_info, rpc_client_list, mut metadata_update_tasks) = setup(
         args.slack,
         args.production,
         &args.name,
         args.icon.clone(),
-        &mut args.node_rpc_url,
+        args.node_rpc_url.clone(),
     )
     .await?;
 
@@ -312,13 +314,12 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
 
     // Spawn a task to check best block forks for alerts.
     let (best_fork_tx, best_fork_rx) = mpsc::channel(CHAIN_FORK_BUFFER_SIZE);
-    let check_best_blocks_clients = chain_clients.clone();
+    let check_best_blocks_clients = rpc_client_list.clone();
     let check_best_blocks_task = AsyncJoinOnDrop::new(
         tokio::spawn(check_best_blocks(
             check_best_blocks_clients,
             best_fork_rx,
             alert_tx.clone(),
-            args.node_rpc_url.clone(),
         )),
         true,
     );
@@ -326,39 +327,36 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
     // Chain fork monitor is used to detect chain forks and reorgs from the best and all block
     // subscriptions, then send best block forks to be checked for alerts.
     let (new_blocks_tx, new_blocks_rx) = mpsc::channel(CHAIN_FORK_BUFFER_SIZE);
-    let chain_forks_clients = chain_clients.clone();
+    let chain_forks_clients = rpc_client_list.clone();
     let chain_fork_monitor_task: AsyncJoinOnDrop<anyhow::Result<()>> = AsyncJoinOnDrop::new(
         tokio::spawn(check_for_chain_forks(
             chain_forks_clients,
-            raw_rpc_client,
             new_blocks_rx,
             best_fork_tx,
             alert_tx.clone(),
-            args.node_rpc_url.clone(),
         )),
         true,
     );
 
     // Spawn a task to send best blocks from the primary node subscription to the fork monitor.
-    let best_chain_client = chain_clients[0].clone();
+    let best_chain_clients = rpc_client_list.clone();
     let best_blocks_task = AsyncJoinOnDrop::new(
         tokio::spawn(run_on_best_blocks_subscription(
-            best_chain_client,
+            best_chain_clients,
             new_blocks_tx.clone(),
-            args.node_rpc_url[0].clone(),
         )),
         true,
     );
 
     // Spawn tasks to send "all blocks" from node subscriptions to the fork monitor.
     let mut all_blocks_tasks = FuturesUnordered::new();
-    for (chain_client, node_rpc_url) in chain_clients.iter().zip(args.node_rpc_url.iter()) {
+    for client_index in 0..rpc_client_list.len() {
         let all_blocks_task = AsyncJoinOnDrop::new(
             tokio::spawn(run_on_all_blocks_subscription(
-                chain_client.clone(),
+                rpc_client_list.clone(),
+                client_index,
                 new_blocks_tx.clone(),
                 alert_tx.clone(),
-                node_rpc_url.to_string(),
             )),
             true,
         );
@@ -471,11 +469,14 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
 
 /// Send blocks from an "all blocks" subscription to the fork monitor.
 async fn run_on_all_blocks_subscription(
-    chain_client: SubspaceClient,
+    // Avoid cloning individual clients by passing the RpcClientList and an index.
+    rpc_client_list: RpcClientList,
+    client_index: usize,
     new_blocks_tx: mpsc::Sender<BlockSeenMessage>,
     alert_tx: mpsc::Sender<Alert>,
-    node_rpc_url: String,
 ) -> anyhow::Result<()> {
+    let chain_client = &rpc_client_list.clients()[client_index];
+    let node_rpc_url = &rpc_client_list.node_rpc_urls()[client_index];
     let genesis_hash = chain_client.genesis_hash();
 
     // A channel that shares the latest block info with concurrently running block stall tasks.
@@ -567,12 +568,12 @@ async fn run_on_all_blocks_subscription(
 /// If small data volumes or server subscription load are more important than latency, this
 /// subscription can be disabled.
 async fn run_on_best_blocks_subscription(
-    chain_client: SubspaceClient,
+    rpc_client_list: RpcClientList,
     new_blocks_tx: mpsc::Sender<BlockSeenMessage>,
-    node_rpc_url: String,
 ) -> anyhow::Result<()> {
     // Subscribe blocks that are the best block when they are received.
-    let mut blocks_sub = chain_client.blocks().subscribe_best().await?;
+    let mut blocks_sub = rpc_client_list.primary().blocks().subscribe_best().await?;
+    let node_rpc_url = rpc_client_list.primary_node_rpc_url();
 
     while let Some(block) = blocks_sub.next().await {
         // These errors represent a connection failure or similar, and require a restart.
@@ -591,7 +592,7 @@ async fn run_on_best_blocks_subscription(
         // Notify the fork monitor that we've seen a new block.
         let block_seen = BlockSeen::from_best_block(Arc::new(block));
         new_blocks_tx
-            .send((block_seen, node_rpc_url.clone()))
+            .send((block_seen, node_rpc_url.to_string()))
             .await?;
 
         // We don't give tasks an opportunity to run, because we want best blocks to win the
@@ -604,10 +605,9 @@ async fn run_on_best_blocks_subscription(
 /// Run best block alert checks, receiving new best blocks after gap/reorg resolution from
 /// `best_forks_rx`, and sending alerts to `alert_tx`.
 async fn check_best_blocks(
-    chain_clients: Vec<SubspaceClient>,
+    rpc_client_list: RpcClientList,
     mut best_forks_rx: mpsc::Receiver<NewBestBlockMessage>,
     alert_tx: mpsc::Sender<Alert>,
-    all_node_rpc_urls: Vec<String>,
 ) -> anyhow::Result<()> {
     // TODO: add a network name table and look up the network name by genesis hash
 
@@ -653,7 +653,13 @@ async fn check_best_blocks(
         }
 
         if first_block && mode.is_current() {
-            alerts::startup_alert(mode, &block_info, &alert_tx, all_node_rpc_urls.clone()).await?;
+            alerts::startup_alert(
+                mode,
+                &block_info,
+                &alert_tx,
+                rpc_client_list.node_rpc_urls().to_vec(),
+            )
+            .await?;
             first_block = false;
         } else if block_info
             .height()
@@ -671,7 +677,7 @@ async fn check_best_blocks(
             && prev_block_info.hash() != block_info.parent_hash()
         {
             *prev_block_info =
-                BlockInfo::with_block_hash(block_info.parent_hash(), &chain_clients).await?;
+                BlockInfo::with_block_hash(block_info.parent_hash(), &rpc_client_list).await?;
         }
 
         // We check for most alerts in any mode.

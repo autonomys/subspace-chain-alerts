@@ -4,8 +4,8 @@ use crate::alerts::Alert;
 use crate::subspace::{
     BlockHash, BlockInfo, BlockLink, BlockNumber, BlockPosition, BlockTime, ChainTime, EventIndex,
     EventInfo, ExtrinsicIndex, ExtrinsicInfo, FOUNDATION_SUBSPACE_NODE_URL, LABS_SUBSPACE_NODE_URL,
-    RawEvent, RawEventList, RawExtrinsic, RawExtrinsicList, RawRpcClient, RawTime, Slot,
-    SubspaceClient, block_full_from_hash,
+    RawEvent, RawEventList, RawExtrinsic, RawExtrinsicList, RawTime, RpcClientList, Slot,
+    block_full_from_hash,
 };
 use crate::{ALERT_BUFFER_SIZE, setup};
 use rand::{Rng, rng};
@@ -48,30 +48,23 @@ pub fn node_rpc_urls() -> Vec<String> {
 ///
 /// TODO: make this return the same struct as `main::setup()`
 pub async fn test_setup(
-    node_rpc_urls: &mut Vec<String>,
+    node_rpc_urls: Vec<String>,
 ) -> anyhow::Result<(
-    Vec<SubspaceClient>,
-    RawRpcClient,
+    RpcClientList,
     mpsc::Sender<Alert>,
     mpsc::Receiver<Alert>,
     FuturesUnordered<AsyncJoinOnDrop<anyhow::Result<()>>>,
 )> {
     init_logger();
 
-    let (slack_client_info, chain_clients, raw_rpc_client, metadata_update_tasks) =
+    let (slack_client_info, rpc_client_list, metadata_update_tasks) =
         setup(false, false, "test".to_string(), None, node_rpc_urls).await?;
 
     assert!(slack_client_info.is_none(), "we didn't ask for slack");
 
     let (alert_tx, alert_rx) = alert_channel_only_setup();
 
-    Ok((
-        chain_clients,
-        raw_rpc_client,
-        alert_tx,
-        alert_rx,
-        metadata_update_tasks,
-    ))
+    Ok((rpc_client_list, alert_tx, alert_rx, metadata_update_tasks))
 }
 
 /// Set up alert channels for testing.
@@ -84,19 +77,19 @@ pub fn alert_channel_only_setup() -> (mpsc::Sender<Alert>, mpsc::Receiver<Alert>
 pub async fn fetch_block_info(
     block_hash: BlockHash,
     need_events: bool,
-    subspace_clients: &[SubspaceClient],
+    rpc_client_list: &RpcClientList,
     expected_block_number: BlockNumber,
 ) -> anyhow::Result<(BlockInfo, RawExtrinsicList, Option<RawEventList>)> {
     info!(
         ?need_events,
-        subspace_clients = ?subspace_clients.len(),
+        ?rpc_client_list,
         ?expected_block_number,
         "fetching block info for {block_hash}...",
     );
     let (raw_block, extrinsics, events) =
-        block_full_from_hash(block_hash, need_events, subspace_clients).await?;
+        block_full_from_hash(block_hash, need_events, rpc_client_list).await?;
 
-    let block_info = BlockInfo::new(&raw_block, &extrinsics, &subspace_clients[0].genesis_hash());
+    let block_info = BlockInfo::new(&raw_block, &extrinsics, &rpc_client_list.genesis_hash());
 
     assert_eq!(
         block_info.height(),
@@ -106,7 +99,7 @@ pub async fn fetch_block_info(
 
     info!(
         ?need_events,
-        subspace_clients = ?subspace_clients.len(),
+        ?rpc_client_list,
         "fetched block info for {block_hash} ({expected_block_number})",
     );
 
