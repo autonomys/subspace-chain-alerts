@@ -438,7 +438,10 @@ impl ChainForkState {
     /// See `can_add_block()` for more details.
     ///
     /// `mode` is only used for logging and invariant checks.
-    #[expect(clippy::unwrap_in_result, reason = "panic can't actually happen")]
+    #[allow(
+        clippy::unwrap_in_result,
+        reason = "panic can't actually happen, Rust nightly 2025-10-12 can prove this"
+    )]
     pub fn add_block(
         &mut self,
         mode: impl Into<Option<BlockCheckMode>> + Copy,

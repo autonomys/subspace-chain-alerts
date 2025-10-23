@@ -3,6 +3,8 @@
 //! Set the `NODE_URL` env var to the RPC URL of a Subspace node to override the default public
 //! instance.
 
+#![allow(clippy::unwrap_in_result, reason = "panics are ok in failing tests")]
+
 use crate::alerts::account::ImportantAccountRole;
 use crate::alerts::{self, Alert, AlertKind, BlockCheckMode, MIN_BALANCE_CHANGE};
 use crate::slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor, SlotTimeMonitorConfig};

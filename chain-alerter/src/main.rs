@@ -785,6 +785,10 @@ async fn run_on_best_block(
 /// The main function, which runs the chain alerter process until Ctrl-C is pressed.
 ///
 /// Any returned errors are fatal and require a restart.
+#[allow(
+    clippy::unwrap_in_result,
+    reason = "expect is inside a macro, Rust nightly 2025-10-12 should ignore it but doesn't"
+)]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     set_exit_on_panic();

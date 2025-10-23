@@ -127,6 +127,7 @@ pub fn mock_block_info(
 }
 
 /// Extract and decode an extrinsic from a block.
+#[allow(clippy::unwrap_in_result, reason = "panic is impossible")]
 pub fn decode_extrinsic(
     block_info: &BlockInfo,
     extrinsics: &RawExtrinsicList,
@@ -137,7 +138,7 @@ pub fn decode_extrinsic(
         .nth(
             extrinsic_index
                 .try_into()
-                .expect("ExtrinsicIndex fits in usize"),
+                .expect("ExtrinsicIndex (u32) fits in usize"),
         )
         .ok_or_else(|| anyhow::anyhow!("extrinsic not found"))?;
 
@@ -148,6 +149,7 @@ pub fn decode_extrinsic(
 }
 
 /// Extract and decode an event from a block.
+#[allow(clippy::unwrap_in_result, reason = "panic is impossible")]
 pub fn decode_event(
     block_info: &BlockInfo,
     extrinsic_info: Option<Arc<ExtrinsicInfo>>,
@@ -157,7 +159,11 @@ pub fn decode_event(
     // TODO: extract this into a subspace test helper function
     let event = events
         .iter()
-        .nth(event_index.try_into().expect("EventIndex fits in usize"))
+        .nth(
+            event_index
+                .try_into()
+                .expect("EventIndex (u32) fits in usize"),
+        )
         .ok_or_else(|| anyhow::anyhow!("event not found"))??;
 
     let event_info = EventInfo::new(&event, block_info, extrinsic_info);

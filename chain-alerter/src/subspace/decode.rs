@@ -6,6 +6,7 @@ use subxt::utils::H256;
 use tracing::{debug, trace};
 
 /// Decode a H256 from an item, possibly nested within composites or variants.
+#[allow(clippy::unwrap_in_result, reason = "panic is impossible")]
 pub fn decode_h256_from_composite(item: &Value<u32>) -> Option<H256> {
     let mut item = item.clone().remove_context();
 

@@ -1,5 +1,7 @@
 //! Tests for the farming monitor.
 
+#![allow(clippy::unwrap_in_result, reason = "panics are ok in failing tests")]
+
 use super::*;
 use crate::subspace::test_utils::mock_block_info;
 use tokio::sync::mpsc;
