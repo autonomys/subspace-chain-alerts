@@ -47,7 +47,7 @@ pub const MAX_RECONNECTION_DELAY: u64 = 10_000;
 
 /// The maximum number of RPC reconnection attempts before failing and exiting the process.
 /// TODO: make this configurable
-pub const MAX_RECONNECTION_ATTEMPTS: usize = 10;
+pub const MAX_RECONNECTION_ATTEMPTS: usize = 50;
 
 /// The default RPC URL for a local Subspace node.
 pub const LOCAL_SUBSPACE_NODE_URL: &str = "ws://127.0.0.1:9944";
