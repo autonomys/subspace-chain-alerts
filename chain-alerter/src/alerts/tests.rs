@@ -3,6 +3,8 @@
 //! Set the `NODE_URL` env var to the RPC URL of a Subspace node to override the default public
 //! instance.
 
+#![allow(clippy::unwrap_in_result, reason = "panics are ok in failing tests")]
+
 use crate::alerts::account::ImportantAccountRole;
 use crate::alerts::{self, Alert, AlertKind, BlockCheckMode, MIN_BALANCE_CHANGE};
 use crate::slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor, SlotTimeMonitorConfig};
@@ -171,17 +173,17 @@ const IMPORTANT_ADDRESS_ONLY_BLOCKS: [(
 /// Check that the startup alert works on the latest block.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_startup_alert() -> anyhow::Result<()> {
-    let mut node_rpc_urls = node_rpc_urls();
-    let (subspace_clients, _, alert_tx, mut alert_rx, mut update_tasks) =
-        test_setup(&mut node_rpc_urls).await?;
+    let node_rpc_urls = node_rpc_urls();
+    let (rpc_client_list, alert_tx, mut alert_rx, mut update_tasks) =
+        test_setup(node_rpc_urls.clone()).await?;
 
-    let block_info = BlockInfo::with_block_hash(None, &subspace_clients).await?;
+    let block_info = BlockInfo::with_block_hash(None, &rpc_client_list).await?;
 
     alerts::startup_alert(
         BlockCheckMode::Current,
         &block_info,
         &alert_tx,
-        node_rpc_urls.clone(),
+        rpc_client_list.node_rpc_urls().to_vec(),
     )
     .await?;
     let alert = alert_rx.try_recv().expect("no alert received");
@@ -218,14 +220,14 @@ async fn test_startup_alert() -> anyhow::Result<()> {
 /// Check that the sudo call and event alerts work on a known sudo block.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_sudo_alerts() -> anyhow::Result<()> {
-    let mut node_rpc_urls = node_rpc_urls();
-    let (subspace_clients, _, alert_tx, mut alert_rx, mut update_tasks) =
-        test_setup(&mut node_rpc_urls).await?;
+    let node_rpc_urls = node_rpc_urls();
+    let (rpc_client_list, alert_tx, mut alert_rx, mut update_tasks) =
+        test_setup(node_rpc_urls.clone()).await?;
 
     let (block_info, extrinsics, events) = fetch_block_info(
         BlockHash::from(SUDO_EXTRINSIC_BLOCK.1),
         true,
-        &subspace_clients,
+        &rpc_client_list,
         SUDO_EXTRINSIC_BLOCK.0,
     )
     .await?;
@@ -321,9 +323,9 @@ async fn test_sudo_alerts() -> anyhow::Result<()> {
 /// Check that the large balance transfer alert works on known transfer blocks.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
-    let mut node_rpc_urls = node_rpc_urls();
-    let (subspace_clients, _, alert_tx, mut alert_rx, mut update_tasks) =
-        test_setup(&mut node_rpc_urls).await?;
+    let node_rpc_urls = node_rpc_urls();
+    let (rpc_client_list, alert_tx, mut alert_rx, mut update_tasks) =
+        test_setup(node_rpc_urls.clone()).await?;
 
     for (block_number, block_hash, extrinsic_index, event_index, transfer_value, slot) in
         LARGE_TRANSFER_BLOCKS
@@ -331,7 +333,7 @@ async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
         let (block_info, extrinsics, events) = fetch_block_info(
             BlockHash::from(block_hash),
             true,
-            &subspace_clients,
+            &rpc_client_list,
             block_number,
         )
         .await?;
@@ -421,9 +423,9 @@ async fn test_large_balance_transfer_alerts() -> anyhow::Result<()> {
 /// Check that important address transfer alerts work on known important address transfer blocks.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_important_address_transfer_alerts() -> anyhow::Result<()> {
-    let mut node_rpc_urls = node_rpc_urls();
-    let (subspace_clients, _, alert_tx, mut alert_rx, mut update_tasks) =
-        test_setup(&mut node_rpc_urls).await?;
+    let node_rpc_urls = node_rpc_urls();
+    let (rpc_client_list, alert_tx, mut alert_rx, mut update_tasks) =
+        test_setup(node_rpc_urls.clone()).await?;
 
     for (
         block_number,
@@ -440,7 +442,7 @@ async fn test_important_address_transfer_alerts() -> anyhow::Result<()> {
         let (block_info, extrinsics, events) = fetch_block_info(
             BlockHash::from(block_hash),
             true,
-            &subspace_clients,
+            &rpc_client_list,
             block_number,
         )
         .await?;
@@ -566,9 +568,9 @@ async fn test_important_address_transfer_alerts() -> anyhow::Result<()> {
 /// Check that the important address alert works on known important address blocks.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_important_address_only_alerts() -> anyhow::Result<()> {
-    let mut node_rpc_urls = node_rpc_urls();
-    let (subspace_clients, _, alert_tx, mut alert_rx, mut update_tasks) =
-        test_setup(&mut node_rpc_urls).await?;
+    let node_rpc_urls = node_rpc_urls();
+    let (rpc_client_list, alert_tx, mut alert_rx, mut update_tasks) =
+        test_setup(node_rpc_urls.clone()).await?;
 
     for (block_number, block_hash, extrinsic_index, address_kind, slot) in
         IMPORTANT_ADDRESS_ONLY_BLOCKS
@@ -576,7 +578,7 @@ async fn test_important_address_only_alerts() -> anyhow::Result<()> {
         let (block_info, extrinsics, _no_events) = fetch_block_info(
             BlockHash::from(block_hash),
             false,
-            &subspace_clients,
+            &rpc_client_list,
             block_number,
         )
         .await?;

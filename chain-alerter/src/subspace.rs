@@ -47,7 +47,7 @@ pub const MAX_RECONNECTION_DELAY: u64 = 10_000;
 
 /// The maximum number of RPC reconnection attempts before failing and exiting the process.
 /// TODO: make this configurable
-pub const MAX_RECONNECTION_ATTEMPTS: usize = 10;
+pub const MAX_RECONNECTION_ATTEMPTS: usize = 50;
 
 /// The default RPC URL for a local Subspace node.
 pub const LOCAL_SUBSPACE_NODE_URL: &str = "ws://127.0.0.1:9944";
@@ -118,6 +118,109 @@ pub type RawEvent = EventDetails<SubspaceConfig>;
 
 /// The Subspace/subxt event index type.
 pub type EventIndex = u32;
+
+/// Store a list of RPC servers, without dropping any of the underlying structs.
+///
+/// The interface to RpcClientList doesn't perform any cloning, but it can't stop callers cloning
+/// the references it returns.
+///
+/// This is a workaround for "The background task closed" RPC server errors.
+#[derive(Clone, Debug)]
+pub struct RpcClientList {
+    /// The inner storage, wrapped in an `Arc` to avoid dropping the underlying RPC clients.
+    inner: Arc<RpcClientListInner>,
+}
+
+impl RpcClientList {
+    /// Create a new RPC server list from a list of node RPC URLs.
+    pub fn new(
+        servers: Vec<SubspaceClient>,
+        node_rpc_urls: Vec<String>,
+        raw_primary: RawRpcClient,
+    ) -> Self {
+        Self {
+            inner: Arc::new(RpcClientListInner::new(servers, node_rpc_urls, raw_primary)),
+        }
+    }
+
+    /// Returns the RPC client list.
+    pub fn clients(&self) -> &[SubspaceClient] {
+        &self.inner.clients
+    }
+
+    /// Returns the node RPC URLs.
+    pub fn node_rpc_urls(&self) -> &[String] {
+        &self.inner.node_rpc_urls
+    }
+
+    /// Returns the client list and node RPC URLs as an iterator of pairs.
+    pub fn clients_and_node_rpc_urls(&self) -> impl Iterator<Item = (&SubspaceClient, &String)> {
+        self.clients().iter().zip(self.node_rpc_urls().iter())
+    }
+
+    /// Returns the primary subspace client.
+    pub fn primary(&self) -> &SubspaceClient {
+        &self.inner.clients[0]
+    }
+
+    /// Returns the primary raw RPC client.
+    pub fn raw_primary(&self) -> &RawRpcClient {
+        &self.inner.raw_primary
+    }
+
+    /// Returns the node RPC URL for the primary server / raw RPC client.
+    pub fn primary_node_rpc_url(&self) -> &str {
+        &self.inner.node_rpc_urls[0]
+    }
+
+    /// Returns the genesis hash from the primary server.
+    pub fn genesis_hash(&self) -> BlockHash {
+        self.primary().genesis_hash()
+    }
+
+    /// Returns the number of RPC servers.
+    pub fn len(&self) -> usize {
+        self.inner.clients.len()
+    }
+}
+
+/// Inner storage for a list of RPC servers.
+#[derive(Clone)]
+struct RpcClientListInner {
+    /// The clients for each RPC server, primary server first.
+    clients: Vec<SubspaceClient>,
+
+    /// The node RPC URLs, primary server first.
+    node_rpc_urls: Vec<String>,
+
+    /// A raw RPC connection to the primary server.
+    raw_primary: RawRpcClient,
+}
+
+impl fmt::Debug for RpcClientListInner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RpcClientList")
+            .field("clients", &self.clients.len())
+            .field("node_rpc_urls", &self.node_rpc_urls)
+            .field("raw_primary", &"")
+            .finish()
+    }
+}
+
+impl RpcClientListInner {
+    /// Create a new RPC server inner from a list of node RPC URLs.
+    fn new(
+        clients: Vec<SubspaceClient>,
+        node_rpc_urls: Vec<String>,
+        raw_primary: RawRpcClient,
+    ) -> Self {
+        Self {
+            clients,
+            node_rpc_urls,
+            raw_primary,
+        }
+    }
+}
 
 /// Create a new reconnecting Subspace client.
 /// Returns the subxt client, the raw RPC client (if it is the primary server), and a task handle
@@ -215,13 +318,12 @@ pub async fn node_best_block_hash(raw_rpc_client: &RawRpcClient) -> anyhow::Resu
 /// But retrieving `BlockInfo`, extrinsics, or events from older blocks requires an archival node.
 async fn raw_block_from_hash(
     block_hash: impl Into<Option<BlockHash>> + Copy,
-    chain_clients: &[SubspaceClient],
-    node_rpc_urls: &[String],
+    rpc_client_list: &RpcClientList,
 ) -> anyhow::Result<(RawBlock, String)> {
     let block_hash = block_hash.into();
     let mut result = None;
 
-    for (chain_client, node_rpc_url) in chain_clients.iter().zip(node_rpc_urls) {
+    for (chain_client, node_rpc_url) in rpc_client_list.clients_and_node_rpc_urls() {
         let raw_block = if let Some(block_hash) = block_hash {
             chain_client.blocks().at(block_hash).await
         } else {
@@ -252,11 +354,11 @@ async fn raw_block_from_hash(
 pub async fn block_full_from_hash(
     block_hash: impl Into<Option<BlockHash>> + Copy,
     need_events: bool,
-    chain_clients: &[SubspaceClient],
+    rpc_client_list: &RpcClientList,
 ) -> anyhow::Result<(RawBlock, RawExtrinsicList, Option<RawEventList>)> {
     let mut result = None;
 
-    for chain_client in chain_clients {
+    for chain_client in rpc_client_list.clients() {
         match block_full_single_client(block_hash, need_events, chain_client).await {
             Ok(block_full) => {
                 result = Some(Ok(block_full));
@@ -336,11 +438,9 @@ impl BlockPosition {
     #[expect(dead_code, reason = "included for completeness")]
     pub async fn with_block_hash(
         block_hash: BlockHash,
-        chain_clients: &[SubspaceClient],
-        node_rpc_urls: &[String],
+        rpc_client_list: &RpcClientList,
     ) -> anyhow::Result<(Self, String)> {
-        let (block, node_rpc_url) =
-            raw_block_from_hash(block_hash, chain_clients, node_rpc_urls).await?;
+        let (block, node_rpc_url) = raw_block_from_hash(block_hash, rpc_client_list).await?;
 
         Ok((Self::from_block(&block), node_rpc_url))
     }
@@ -406,11 +506,9 @@ impl BlockLink {
     /// Returns the block, and node RPC URL that provided the block.
     pub async fn with_block_hash(
         block_hash: BlockHash,
-        chain_clients: &[SubspaceClient],
-        node_rpc_urls: &[String],
+        rpc_client_list: &RpcClientList,
     ) -> anyhow::Result<(Self, String)> {
-        let (block, node_rpc_url) =
-            raw_block_from_hash(block_hash, chain_clients, node_rpc_urls).await?;
+        let (block, node_rpc_url) = raw_block_from_hash(block_hash, rpc_client_list).await?;
 
         Ok((Self::from_raw_block(&block), node_rpc_url))
     }
@@ -511,16 +609,16 @@ impl BlockInfo {
     /// Create a block info, given its hash.
     pub async fn with_block_hash(
         block_hash: impl Into<Option<BlockHash>> + Copy,
-        chain_clients: &[SubspaceClient],
+        rpc_client_list: &RpcClientList,
     ) -> anyhow::Result<Self> {
         let (block, extrinsics, _no_events) =
-            block_full_from_hash(block_hash, false, chain_clients).await?;
+            block_full_from_hash(block_hash, false, rpc_client_list).await?;
 
         Ok(Self::new(
             &block,
             &extrinsics,
             // The genesis hash is the same for all chain clients, so we use the primary client.
-            &chain_clients[0].genesis_hash(),
+            &rpc_client_list.genesis_hash(),
         ))
     }
 

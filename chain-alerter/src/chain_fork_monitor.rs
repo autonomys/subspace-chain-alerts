@@ -3,7 +3,7 @@
 use crate::alerts::{Alert, BlockCheckMode};
 use crate::subspace::{
     BlockHash, BlockInfo, BlockLink, BlockNumber, BlockPosition, PARENT_OF_GENESIS, RawEventList,
-    RawExtrinsicList, RawRpcClient, SubspaceClient, block_full_from_hash, node_best_block_hash,
+    RawExtrinsicList, RpcClientList, block_full_from_hash, node_best_block_hash,
 };
 use static_assertions::const_assert;
 use std::cmp::max;
@@ -438,7 +438,10 @@ impl ChainForkState {
     /// See `can_add_block()` for more details.
     ///
     /// `mode` is only used for logging and invariant checks.
-    #[expect(clippy::unwrap_in_result, reason = "panic can't actually happen")]
+    #[allow(
+        clippy::unwrap_in_result,
+        reason = "panic can't actually happen, Rust nightly 2025-10-12 can prove this"
+    )]
     pub fn add_block(
         &mut self,
         mode: impl Into<Option<BlockCheckMode>> + Copy,
@@ -701,19 +704,13 @@ pub async fn send_best_fork_block(
 }
 
 /// Add a block and any missing ancestors to the chain fork state, sending alerts as needed.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "TODO: turn some of these into structs"
-)]
 pub async fn add_blocks_to_chain_fork_state(
-    chain_clients: &[SubspaceClient],
-    raw_rpc_client: &RawRpcClient,
+    rpc_client_list: &RpcClientList,
     state: &mut ChainForkState,
     mode: BlockCheckMode,
     block_seen: BlockSeenMessage,
     best_fork_tx: &mpsc::Sender<NewBestBlockMessage>,
     alert_tx: &mpsc::Sender<Alert>,
-    all_node_rpc_urls: &[String],
 ) -> anyhow::Result<()> {
     let (block_seen, block_seen_node_rpc_url) = block_seen;
     let mut is_best_block = block_seen.is_best_block();
@@ -750,7 +747,7 @@ pub async fn add_blocks_to_chain_fork_state(
             if state.is_on_best_fork(&block) {
                 is_best_block = true;
             } else {
-                let best_block_hash = node_best_block_hash(raw_rpc_client).await?;
+                let best_block_hash = node_best_block_hash(rpc_client_list.raw_primary()).await?;
                 // Handle a multiple server race condition, where the primary server has the parent
                 // of the best block, but doesn't have the next block yet.
                 //
@@ -794,9 +791,9 @@ pub async fn add_blocks_to_chain_fork_state(
                     // TODO: only get extrinsics and events if
                     // TODO: if the node has pruned this block, just send the alert without it
                     let (block, extrinsics, events) =
-                        block_full_from_hash(block.hash(), true, chain_clients).await?;
+                        block_full_from_hash(block.hash(), true, rpc_client_list).await?;
                     let block_info =
-                        BlockInfo::new(&block, &extrinsics, &chain_clients[0].genesis_hash());
+                        BlockInfo::new(&block, &extrinsics, &rpc_client_list.genesis_hash());
 
                     send_best_fork_block(
                         mode,
@@ -822,7 +819,7 @@ pub async fn add_blocks_to_chain_fork_state(
                     let block_info = if let Some(block_info) = block_info {
                         block_info
                     } else {
-                        BlockInfo::with_block_hash(block.hash(), chain_clients).await?
+                        BlockInfo::with_block_hash(block.hash(), rpc_client_list).await?
                     };
 
                     alert_tx
@@ -847,9 +844,9 @@ pub async fn add_blocks_to_chain_fork_state(
 
                 if is_best_block {
                     let (block, extrinsics, events) =
-                        block_full_from_hash(block.hash(), true, chain_clients).await?;
+                        block_full_from_hash(block.hash(), true, rpc_client_list).await?;
                     let block_info =
-                        BlockInfo::new(&block, &extrinsics, &chain_clients[0].genesis_hash());
+                        BlockInfo::new(&block, &extrinsics, &rpc_client_list.genesis_hash());
 
                     send_best_fork_block(
                         mode,
@@ -881,8 +878,7 @@ pub async fn add_blocks_to_chain_fork_state(
                 // TODO: if the node has pruned this block, just stop here and insert the rest of
                 // the pending blocks
                 let (parent_block, parent_block_node_rpc_url) =
-                    BlockLink::with_block_hash(block.parent_hash, chain_clients, all_node_rpc_urls)
-                        .await?;
+                    BlockLink::with_block_hash(block.parent_hash, rpc_client_list).await?;
                 let parent_block = Arc::new(parent_block);
 
                 if parent_block.height() >= block.height() {
@@ -932,12 +928,10 @@ pub async fn add_blocks_to_chain_fork_state(
 /// TODO:
 /// - write tests for this, or for ChainForkState
 pub async fn check_for_chain_forks(
-    chain_clients: Vec<SubspaceClient>,
-    raw_rpc_client: RawRpcClient,
+    rpc_client_list: RpcClientList,
     mut new_blocks_rx: mpsc::Receiver<BlockSeenMessage>,
     best_fork_tx: mpsc::Sender<NewBestBlockMessage>,
     alert_tx: mpsc::Sender<Alert>,
-    all_node_rpc_urls: Vec<String>,
 ) -> anyhow::Result<()> {
     // The first block is always a new tip, and the alert is ignored, so we don't need the node RPC
     // URL.
@@ -954,8 +948,7 @@ pub async fn check_for_chain_forks(
     // This will fetch the context for the parent block (and therefore the first block), and fix up
     // the duplicate tips as needed.
     let (parent_of_first_block, parent_of_first_block_node_rpc_url) =
-        BlockLink::with_block_hash(first_block.parent_hash, &chain_clients, &all_node_rpc_urls)
-            .await?;
+        BlockLink::with_block_hash(first_block.parent_hash, &rpc_client_list).await?;
     let parent_of_first_block = Arc::new(parent_of_first_block);
     // We treat the context blocks as best blocks, because that simplifies the code.
     let parent_of_first_block = BlockSeen::from_best_block(parent_of_first_block);
@@ -968,13 +961,12 @@ pub async fn check_for_chain_forks(
         ?is_best_block,
         ?first_block,
         ?first_block_node_rpc_url,
-        ?all_node_rpc_urls,
+        ?rpc_client_list,
         "Adding {MAX_BLOCK_DEPTH} previous blocks to chain fork state, this may take some time...",
     );
 
     add_blocks_to_chain_fork_state(
-        &chain_clients,
-        &raw_rpc_client,
+        &rpc_client_list,
         &mut state,
         BlockCheckMode::Startup,
         (
@@ -983,7 +975,6 @@ pub async fn check_for_chain_forks(
         ),
         &best_fork_tx,
         &alert_tx,
-        &all_node_rpc_urls,
     )
     .await?;
     state.prune_blocks();
@@ -1026,14 +1017,12 @@ pub async fn check_for_chain_forks(
 
     while let Some(block_seen) = new_blocks_rx.recv().await {
         add_blocks_to_chain_fork_state(
-            &chain_clients,
-            &raw_rpc_client,
+            &rpc_client_list,
             &mut state,
             BlockCheckMode::Current,
             block_seen,
             &best_fork_tx,
             &alert_tx,
-            &all_node_rpc_urls,
         )
         .await?;
 
