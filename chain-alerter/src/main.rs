@@ -58,7 +58,8 @@ const BLOCK_UPDATE_LOGGING_INTERVAL: BlockNumber = 100;
 /// TODO: make this configurable
 const ALERT_BUFFER_SIZE: usize = 100;
 
-/// The name and emoji used by this bot instance.
+/// A Slack-based alerter that runs on the Autonomys network.
+// The documentation lines above are printed at the start of the `--help` message.
 #[derive(Parser, Debug)]
 #[command(version, about, long_about)]
 struct Args {
