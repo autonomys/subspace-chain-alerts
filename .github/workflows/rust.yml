@@ -1,9 +1,14 @@
+# This action runs the Rust checks for the repository.
 name: Rust
 
+# This action is triggered for every PR, push to `main`, tag, release, merge queue, and manually.
 on:
   push:
     branches:
       - main
+    tags:
+      - "*"
+  release:
   pull_request:
   workflow_dispatch:
   merge_group:
@@ -154,7 +159,7 @@ jobs:
 
       # Randomly choose between the foundation and labs nodes, then run the integration test,
       # checking for the startup alert, but printing all the logs to the console.
-      - name: cargo run --locked -- --slack=false --alert-limit=1
+      - name: cargo run --locked -- --slack=false --test-startup
         run: |
           ./scripts/check-startup.sh
 
