@@ -47,6 +47,10 @@ const_assert!(MIN_FORK_DEPTH >= MIN_FORK_DEPTH_FOR_WARN_LOG);
 const_assert!(MIN_FORK_DEPTH_FOR_WARN_LOG >= MIN_FORK_DEPTH_FOR_INFO_LOG);
 const_assert!(MIN_BACKWARDS_REORG_DEPTH >= MIN_BACKWARDS_REORG_DEPTH_FOR_WARN_LOG);
 
+/// When there is an ongoing fork, only alert when the fork length is divisible by this number.
+/// This is to avoid spamming alerts when there is a long fork in progress.
+pub const ALERT_FORK_LENGTH_FREQUENCY: usize = 10;
+
 /// The maximum number of blocks to keep in the chain fork state.
 ///
 /// Synced nodes should very rarely get blocks further from the tip than this, to avoid spurious
@@ -164,8 +168,16 @@ pub enum ChainForkEvent {
 impl ChainForkEvent {
     /// Returns true if the event has a fork depth greater than the minimum fork depth for alerts.
     pub fn needs_alert(&self) -> bool {
-        self.largest_fork_depth() >= MIN_FORK_DEPTH
-            || self.backwards_reorg_depth().unwrap_or_default() >= MIN_BACKWARDS_REORG_DEPTH
+        if self.is_reorg() {
+            return self.largest_fork_depth() >= MIN_FORK_DEPTH
+                || self.backwards_reorg_depth().unwrap_or_default() >= MIN_BACKWARDS_REORG_DEPTH;
+        }
+
+        self.largest_fork_depth() == MIN_FORK_DEPTH
+            || (self.largest_fork_depth() > MIN_FORK_DEPTH
+                && self
+                    .largest_fork_depth()
+                    .is_multiple_of(ALERT_FORK_LENGTH_FREQUENCY))
     }
 
     /// Returns true if the event has a fork depth greater than the minimum fork depth for warn
@@ -180,6 +192,14 @@ impl ChainForkEvent {
     /// logs.
     pub fn needs_info_log(&self) -> bool {
         self.largest_fork_depth() >= MIN_FORK_DEPTH_FOR_INFO_LOG
+    }
+
+    /// Returns true if this is a reorg event.
+    pub fn is_reorg(&self) -> bool {
+        match self {
+            ChainForkEvent::Reorg { .. } => true,
+            ChainForkEvent::NewSideFork { .. } | ChainForkEvent::SideForkExtended { .. } => false,
+        }
     }
 
     /// Returns the largest fork depth in the event.
