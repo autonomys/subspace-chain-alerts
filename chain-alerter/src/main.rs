@@ -503,8 +503,28 @@ async fn run_on_all_blocks_subscription(
         // Give best blocks a chance to win the subscription race.
         task::yield_now().await;
 
-        // These errors represent a connection failure or similar, and require a restart.
-        let block = block?;
+        // These errors represent a connection failure or similar. Unfortunately, this happens
+        // frequently on some public servers, so we log it as a warning, and re-establish the
+        // subscription.
+        let block = match block {
+            Ok(block) => block,
+            Err(error) => {
+                warn!(
+                    %error,
+                    ?node_rpc_url,
+                    "error receiving block from all blocks subscription, re-establishing subscription",
+                );
+
+                // TODO: we might have to wait before re-establishing the subscription for
+                // transient network issues to resolve, or we might have to re-create the whole RPC
+                // client (which could be tricky due to the metadata task).
+                blocks_sub = chain_client.blocks().subscribe_all().await?;
+
+                // It is ok to continue here, because the fork monitor will fill in any gaps (and
+                // ignore any duplicates).
+                continue;
+            }
+        };
         let block = BlockLink::from_raw_block(&block);
 
         // Let the user know we're still alive.
@@ -578,13 +598,35 @@ async fn run_on_best_blocks_subscription(
     rpc_client_list: RpcClientList,
     new_blocks_tx: mpsc::Sender<BlockSeenMessage>,
 ) -> anyhow::Result<()> {
+    let chain_client = rpc_client_list.primary();
+
     // Subscribe blocks that are the best block when they are received.
-    let mut blocks_sub = rpc_client_list.primary().blocks().subscribe_best().await?;
+    let mut blocks_sub = chain_client.blocks().subscribe_best().await?;
     let node_rpc_url = rpc_client_list.primary_node_rpc_url();
 
     while let Some(block) = blocks_sub.next().await {
-        // These errors represent a connection failure or similar, and require a restart.
-        let block = block?;
+        // These errors represent a connection failure or similar. Unfortunately, this happens
+        // frequently on some public servers, so we log it as a warning, and re-establish the
+        // subscription.
+        let block = match block {
+            Ok(block) => block,
+            Err(error) => {
+                warn!(
+                    %error,
+                    ?node_rpc_url,
+                    "error receiving block from best blocks subscription, re-establishing subscription",
+                );
+
+                // TODO: we might have to wait before re-establishing the subscription for
+                // transient network issues to resolve, or we might have to re-create the whole RPC
+                // client (which could be tricky due to the metadata task).
+                blocks_sub = chain_client.blocks().subscribe_best().await?;
+
+                // It is ok to continue here, because the fork monitor will fill in any gaps (and
+                // ignore any duplicates).
+                continue;
+            }
+        };
         let block = BlockLink::from_raw_block(&block);
 
         // Let the user know we're still alive.
