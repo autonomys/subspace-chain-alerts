@@ -35,8 +35,8 @@ pub const MIN_FORK_DEPTH_FOR_WARN_LOG: usize = 5;
 pub const MIN_FORK_DEPTH_FOR_INFO_LOG: usize = 4;
 
 /// The minimum number of blocks to alert on for backwards reorgs.
-/// Currently we alert on all backwards reorgs.
-pub const MIN_BACKWARDS_REORG_DEPTH: usize = 1;
+/// This is set so backwards reorg alerts are rare.
+pub const MIN_BACKWARDS_REORG_DEPTH: usize = 3;
 
 /// The minimum number of blocks to log as info for backwards reorgs.
 /// Currently we log all backwards reorgs.
