@@ -122,7 +122,7 @@ async fn setup(
 ) -> anyhow::Result<(
     Option<SlackClientInfo>,
     RpcClientList,
-    FuturesUnordered<AsyncJoinOnDrop<anyhow::Result<()>>>,
+    FuturesUnordered<AsyncJoinOnDrop<(anyhow::Result<()>, String)>>,
 )> {
     // Display addresses in Subspace format.
     // This only applies to `sp_core::AccountId32`, not `subxt::utils::AccountId32`.
@@ -372,12 +372,13 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
         // Tasks that maintain internal library state, for example, subxt substrate metadata
         result = metadata_update_tasks.next() => {
             match result {
-                Some(Ok(Ok(()))) => {
-                    info!("runtime metadata update task finished");
+                Some(Ok((Ok(()), node_rpc_url))) => {
+                    info!("runtime metadata update task finished for {node_rpc_url}");
                 }
-                Some(Ok(Err(error))) => {
-                    error!(%error, "runtime metadata update task failed");
+                Some(Ok((Err(error), node_rpc_url))) => {
+                    error!(%error, "runtime metadata update task failed for {node_rpc_url}");
                 }
+                // TODO: if this ever happens, move the node_rpc_url outside AsyncJoinOnDrop
                 Some(Err(error)) => {
                     error!(%error, "runtime metadata update task panicked or was cancelled");
                 }

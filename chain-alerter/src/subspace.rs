@@ -228,17 +228,19 @@ impl RpcClientListInner {
 ///
 /// The metadata update task is aborted when the returned handle is dropped.
 pub async fn create_subspace_client(
-    node_url: impl AsRef<str>,
+    node_rpc_url: impl AsRef<str>,
     is_primary: bool,
 ) -> Result<
     (
         SubspaceClient,
         Option<RawRpcClient>,
-        AsyncJoinOnDrop<anyhow::Result<()>>,
+        AsyncJoinOnDrop<(anyhow::Result<()>, String)>,
     ),
     anyhow::Error,
 > {
-    info!("connecting to Subspace node at {}", node_url.as_ref());
+    let node_rpc_url = node_rpc_url.as_ref().to_string();
+
+    info!("connecting to Subspace node at {node_rpc_url}");
 
     // Create a new client with with a reconnecting RPC client.
     let rpc = RawRpcClient::builder()
@@ -249,7 +251,7 @@ pub async fn create_subspace_client(
                 .max_delay(Duration::from_millis(MAX_RECONNECTION_DELAY))
                 .take(MAX_RECONNECTION_ATTEMPTS),
         )
-        .build(node_url)
+        .build(&node_rpc_url)
         .await?;
 
     // TODO: decide if we want to use the chainhead backend with the reconnecting RPC client:
@@ -258,12 +260,12 @@ pub async fn create_subspace_client(
 
     if is_primary {
         let client = SubspaceClient::from_rpc_client(rpc.clone()).await?;
-        let update_task = spawn_metadata_update_task(&client).await;
+        let update_task = spawn_metadata_update_task(&client, node_rpc_url).await;
 
         Ok((client, Some(rpc), update_task))
     } else {
         let client = SubspaceClient::from_rpc_client(rpc).await?;
-        let update_task = spawn_metadata_update_task(&client).await;
+        let update_task = spawn_metadata_update_task(&client, node_rpc_url).await;
 
         Ok((client, None, update_task))
     }
@@ -273,15 +275,18 @@ pub async fn create_subspace_client(
 /// The task is aborted when the returned handle is dropped.
 pub async fn spawn_metadata_update_task(
     chain_client: &SubspaceClient,
-) -> AsyncJoinOnDrop<anyhow::Result<()>> {
+    node_rpc_url: String,
+) -> AsyncJoinOnDrop<(anyhow::Result<()>, String)> {
     info!("spawning runtime metadata update task...");
     let update_task = chain_client.updater();
 
     AsyncJoinOnDrop::new(
         // If a metadata update fails, we want to end the task and re-run setup.
         tokio::spawn(async move {
-            update_task.perform_runtime_updates().await?;
-            Ok(())
+            match update_task.perform_runtime_updates().await {
+                Ok(()) => (Ok(()), node_rpc_url),
+                Err(err) => (Err(err.into()), node_rpc_url),
+            }
         }),
         true,
     )

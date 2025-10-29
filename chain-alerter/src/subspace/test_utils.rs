@@ -53,7 +53,7 @@ pub async fn test_setup(
     RpcClientList,
     mpsc::Sender<Alert>,
     mpsc::Receiver<Alert>,
-    FuturesUnordered<AsyncJoinOnDrop<anyhow::Result<()>>>,
+    FuturesUnordered<AsyncJoinOnDrop<(anyhow::Result<()>, String)>>,
 )> {
     init_logger();
 
