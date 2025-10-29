@@ -563,7 +563,7 @@ async fn run_on_all_blocks_subscription(
             .send((block_seen, node_rpc_url.clone()))
             .await?;
 
-        trace!(block_stall_join_handles = %block_stall_join_handles.len(), ?is_stalled, "spawned tasks before joining");
+        trace!(block_stall_join_handles = %block_stall_join_handles.len(), ?is_stalled, ?node_rpc_url, "spawned tasks before joining");
 
         // Join any spawned block stall tasks that have finished.
         // When there are no more finished tasks, continue to the next block.
@@ -577,7 +577,7 @@ async fn run_on_all_blocks_subscription(
             }
         }
 
-        trace!(block_stall_join_handles = %block_stall_join_handles.len(), ?is_stalled, "spawned tasks after joining");
+        trace!(block_stall_join_handles = %block_stall_join_handles.len(), ?is_stalled, ?node_rpc_url, "spawned tasks after joining");
 
         task::yield_now().await;
     }
