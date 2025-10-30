@@ -23,7 +23,7 @@ elif [[ $(($RANDOM % 2)) == 0 ]]; then
     NODE_URL=wss://rpc.mainnet.subspace.foundation/ws
 else
     echo "Using labs node"
-    NODE_URL=wss://rpc-0.mainnet.autonomys.xyz/ws
+    NODE_URL=wss://rpc.mainnet.autonomys.xyz/ws
 fi
 
 cargo run --locked -- --slack=false --test-startup --node-rpc-url="$NODE_URL" \

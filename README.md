@@ -2,6 +2,14 @@
 
 Important event alerts for Subspace blockchains.
 
+## Quick Start
+
+To get up and running quickly:
+
+- Save the Slack token to a file named `slack-secret`
+- Restrict permissions (Unix): `chmod 400 slack-secret`
+- `docker run --mount type=bind,source=/path/to/slack-secret,target=/slack-secret,readonly ghcr.io/autonomys/chain-alerter [--production]`
+
 ## Status: Proof of Concept
 
 - This repository is a minimum viable product.
@@ -142,7 +150,7 @@ Alerts are de-duplicated between servers by connecting multiple servers to the s
 
 2. Optional: Prepare Slack secret file
 
-   - Save the bot token to a file named `slack-secret` in the repository root
+   - Save the Slack "bot token" to a file named `slack-secret` in the repository root
    - Restrict permissions (Unix):
      - `chmod 400 slack-secret` (or `chmod 600 slack-secret`)
 
@@ -153,7 +161,7 @@ Alerts are de-duplicated between servers by connecting multiple servers to the s
      See the Subspace reference implementation for details: [Subspace monorepo](https://github.com/autonomys/subspace).
 
 4. Build and run
-   - `cargo run -- --name "My Test Bot" --icon "warning" --node-rpc-url wss://rpc.mainnet.subspace.foundation/ws`
+   - `cargo run -- --name "My Test Bot" --icon "warning" --node-rpc-url wss://rpc.mainnet.autonomys.xyz/ws`
      - to use multiple nodes, supply `--node-rpc-url` multiple times
      - public node URLs are [listed in subspace.rs](https://github.com/autonomys/subspace-chain-alerts/blob/ac33ed7d200a1fdc3b92c1919f7b9cfacfba37c6/chain-alerter/src/subspace.rs#L43-L49)
      - `--production` will sent alerts to the production channel (except for startup alerts, which always go to the test channel)
