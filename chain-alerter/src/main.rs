@@ -29,9 +29,10 @@ use crate::slot_time_monitor::{
     DEFAULT_SLOW_SLOTS_THRESHOLD, SlotTimeMonitorConfig,
 };
 use crate::subspace::{
-    BlockInfo, BlockLink, BlockNumber, LOCAL_SUBSPACE_NODE_URL, MAX_RECONNECTION_ATTEMPTS,
-    MAX_RECONNECTION_DELAY, RawEvent, RawEventList, RawExtrinsicList, RpcClientList,
-    create_subspace_client,
+    BlockInfo, BlockLink, BlockNumber, BlockSubscription, LOCAL_SUBSPACE_NODE_URL,
+    MAX_ALERTER_RELAUNCH_ATTEMPTS, MAX_RECONNECTION_DELAY, MAX_SUBSCRIPTION_RECONNECTION_ATTEMPTS,
+    RawBlock, RawBlockError, RawBlockResult, RawEvent, RawEventList, RawExtrinsicList,
+    RpcClientList, SubType, SubspaceClient, create_subspace_client,
 };
 use clap::{ArgAction, Parser, ValueHint};
 use slot_time_monitor::{MemorySlotTimeMonitor, SlotTimeMonitor};
@@ -122,7 +123,7 @@ async fn setup(
 ) -> anyhow::Result<(
     Option<SlackClientInfo>,
     RpcClientList,
-    FuturesUnordered<AsyncJoinOnDrop<anyhow::Result<()>>>,
+    FuturesUnordered<AsyncJoinOnDrop<(anyhow::Result<()>, String)>>,
 )> {
     // Display addresses in Subspace format.
     // This only applies to `sp_core::AccountId32`, not `subxt::utils::AccountId32`.
@@ -341,24 +342,29 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
 
     // Spawn a task to send best blocks from the primary node subscription to the fork monitor.
     let best_chain_clients = rpc_client_list.clone();
+    let node_rpc_url = rpc_client_list.primary_node_rpc_url().to_string();
     let best_blocks_task = AsyncJoinOnDrop::new(
-        tokio::spawn(run_on_best_blocks_subscription(
-            best_chain_clients,
-            new_blocks_tx.clone(),
-        )),
+        tokio::spawn(
+            run_on_best_blocks_subscription(best_chain_clients, new_blocks_tx.clone())
+                .map(|result| (result, node_rpc_url)),
+        ),
         true,
     );
 
     // Spawn tasks to send "all blocks" from node subscriptions to the fork monitor.
     let mut all_blocks_tasks = FuturesUnordered::new();
     for client_index in 0..rpc_client_list.len() {
+        let node_rpc_url = rpc_client_list.node_rpc_urls()[client_index].clone();
         let all_blocks_task = AsyncJoinOnDrop::new(
-            tokio::spawn(run_on_all_blocks_subscription(
-                rpc_client_list.clone(),
-                client_index,
-                new_blocks_tx.clone(),
-                alert_tx.clone(),
-            )),
+            tokio::spawn(
+                run_on_all_blocks_subscription(
+                    rpc_client_list.clone(),
+                    client_index,
+                    new_blocks_tx.clone(),
+                    alert_tx.clone(),
+                )
+                .map(|result| (result, node_rpc_url)),
+            ),
             true,
         );
         all_blocks_tasks.push(all_blocks_task);
@@ -372,12 +378,13 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
         // Tasks that maintain internal library state, for example, subxt substrate metadata
         result = metadata_update_tasks.next() => {
             match result {
-                Some(Ok(Ok(()))) => {
-                    info!("runtime metadata update task finished");
+                Some(Ok((Ok(()), node_rpc_url))) => {
+                    info!("runtime metadata update task finished for {node_rpc_url}");
                 }
-                Some(Ok(Err(error))) => {
-                    error!(%error, "runtime metadata update task failed");
+                Some(Ok((Err(error), node_rpc_url))) => {
+                    error!(%error, "runtime metadata update task failed for {node_rpc_url}");
                 }
+                // TODO: if this ever happens, here or below, move the node_rpc_url outside AsyncJoinOnDrop
                 Some(Err(error)) => {
                     error!(%error, "runtime metadata update task panicked or was cancelled");
                 }
@@ -390,11 +397,11 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
         // Tasks that get new blocks from the node(s).
         result = best_blocks_task => {
             match result {
-                Ok(Ok(())) => {
-                    info!("best blocks subscription exited");
+                Ok((Ok(()), node_rpc_url)) => {
+                    info!("best blocks subscription exited for {node_rpc_url}");
                 }
-                Ok(Err(error)) => {
-                    error!(%error, "best blocks subscription failed");
+                Ok((Err(error), node_rpc_url)) => {
+                    error!(%error, "best blocks subscription failed for {node_rpc_url}");
                 }
                 Err(error) => {
                     error!(%error, "best blocks subscription panicked or was cancelled");
@@ -403,11 +410,11 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
         }
         result = all_blocks_tasks.next() => {
             match result {
-                Some(Ok(Ok(()))) => {
-                    info!("all blocks subscription exited");
+                Some(Ok((Ok(()), node_rpc_url))) => {
+                    info!("all blocks subscription exited for {node_rpc_url}");
                 }
-                Some(Ok(Err(error))) => {
-                    error!(%error, "all blocks subscription failed");
+                Some(Ok((Err(error), node_rpc_url))) => {
+                    error!(%error, "all blocks subscription failed for {node_rpc_url}");
                 }
                 Some(Err(error)) => {
                     error!(%error, "all blocks subscription panicked or was cancelled");
@@ -492,13 +499,30 @@ async fn run_on_all_blocks_subscription(
 
     // Subscribe to all blocks, including side forks and best blocks.
     let mut blocks_sub = chain_client.blocks().subscribe_all().await?;
+    // Tracks the number of subscription failures since we've seen any blocks.
+    let mut subscription_failures = 0;
 
     while let Some(block) = blocks_sub.next().await {
         // Give best blocks a chance to win the subscription race.
         task::yield_now().await;
 
-        // These errors represent a connection failure or similar, and require a restart.
-        let block = block?;
+        // These errors represent a connection failure or similar. Unfortunately, this happens
+        // frequently on some public servers, so we log it, and re-establish the subscription.
+        let block = handle_subscription_error(
+            SubType::All,
+            chain_client,
+            &mut blocks_sub,
+            block,
+            &mut subscription_failures,
+            node_rpc_url,
+        )
+        .await?;
+
+        let Some(block) = block else {
+            // It is ok to continue when we ignore a subscription error, because the fork monitor
+            // will fill in any gaps (and ignore any duplicates).
+            continue;
+        };
         let block = BlockLink::from_raw_block(&block);
 
         // Let the user know we're still alive.
@@ -537,7 +561,7 @@ async fn run_on_all_blocks_subscription(
             .send((block_seen, node_rpc_url.clone()))
             .await?;
 
-        trace!(block_stall_join_handles = %block_stall_join_handles.len(), ?is_stalled, "spawned tasks before joining");
+        trace!(block_stall_join_handles = %block_stall_join_handles.len(), ?is_stalled, ?node_rpc_url, "spawned tasks before joining");
 
         // Join any spawned block stall tasks that have finished.
         // When there are no more finished tasks, continue to the next block.
@@ -551,7 +575,7 @@ async fn run_on_all_blocks_subscription(
             }
         }
 
-        trace!(block_stall_join_handles = %block_stall_join_handles.len(), ?is_stalled, "spawned tasks after joining");
+        trace!(block_stall_join_handles = %block_stall_join_handles.len(), ?is_stalled, ?node_rpc_url, "spawned tasks after joining");
 
         task::yield_now().await;
     }
@@ -572,13 +596,32 @@ async fn run_on_best_blocks_subscription(
     rpc_client_list: RpcClientList,
     new_blocks_tx: mpsc::Sender<BlockSeenMessage>,
 ) -> anyhow::Result<()> {
-    // Subscribe blocks that are the best block when they are received.
-    let mut blocks_sub = rpc_client_list.primary().blocks().subscribe_best().await?;
+    let chain_client = rpc_client_list.primary();
     let node_rpc_url = rpc_client_list.primary_node_rpc_url();
 
+    // Subscribe blocks that are the best block when they are received.
+    let mut blocks_sub = chain_client.blocks().subscribe_best().await?;
+    // Tracks the number of subscription failures since we've seen any blocks.
+    let mut subscription_failures = 0;
+
     while let Some(block) = blocks_sub.next().await {
-        // These errors represent a connection failure or similar, and require a restart.
-        let block = block?;
+        // These errors represent a connection failure or similar. Unfortunately, this happens
+        // frequently on some public servers, so we log it, and re-establish the subscription.
+        let block = handle_subscription_error(
+            SubType::Best,
+            chain_client,
+            &mut blocks_sub,
+            block,
+            &mut subscription_failures,
+            node_rpc_url,
+        )
+        .await?;
+
+        let Some(block) = block else {
+            // It is ok to continue when we ignore a subscription error, because the fork monitor
+            // will fill in any gaps (and ignore any duplicates).
+            continue;
+        };
         let block = BlockLink::from_raw_block(&block);
 
         // Let the user know we're still alive.
@@ -601,6 +644,74 @@ async fn run_on_best_blocks_subscription(
     }
 
     Ok(())
+}
+
+/// Handle an error from an RPC subscription by re-establishing the subscription, unless we've
+/// reached the failure limit.
+async fn handle_subscription_error(
+    subscription_type: SubType,
+    chain_client: &SubspaceClient,
+    blocks_sub: &mut BlockSubscription,
+    block_result: RawBlockResult,
+    subscription_failures: &mut usize,
+    node_rpc_url: &str,
+) -> Result<Option<RawBlock>, RawBlockError> {
+    match block_result {
+        Ok(block) => {
+            // We've got a block without an error, so reset the subscription failure count.
+            *subscription_failures = 0;
+
+            Ok(Some(block))
+        }
+        Err(error) => {
+            *subscription_failures += 1;
+
+            if *subscription_failures <= MAX_SUBSCRIPTION_RECONNECTION_ATTEMPTS {
+                debug!(
+                    %error,
+                    %subscription_failures,
+                    %MAX_SUBSCRIPTION_RECONNECTION_ATTEMPTS,
+                    ?node_rpc_url,
+                    "error receiving block from {subscription_type} subscription, waiting before re-establishing subscription...",
+                );
+            } else {
+                error!(
+                    %error,
+                    %subscription_failures,
+                    %MAX_SUBSCRIPTION_RECONNECTION_ATTEMPTS,
+                    ?node_rpc_url,
+                    "error receiving block from {subscription_type} subscription, exiting",
+                );
+
+                // Tell the caller to return a fatal error, because we've reached the failure limit.
+                return Err(error);
+            }
+
+            // Wait before re-establishing the subscription for transient network issues to
+            // resolve.
+            tokio::time::sleep(Duration::from_millis(MAX_RECONNECTION_DELAY)).await;
+            // TODO: for some errors we might have to re-create the
+            // whole RPC client, in that case it's easier to just restart the entire alerter
+            // task, because we also need to re-create the metadata task and
+            // monitor it.
+            if subscription_type.is_best() {
+                *blocks_sub = chain_client.blocks().subscribe_best().await?;
+            } else {
+                *blocks_sub = chain_client.blocks().subscribe_all().await?;
+            }
+
+            debug!(
+                %error,
+                %subscription_failures,
+                %MAX_SUBSCRIPTION_RECONNECTION_ATTEMPTS,
+                ?node_rpc_url,
+                "{subscription_type} subscription successfully re-established",
+            );
+
+            // Tell the caller to continue, because we've re-established the subscription.
+            Ok(None)
+        }
+    }
 }
 
 /// Run best block alert checks, receiving new best blocks after gap/reorg resolution from
@@ -801,16 +912,16 @@ async fn main() -> anyhow::Result<()> {
     let mut args = Args::parse();
 
     // If we have an alert limit, we don't want to restart when it is reached.
-    let max_reconnection_attempts = if args.alert_limit.is_some() || args.test_startup {
+    let max_relaunch_attempts = if args.alert_limit.is_some() || args.test_startup {
         0
     } else {
-        MAX_RECONNECTION_ATTEMPTS
+        MAX_ALERTER_RELAUNCH_ATTEMPTS
     };
 
-    for reconnection_attempt in 0..=max_reconnection_attempts {
+    for relaunch_attempt in 0..=max_relaunch_attempts {
         select! {
             _ = &mut shutdown_handle => {
-                info!(%reconnection_attempt, "chain-alerter exited due to user shutdown");
+                info!(%relaunch_attempt, "chain-alerter exited due to user shutdown");
                 break;
             }
 
@@ -818,8 +929,8 @@ async fn main() -> anyhow::Result<()> {
             // - store the most recent block and pass it to run(), so we restart at the right place
             // - create the RPC client outside this method and re-use it (but this might be more error-prone)
             result = run(&mut args) => {
-                let restart_message = if reconnection_attempt < max_reconnection_attempts {
-                    ", restarting..."
+                let restart_message = if relaunch_attempt < max_relaunch_attempts {
+                    ", relaunching internally..."
                 } else {
                     ""
                 };
@@ -828,15 +939,15 @@ async fn main() -> anyhow::Result<()> {
                     error!(
                         %error,
                         alert_limit = ?args.alert_limit,
-                        %reconnection_attempt,
-                        %max_reconnection_attempts,
+                        %relaunch_attempt,
+                        %max_relaunch_attempts,
                         "chain-alerter exited with error{restart_message}",
                     );
                 } else {
                     info!(
                         alert_limit = ?args.alert_limit,
-                        %reconnection_attempt,
-                        %max_reconnection_attempts,
+                        %relaunch_attempt,
+                        %max_relaunch_attempts,
                         "chain-alerter exited{restart_message}",
                     );
                 }

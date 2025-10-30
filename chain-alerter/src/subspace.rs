@@ -12,11 +12,13 @@ use anyhow::Result;
 use chrono::{DateTime, TimeDelta, Utc};
 use scale_value::Composite;
 use sp_core::crypto::AccountId32;
+use static_assertions::const_assert;
 use std::fmt::{self, Display};
 use std::ops::Sub;
 use std::sync::Arc;
 use std::time::Duration;
 use subspace_process::AsyncJoinOnDrop;
+use subxt::backend::StreamOf;
 use subxt::backend::rpc::reconnecting_rpc_client::ExponentialBackoff;
 use subxt::blocks::{Block, ExtrinsicDetails, Extrinsics};
 use subxt::config::substrate::DigestItem;
@@ -47,7 +49,21 @@ pub const MAX_RECONNECTION_DELAY: u64 = 10_000;
 
 /// The maximum number of RPC reconnection attempts before failing and exiting the process.
 /// TODO: make this configurable
-pub const MAX_RECONNECTION_ATTEMPTS: usize = 50;
+pub const MAX_INTERNAL_RPC_RECONNECTION_ATTEMPTS: usize = 1000;
+
+/// The maximum number of RPC subscription reconnections without blocks, before failing and exiting
+/// the process.
+/// TODO: make this configurable
+pub const MAX_SUBSCRIPTION_RECONNECTION_ATTEMPTS: usize = 100;
+
+// Each subscription reconnection takes an internal RPC reconnection, so the internal reconnections
+// must be greater. (The subscription reconnections reset when they see a block, but the internal
+// reconnections don't.)
+const_assert!(MAX_INTERNAL_RPC_RECONNECTION_ATTEMPTS > MAX_SUBSCRIPTION_RECONNECTION_ATTEMPTS);
+
+/// The maximum number of alerter relaunches before failing and exiting the process.
+/// TODO: make this configurable
+pub const MAX_ALERTER_RELAUNCH_ATTEMPTS: usize = 10;
 
 /// The default RPC URL for a local Subspace node.
 pub const LOCAL_SUBSPACE_NODE_URL: &str = "ws://127.0.0.1:9944";
@@ -93,27 +109,36 @@ pub type SubspaceClient = OnlineClient<SubspaceConfig>;
 /// The type of raw RPC client we're using.
 pub type RawRpcClient = ReconnectingRpcClient;
 
+/// The type of a Subspace block subscription.
+pub type BlockSubscription = StreamOf<RawBlockResult>;
+
+/// The result type of a raw Subspace block subscription.
+pub type RawBlockResult = Result<RawBlock, RawBlockError>;
+
+/// The error type of a raw Subspace block subscription.
+pub type RawBlockError = subxt::Error;
+
 /// The raw block hash literal type.
 #[allow(dead_code, reason = "only used in tests")]
 pub type RawBlockHash = [u8; 32];
 
-/// The type of Subspace block.
+/// The type of a raw Subspace block.
 pub type RawBlock = Block<SubspaceConfig, SubspaceClient>;
 
-/// The type of a Subspace extrinsic list.
+/// The type of a raw Subspace extrinsic list.
 pub type RawExtrinsicList = Extrinsics<SubspaceConfig, SubspaceClient>;
 
-/// The type of a Subspace event list.
+/// The type of a raw Subspace event list.
 pub type RawExtrinsic = ExtrinsicDetails<SubspaceConfig, SubspaceClient>;
 
 /// The Subspace/subxt extrinsic index type.
 pub type ExtrinsicIndex = u32;
 
-/// The type of a Subspace event list.
+/// The type of a raw Subspace event list.
 #[allow(dead_code, reason = "included for completeness")]
 pub type RawEventList = Events<SubspaceConfig>;
 
-/// The Subspace/subxt event details type.
+/// The raw Subspace/subxt event details type.
 pub type RawEvent = EventDetails<SubspaceConfig>;
 
 /// The Subspace/subxt event index type.
@@ -228,17 +253,19 @@ impl RpcClientListInner {
 ///
 /// The metadata update task is aborted when the returned handle is dropped.
 pub async fn create_subspace_client(
-    node_url: impl AsRef<str>,
+    node_rpc_url: impl AsRef<str>,
     is_primary: bool,
 ) -> Result<
     (
         SubspaceClient,
         Option<RawRpcClient>,
-        AsyncJoinOnDrop<anyhow::Result<()>>,
+        AsyncJoinOnDrop<(anyhow::Result<()>, String)>,
     ),
     anyhow::Error,
 > {
-    info!("connecting to Subspace node at {}", node_url.as_ref());
+    let node_rpc_url = node_rpc_url.as_ref().to_string();
+
+    info!("connecting to Subspace node at {node_rpc_url}");
 
     // Create a new client with with a reconnecting RPC client.
     let rpc = RawRpcClient::builder()
@@ -247,9 +274,9 @@ pub async fn create_subspace_client(
         .retry_policy(
             ExponentialBackoff::from_millis(MIN_RECONNECTION_DELAY)
                 .max_delay(Duration::from_millis(MAX_RECONNECTION_DELAY))
-                .take(MAX_RECONNECTION_ATTEMPTS),
+                .take(MAX_INTERNAL_RPC_RECONNECTION_ATTEMPTS),
         )
-        .build(node_url)
+        .build(&node_rpc_url)
         .await?;
 
     // TODO: decide if we want to use the chainhead backend with the reconnecting RPC client:
@@ -258,12 +285,12 @@ pub async fn create_subspace_client(
 
     if is_primary {
         let client = SubspaceClient::from_rpc_client(rpc.clone()).await?;
-        let update_task = spawn_metadata_update_task(&client).await;
+        let update_task = spawn_metadata_update_task(&client, node_rpc_url).await;
 
         Ok((client, Some(rpc), update_task))
     } else {
         let client = SubspaceClient::from_rpc_client(rpc).await?;
-        let update_task = spawn_metadata_update_task(&client).await;
+        let update_task = spawn_metadata_update_task(&client, node_rpc_url).await;
 
         Ok((client, None, update_task))
     }
@@ -273,18 +300,49 @@ pub async fn create_subspace_client(
 /// The task is aborted when the returned handle is dropped.
 pub async fn spawn_metadata_update_task(
     chain_client: &SubspaceClient,
-) -> AsyncJoinOnDrop<anyhow::Result<()>> {
+    node_rpc_url: String,
+) -> AsyncJoinOnDrop<(anyhow::Result<()>, String)> {
     info!("spawning runtime metadata update task...");
     let update_task = chain_client.updater();
 
     AsyncJoinOnDrop::new(
         // If a metadata update fails, we want to end the task and re-run setup.
         tokio::spawn(async move {
-            update_task.perform_runtime_updates().await?;
-            Ok(())
+            match update_task.perform_runtime_updates().await {
+                Ok(()) => (Ok(()), node_rpc_url),
+                Err(err) => (Err(err.into()), node_rpc_url),
+            }
         }),
         true,
     )
+}
+
+/// The subscription type.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SubType {
+    /// Subscribe to all blocks.
+    All,
+    /// Subscribe to best blocks.
+    Best,
+}
+
+impl Display for SubType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SubType::All => write!(f, "all blocks"),
+            SubType::Best => write!(f, "best blocks"),
+        }
+    }
+}
+
+impl SubType {
+    /// Returns true if the subscription is for best blocks.
+    pub fn is_best(self) -> bool {
+        match self {
+            SubType::All => false,
+            SubType::Best => true,
+        }
+    }
 }
 
 /// Get the hash of the best block from the supplied node RPC.
