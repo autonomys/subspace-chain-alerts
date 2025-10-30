@@ -345,8 +345,12 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
     let node_rpc_url = rpc_client_list.primary_node_rpc_url().to_string();
     let best_blocks_task = AsyncJoinOnDrop::new(
         tokio::spawn(
-            run_on_best_blocks_subscription(best_chain_clients, new_blocks_tx.clone())
-                .map(|result| (result, node_rpc_url)),
+            run_on_best_blocks_subscription(
+                best_chain_clients,
+                new_blocks_tx.clone(),
+                alert_tx.clone(),
+            )
+            .map(|result| (result, node_rpc_url)),
         ),
         true,
     );
@@ -361,7 +365,6 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
                     rpc_client_list.clone(),
                     client_index,
                     new_blocks_tx.clone(),
-                    alert_tx.clone(),
                 )
                 .map(|result| (result, node_rpc_url)),
             ),
@@ -481,21 +484,9 @@ async fn run_on_all_blocks_subscription(
     rpc_client_list: RpcClientList,
     client_index: usize,
     new_blocks_tx: mpsc::Sender<BlockSeenMessage>,
-    alert_tx: mpsc::Sender<Alert>,
 ) -> anyhow::Result<()> {
     let chain_client = &rpc_client_list.clients()[client_index];
     let node_rpc_url = &rpc_client_list.node_rpc_urls()[client_index];
-    let genesis_hash = chain_client.genesis_hash();
-
-    // A channel that shares the latest block info with concurrently running block stall tasks.
-    let latest_block_tx = watch::Sender::new(None);
-
-    // Tasks spawned for the block stall alert.
-    let mut block_stall_join_handles: FuturesUnordered<JoinHandle<anyhow::Result<Option<bool>>>> =
-        FuturesUnordered::new();
-
-    // Tracks the previous block's stall alert status.
-    let mut is_stalled = false;
 
     // Subscribe to all blocks, including side forks and best blocks.
     let mut blocks_sub = chain_client.blocks().subscribe_all().await?;
@@ -534,48 +525,11 @@ async fn run_on_all_blocks_subscription(
             );
         }
 
-        // Notify spawned tasks that a new block has arrived, and give them time to process that
-        // block. This is needed even if there is a block gap.
-        latest_block_tx.send_replace(Some((block, is_stalled)));
-        task::yield_now().await;
-
-        // We only check for block stalls on current subscription blocks, and only if we're not
-        // stalled already.
-        if !is_stalled {
-            let stall_task_join_handle = alerts::check_for_block_stall(
-                BlockCheckMode::Current,
-                block,
-                &genesis_hash,
-                alert_tx.clone(),
-                latest_block_tx.subscribe(),
-                node_rpc_url.to_string(),
-            )
-            .await;
-
-            block_stall_join_handles.push(stall_task_join_handle);
-        }
-
         // Notify the fork monitor that we've seen a new block.
         let block_seen = BlockSeen::from_any_block(Arc::new(block));
         new_blocks_tx
             .send((block_seen, node_rpc_url.clone()))
             .await?;
-
-        trace!(block_stall_join_handles = %block_stall_join_handles.len(), ?is_stalled, ?node_rpc_url, "spawned tasks before joining");
-
-        // Join any spawned block stall tasks that have finished.
-        // When there are no more finished tasks, continue to the next block.
-        while let Some(block_stall_result) =
-            block_stall_join_handles.next().now_or_never().flatten()
-        {
-            // We only want to set or reset the stall status if the task issued an alert,
-            // or came out of the stall.
-            if let Some(block_gap_status) = block_stall_result?? {
-                is_stalled = block_gap_status;
-            }
-        }
-
-        trace!(block_stall_join_handles = %block_stall_join_handles.len(), ?is_stalled, ?node_rpc_url, "spawned tasks after joining");
 
         task::yield_now().await;
     }
@@ -595,9 +549,21 @@ async fn run_on_all_blocks_subscription(
 async fn run_on_best_blocks_subscription(
     rpc_client_list: RpcClientList,
     new_blocks_tx: mpsc::Sender<BlockSeenMessage>,
+    alert_tx: mpsc::Sender<Alert>,
 ) -> anyhow::Result<()> {
     let chain_client = rpc_client_list.primary();
     let node_rpc_url = rpc_client_list.primary_node_rpc_url();
+    let genesis_hash = chain_client.genesis_hash();
+
+    // A channel that shares the latest block info with concurrently running block stall tasks.
+    let latest_block_tx = watch::Sender::new(None);
+
+    // Tasks spawned for the block stall alert.
+    let mut block_stall_join_handles: FuturesUnordered<JoinHandle<anyhow::Result<Option<bool>>>> =
+        FuturesUnordered::new();
+
+    // Tracks the previous block's stall alert status.
+    let mut is_stalled = false;
 
     // Subscribe blocks that are the best block when they are received.
     let mut blocks_sub = chain_client.blocks().subscribe_best().await?;
@@ -633,11 +599,48 @@ async fn run_on_best_blocks_subscription(
             );
         }
 
+        // Notify spawned tasks that a new block has arrived, and give them time to process that
+        // block. This is needed even if there is a block gap.
+        latest_block_tx.send_replace(Some((block, is_stalled)));
+        task::yield_now().await;
+
+        // We only check for block stalls on current subscription blocks, and only if we're not
+        // stalled already.
+        if !is_stalled {
+            let stall_task_join_handle = alerts::check_for_block_stall(
+                BlockCheckMode::Current,
+                block,
+                &genesis_hash,
+                alert_tx.clone(),
+                latest_block_tx.subscribe(),
+                node_rpc_url.to_string(),
+            )
+            .await;
+
+            block_stall_join_handles.push(stall_task_join_handle);
+        }
+
         // Notify the fork monitor that we've seen a new block.
         let block_seen = BlockSeen::from_best_block(Arc::new(block));
         new_blocks_tx
             .send((block_seen, node_rpc_url.to_string()))
             .await?;
+
+        trace!(block_stall_join_handles = %block_stall_join_handles.len(), ?is_stalled, ?node_rpc_url, "spawned tasks before joining");
+
+        // Join any spawned block stall tasks that have finished.
+        // When there are no more finished tasks, continue to the next block.
+        while let Some(block_stall_result) =
+            block_stall_join_handles.next().now_or_never().flatten()
+        {
+            // We only want to set or reset the stall status if the task issued an alert,
+            // or came out of the stall.
+            if let Some(block_gap_status) = block_stall_result?? {
+                is_stalled = block_gap_status;
+            }
+        }
+
+        trace!(block_stall_join_handles = %block_stall_join_handles.len(), ?is_stalled, ?node_rpc_url, "spawned tasks after joining");
 
         // We don't give tasks an opportunity to run, because we want best blocks to win the
         // subscription race.
