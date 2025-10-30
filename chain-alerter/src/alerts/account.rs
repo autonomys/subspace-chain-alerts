@@ -61,7 +61,7 @@ pub const IMPORTANT_ADDRESSES: &[(&str, &str)] = &[
         "Guardians of Growth",
         "sugQzjjyAfhzktFDdAkZrcTq5qzMaRoSV2qs1gTcjjuBeybWT",
     ),
-    // <https://polkadot.js.org/apps/?rpc=wss%3A%2F%2Frpc-0.mainnet.autonomys.xyz%2Fws#/chainstate>
+    // <https://polkadot.js.org/apps/?rpc=wss%3A%2F%2Frpc.mainnet.autonomys.xyz%2Fws#/chainstate>
     // sudo.key()
     // <https://autonomys.subscan.io/account/subKQqsYRyVkugvKQqLXEuhsefa9728PBAqtwxpeM5N4VD6mv>
     // TODO: dynamically look this up from storage instead of hardcoding it

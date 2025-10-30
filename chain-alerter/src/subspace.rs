@@ -58,7 +58,7 @@ pub const FOUNDATION_SUBSPACE_NODE_URL: &str = "wss://rpc.mainnet.subspace.found
 
 /// The RPC URL for the public Autonomys Labs RPC instance.
 #[allow(dead_code, reason = "only used in tests")]
-pub const LABS_SUBSPACE_NODE_URL: &str = "wss://rpc-0.mainnet.autonomys.xyz/ws";
+pub const LABS_SUBSPACE_NODE_URL: &str = "wss://rpc.mainnet.autonomys.xyz/ws";
 
 /// The Subspace consensus account ID type.
 pub type AccountId = AccountId32;

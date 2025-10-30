@@ -161,7 +161,7 @@ Alerts are de-duplicated between servers by connecting multiple servers to the s
      See the Subspace reference implementation for details: [Subspace monorepo](https://github.com/autonomys/subspace).
 
 4. Build and run
-   - `cargo run -- --name "My Test Bot" --icon "warning" --node-rpc-url wss://rpc-0.mainnet.autonomys.xyz/ws`
+   - `cargo run -- --name "My Test Bot" --icon "warning" --node-rpc-url wss://rpc.mainnet.autonomys.xyz/ws`
      - to use multiple nodes, supply `--node-rpc-url` multiple times
      - public node URLs are [listed in subspace.rs](https://github.com/autonomys/subspace-chain-alerts/blob/ac33ed7d200a1fdc3b92c1919f7b9cfacfba37c6/chain-alerter/src/subspace.rs#L43-L49)
      - `--production` will sent alerts to the production channel (except for startup alerts, which always go to the test channel)
