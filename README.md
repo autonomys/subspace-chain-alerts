@@ -165,7 +165,9 @@ Some alerts are only issued if they happen on the primary RPC server.
 4. Build and run
    - `cargo run -- --name "My Test Bot" --icon "warning" --node-rpc-url wss://rpc.mainnet.autonomys.xyz/ws`
      - to use multiple nodes, supply `--node-rpc-url` multiple times
-     - public node URLs are [listed in subspace.rs](https://github.com/autonomys/subspace-chain-alerts/blob/ac33ed7d200a1fdc3b92c1919f7b9cfacfba37c6/chain-alerter/src/subspace.rs#L43-L49)
+       - public node URLs are [listed in subspace.rs](https://github.com/autonomys/subspace-chain-alerts/blob/ac33ed7d200a1fdc3b92c1919f7b9cfacfba37c6/chain-alerter/src/subspace.rs#L43-L49)
+     - `--uptime-kuma-url` sends an uptime kuma status containing the latest block height as the `ping`
+       - if there are multiple uptime kuma URLs, each status is sent using a separate task
      - `--production` will sent alerts to the production channel (except for startup alerts, which always go to the test channel)
      - `--slack=false` will disable Slack message posting entirely, and just log alerts to the terminal.
    - Testing options:
