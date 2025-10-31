@@ -114,12 +114,14 @@ Some alerts are de-duplicated by only issuing an alert when the status changes:
 - SlotTime High/Low
 - Farmer Increase/Decrease
 
-We could do the same kind of de-duplication with fork lengths, but each additional fork block is about 10x less likely,
-so it is worth alerting on.
+### By Severity
+
+Fork and side chain alerts are only issued at the threshold, and when the fork length is a multiple of 10 blocks.
 
 ### Between Servers
 
 Alerts are de-duplicated between servers by connecting multiple servers to the same alerter instance.
+Some alerts are only issued if they happen on the primary RPC server.
 
 ## Security notes
 

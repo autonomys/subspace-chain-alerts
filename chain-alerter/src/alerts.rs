@@ -240,6 +240,8 @@ pub enum AlertKind {
     ///
     /// The previous block is `Alert.block_info`, and the stalled node is
     /// `Alert.node_rpc_url`.
+    ///
+    /// Only alerted for the primary node.
     BlockReceiveGap {
         /// The gap since the previous block from the node, based on alerter local time.
         local_time_gap: TimeDelta,
@@ -250,6 +252,8 @@ pub enum AlertKind {
     ///
     /// The associated `Alert.node_rpc_url` is the RPC node that resumed receiving blocks.
     /// Other nodes might have also received blocks, or might still be stalled.
+    ///
+    /// Only alerted after the primary node has had a gap.
     BlockReceiveResumed {
         /// The full gap between the blocks, based on alerter local time.
         local_time_gap: TimeDelta,
