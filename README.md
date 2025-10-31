@@ -168,7 +168,7 @@ Some alerts are only issued if they happen on the primary RPC server.
        - public node URLs are [listed in subspace.rs](https://github.com/autonomys/subspace-chain-alerts/blob/ac33ed7d200a1fdc3b92c1919f7b9cfacfba37c6/chain-alerter/src/subspace.rs#L43-L49)
      - `--uptime-kuma-url` sends an uptime kuma status containing the latest block height as the `ping`
        - if there are multiple uptime kuma URLs, each status is sent using a separate task
-     - `--production` will sent alerts to the production channel (except for startup alerts, which always go to the test channel)
+     - `--production` will send alerts to the production channel (except for startup alerts, which always go to the test channel)
      - `--slack=false` will disable Slack message posting entirely, and just log alerts to the terminal.
    - Testing options:
      - `--alert-limit=5` will exit after 5 alerts have been posted, including the startup alert.
@@ -194,6 +194,11 @@ Some alerts are only issued if they happen on the primary RPC server.
     - Depends on `subspace-process` for process handling utility functions
   - `../test_utils.rs`: test support for alerts and subsystems.
   - `../tests.rs`: tests for alerts and subsystems.
+- `docker`: Docker image definitions
+- `scripts`: shell scripts used for local or CI testing, or developer tools
+  - `bump-versions.sh`: developer script to bump the crate version
+  - `check-startup.sh`: CI/testing script to test that alerter startup works
+  - `find-unused-deps.sh`: CI script that finds unused dependencies
 
 ### References
 
