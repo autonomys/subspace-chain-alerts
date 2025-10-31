@@ -47,7 +47,7 @@ use subxt::ext::futures::stream::FuturesUnordered;
 use subxt::ext::futures::{FutureExt, StreamExt};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
-use tokio::time::sleep;
+use tokio::time::{MissedTickBehavior, interval, sleep};
 use tokio::{pin, select, task};
 use tracing::{debug, error, info, trace, warn};
 
@@ -58,6 +58,10 @@ const BLOCK_UPDATE_LOGGING_INTERVAL: BlockNumber = 100;
 /// The number of alerts to buffer before backpressure causes the block subscriber to pause.
 /// TODO: make this configurable
 const ALERT_BUFFER_SIZE: usize = 100;
+
+/// The amount of time to wait between uptime kuma status updates.
+/// TODO: make this configurable
+const UPTIME_KUMA_STATUS_INTERVAL: Duration = Duration::from_secs(60);
 
 /// A Slack-based alerter that runs on the Autonomys network.
 // The documentation lines above are printed at the start of the `--help` message.
@@ -77,13 +81,18 @@ struct Args {
     #[arg(long, default_value = "Dev")]
     name: String,
 
-    /// The RPC URLs of the node to connect to.
+    /// The RPC URLs of the nodes to connect to, can be specified multiple times.
     /// Uses the local node by default.
     ///
     /// The primary node determines the best block and reorgs.
     /// Other nodes provide side chains only.
     #[arg(long, value_hint = ValueHint::Url, default_value = LOCAL_SUBSPACE_NODE_URL)]
     node_rpc_url: Vec<String>,
+
+    /// The URLs of the uptime kuma servers which get uptime statuses, can be specified multiple
+    /// times. Disabled by default.
+    #[arg(long, value_hint = ValueHint::Url)]
+    uptime_kuma_url: Vec<String>,
 
     /// Send alerts to the production Slack channel.
     #[arg(long, alias = "prod", default_value = "false", action = ArgAction::SetTrue)]
@@ -343,11 +352,18 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
     // Spawn a task to send best blocks from the primary node subscription to the fork monitor.
     let best_chain_clients = rpc_client_list.clone();
     let node_rpc_url = rpc_client_list.primary_node_rpc_url().to_string();
+
+    // A channel that shares the latest block info with concurrently running block stall and uptime
+    // tasks.
+    let latest_block_tx = watch::Sender::new(None);
+    let latest_block_rx = latest_block_tx.subscribe();
+
     let best_blocks_task = AsyncJoinOnDrop::new(
         tokio::spawn(
             run_on_best_blocks_subscription(
                 best_chain_clients,
                 new_blocks_tx.clone(),
+                latest_block_tx,
                 alert_tx.clone(),
             )
             .map(|result| (result, node_rpc_url)),
@@ -371,6 +387,26 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
             true,
         );
         all_blocks_tasks.push(all_blocks_task);
+    }
+
+    // Spawn tasks to send uptime statuses to the uptime kuma servers.
+    // Each task is independent, so hangs on one uptime server don't impact the others.
+    let mut uptime_kuma_tasks = FuturesUnordered::new();
+    let http_client = reqwest::Client::new();
+    for uptime_kuma_url in args.uptime_kuma_url.iter() {
+        let uptime_kuma_url = uptime_kuma_url.to_string();
+        let uptime_kuma_task = AsyncJoinOnDrop::new(
+            tokio::spawn(
+                send_uptime_kuma_status(
+                    http_client.clone(),
+                    uptime_kuma_url.clone(),
+                    latest_block_rx.clone(),
+                )
+                .map(|result| (result, uptime_kuma_url)),
+            ),
+            true,
+        );
+        uptime_kuma_tasks.push(uptime_kuma_task);
     }
 
     // Tasks are listed in rough data flow order.
@@ -473,6 +509,20 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
                 }
             }
         }
+
+        // Tasks that send uptime statuses to the uptime kuma servers, if enabled.
+        // We deliberately put these tasks last, so if any other tasks starves the select! loop, the
+        // alerter is considered unresponsive.
+        Some(result) = uptime_kuma_tasks.next() => {
+            match result {
+                Ok(((), uptime_kuma_url)) => {
+                    info!("uptime kuma status task finished for {uptime_kuma_url}");
+                }
+                Err(error) => {
+                    error!(%error, "uptime kuma status task panicked or was cancelled");
+                }
+            }
+        }
     }
 
     Ok(())
@@ -549,14 +599,12 @@ async fn run_on_all_blocks_subscription(
 async fn run_on_best_blocks_subscription(
     rpc_client_list: RpcClientList,
     new_blocks_tx: mpsc::Sender<BlockSeenMessage>,
+    latest_block_tx: watch::Sender<Option<(BlockLink, bool)>>,
     alert_tx: mpsc::Sender<Alert>,
 ) -> anyhow::Result<()> {
     let chain_client = rpc_client_list.primary();
     let node_rpc_url = rpc_client_list.primary_node_rpc_url();
     let genesis_hash = chain_client.genesis_hash();
-
-    // A channel that shares the latest block info with concurrently running block stall tasks.
-    let latest_block_tx = watch::Sender::new(None);
 
     // Tasks spawned for the block stall alert.
     let mut block_stall_join_handles: FuturesUnordered<JoinHandle<anyhow::Result<Option<bool>>>> =
@@ -713,6 +761,73 @@ async fn handle_subscription_error(
 
             // Tell the caller to continue, because we've re-established the subscription.
             Ok(None)
+        }
+    }
+}
+
+/// Sends an uptime status to `uptime_kuma_url`, using the latest block info from
+/// `latest_block_rx` as the "ping" parameter.
+///
+/// Ignores any HTTPS errors, because a failing uptime server should not bring down the alerter.
+async fn send_uptime_kuma_status(
+    http_client: reqwest::Client,
+    uptime_kuma_url: String,
+    latest_block_rx: watch::Receiver<Option<(BlockLink, bool)>>,
+) {
+    let mut timer = interval(UPTIME_KUMA_STATUS_INTERVAL);
+    // If there is a timer delay, after the delayed tick, wait for the complete period before
+    // ticking again.
+    timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    // Only issue an uptime status after the first interval (the default is immediately).
+    timer.reset();
+
+    loop {
+        timer.tick().await;
+
+        // Only borrow the watch channel contents temporarily, to avoid blocking channel updates.
+        let (latest_height, is_stalled) = {
+            let latest_block = latest_block_rx.borrow();
+
+            let latest_height = latest_block.as_ref().map(|(block, _)| block.height());
+            let is_stalled = latest_block
+                .as_ref()
+                .map(|(_, is_stalled)| *is_stalled)
+                .unwrap_or(true);
+
+            (latest_height, is_stalled)
+        };
+
+        // If we've failed to get a block at startup, or we're stalled, the service is down.
+        let status = if is_stalled || latest_height.is_none() {
+            "down"
+        } else {
+            "up"
+        };
+        let msg = if is_stalled {
+            "STALL"
+        } else if latest_height.is_none() {
+            "STARTUP"
+        } else {
+            "OK"
+        };
+        // We use the ping parameter to smuggle the latest block height into the uptime kuma status
+        // board.
+        let ping = if let Some(latest_height) = latest_height {
+            format!("&ping={latest_height}")
+        } else {
+            String::new()
+        };
+
+        let uptime_kuma_url = format!("{uptime_kuma_url}?status={status}&msg={msg}{ping}");
+
+        if let Err(error) = http_client.get(&uptime_kuma_url).send().await {
+            warn!(
+                %error,
+                %uptime_kuma_url,
+                ?latest_height,
+                %is_stalled,
+                "error sending uptime status to uptime kuma",
+            );
         }
     }
 }
