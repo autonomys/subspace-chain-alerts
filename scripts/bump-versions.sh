@@ -5,14 +5,13 @@
 # http://redsymbol.net/articles/unofficial-bash-strict-mode/
 set -euo pipefail
 
-if [[ "$#" -ne 3 ]] || ([[ "$1" != "alerter" ]]); then
-  echo "Usage: $0 alerter <old-version> <new-version>"
+if [[ "$#" -ne 2 ]]; then
+  echo "Usage: $0 <old-version> <new-version>"
   exit 1
 fi
 
-MODE="$1"
-OLD_VERSION="$2"
-NEW_VERSION="$3"
+OLD_VERSION="$1"
+NEW_VERSION="$2"
 
 # Users can set their own SED_IN_PLACE, for example, if their GNU sed is `gsed`
 if [[ -z "${SED_IN_PLACE[@]+"${SED_IN_PLACE[@]}"}" ]]; then
@@ -40,39 +39,35 @@ fi
 # show executed commands
 set -x
 
-echo "Replacing old '$MODE' version '$OLD_VERSION' with new version '$NEW_VERSION' in crates:"
-if [[ "$MODE" == "client" ]]; then
-  "${SED_IN_PLACE[@]}" -e "s/$OLD_VERSION/$NEW_VERSION/g" \
-    ./chain-alerter/Cargo.toml \
-      || (echo "'$SED_IN_PLACE' failed, please set \$SED_IN_PLACE to a valid sed in-place replacement command" && exit 1)
-fi
+echo "Replacing old version '$OLD_VERSION' with new version '$NEW_VERSION' in crates:"
+"${SED_IN_PLACE[@]}" -e "s/$OLD_VERSION/$NEW_VERSION/g" \
+  ./chain-alerter/Cargo.toml \
+    || (echo "'$SED_IN_PLACE' failed, please set \$SED_IN_PLACE to a valid sed in-place replacement command" && exit 1)
 
 echo "Updating Cargo.lock..."
 cargo check --profile release
 
-if [[ "$MODE" == "client" ]]; then
-  echo "Making sure the old version is not used anywhere else:"
-  if ! grep --recursive --exclude-dir=target --exclude-dir=.git --exclude=Cargo.lock --exclude=Cargo.toml --fixed-strings "$OLD_VERSION" .; then
-    # It worked, fall through to the success message
-    echo "All old versions replaced"
-  else
-    # Stop showing executed commands
-    set +x
-    echo
-    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-    echo "Error: The old version ($OLD_VERSION) is still in use."
-    echo "Please update this script ($0) to automatically replace it."
-    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-    echo
-    exit 1
-  fi
+echo "Making sure the old version is not used anywhere else:"
+if ! grep --recursive --exclude-dir=target --exclude-dir=.git --exclude=Cargo.lock --exclude=Cargo.toml --fixed-strings "$OLD_VERSION" .; then
+  # It worked, fall through to the success message
+  echo "All old versions replaced"
+else
+  # Stop showing executed commands
+  set +x
+  echo
+  echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+  echo "Error: The old version ($OLD_VERSION) is still in use."
+  echo "Please update this script ($0) to automatically replace it."
+  echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+  echo
+  exit 1
 fi
 
 # Stop showing executed commands
 set +x
 
 echo
-echo "======================================"
-echo "Success: old '$MODE' versions replaced"
-echo "======================================"
+echo "=============================="
+echo "Success: old versions replaced"
+echo "=============================="
 echo
