@@ -718,7 +718,7 @@ async fn handle_subscription_error(
             *subscription_failures += 1;
 
             if *subscription_failures <= MAX_SUBSCRIPTION_RECONNECTION_ATTEMPTS {
-                debug!(
+                info!(
                     %error,
                     %subscription_failures,
                     %MAX_SUBSCRIPTION_RECONNECTION_ATTEMPTS,
