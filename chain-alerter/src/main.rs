@@ -411,8 +411,8 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
 
     // Tasks are listed in rough data flow order.
     select! {
-        // Make the best blocks win the subscription race, to save on best block check RPC calls.
-        biased;
+        // These tasks are all spawned, so tokio determines their scheduling. All this select does
+        // is check the JoinHandles, to see if any tasks have finished.
 
         // Tasks that maintain internal library state, for example, subxt substrate metadata
         result = metadata_update_tasks.next() => {
