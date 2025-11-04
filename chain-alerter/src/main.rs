@@ -436,7 +436,10 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
                     info!("runtime metadata update task finished for {node_rpc_url}");
                 }
                 Some(Ok((Err(error), node_rpc_url))) => {
-                    error!(%error, "runtime metadata update task failed for {node_rpc_url}");
+                    error!(
+                        error = format!("{error:#}"),
+                        "runtime metadata update task failed for {node_rpc_url}",
+                    );
                 }
                 // TODO: if this ever happens, here or below, move the node_rpc_url outside AsyncJoinOnDrop
                 Some(Err(error)) => {
@@ -455,7 +458,10 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
                     info!("best blocks subscription exited for {node_rpc_url}");
                 }
                 Ok((Err(error), node_rpc_url)) => {
-                    error!(%error, "best blocks subscription failed for {node_rpc_url}");
+                    error!(
+                        error = format!("{error:#}"),
+                        "best blocks subscription failed for {node_rpc_url}",
+                    );
                 }
                 Err(error) => {
                     error!(%error, "best blocks subscription panicked or was cancelled");
@@ -468,7 +474,10 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
                     info!("all blocks subscription exited for {node_rpc_url}");
                 }
                 Some(Ok((Err(error), node_rpc_url))) => {
-                    error!(%error, "all blocks subscription failed for {node_rpc_url}");
+                    error!(
+                        error = format!("{error:#}"),
+                        "all blocks subscription failed for {node_rpc_url}",
+                    );
                 }
                 Some(Err(error)) => {
                     error!(%error, "all blocks subscription panicked or was cancelled");
@@ -486,7 +495,10 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
                     info!("chain fork monitor task finished");
                 }
                 Ok(Err(error)) => {
-                    error!(%error, "chain fork monitor task failed");
+                    error!(
+                        error = format!("{error:#}"),
+                        "chain fork monitor task failed",
+                    );
                 }
                 Err(error) => {
                     error!(%error, "chain fork monitor task panicked or was cancelled");
@@ -501,7 +513,10 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
                     info!("best block check task finished");
                 }
                 Ok(Err(error)) => {
-                    error!(%error, "best blocks check task failed");
+                    error!(
+                        error = format!("{error:#}"),
+                        "best blocks check task failed",
+                    );
                 }
                 Err(error) => {
                     error!(%error, "best blocks check task panicked or was cancelled");
@@ -550,7 +565,10 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
                     info!("block subscription watchdog task finished");
                 }
                 Ok(Err(error)) => {
-                    error!(%error, "block subscription watchdog task failed");
+                    error!(
+                        error = format!("{error:#}"),
+                        "block subscription watchdog task failed",
+                    );
                 }
                 Err(error) => {
                     error!(%error, "block subscription watchdog task panicked or was cancelled");
@@ -753,7 +771,7 @@ async fn handle_subscription_error(
 
             if *subscription_failures <= MAX_SUBSCRIPTION_RECONNECTION_ATTEMPTS {
                 info!(
-                    %error,
+                    error = format!("{error:#}"),
                     %subscription_failures,
                     %MAX_SUBSCRIPTION_RECONNECTION_ATTEMPTS,
                     ?node_rpc_url,
@@ -761,7 +779,7 @@ async fn handle_subscription_error(
                 );
             } else {
                 error!(
-                    %error,
+                    error = format!("{error:#}"),
                     %subscription_failures,
                     %MAX_SUBSCRIPTION_RECONNECTION_ATTEMPTS,
                     ?node_rpc_url,
@@ -786,7 +804,7 @@ async fn handle_subscription_error(
             }
 
             debug!(
-                %error,
+                ?error,
                 %subscription_failures,
                 %MAX_SUBSCRIPTION_RECONNECTION_ATTEMPTS,
                 ?node_rpc_url,
@@ -856,7 +874,7 @@ async fn send_uptime_kuma_status(
 
         if let Err(error) = http_client.get(&uptime_kuma_url).send().await {
             warn!(
-                %error,
+                ?error,
                 %uptime_kuma_url,
                 ?latest_height,
                 %is_stalled,
