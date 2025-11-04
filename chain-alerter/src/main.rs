@@ -893,9 +893,9 @@ async fn block_subscription_watchdog(
                 let Some(highest) = highest_position else {
                     // We haven't seen any blocks after the first interval, so the subscription is stalled.
                     // Do an internal reset to restart the subscription.
-                    return Err(anyhow::anyhow!(
+                    anyhow::bail!(
                         "watchdog: block subscription never received any blocks at {watchdog_time}",
-                    ));
+                    );
                 };
 
                 // Check the block height has increased since the last interval.
@@ -909,9 +909,9 @@ async fn block_subscription_watchdog(
                 };
 
                 if highest.height <= prev_highest.height {
-                    return Err(anyhow::anyhow!(
+                    anyhow::bail!(
                         "watchdog: block height has not increased since the last interval: current: {highest:?} previous: {prev_highest:?} at {watchdog_time}",
-                    ));
+                    );
                 }
 
                 info!(
@@ -929,9 +929,9 @@ async fn block_subscription_watchdog(
                 let changed_time = fmt_duration(changed_time.checked_duration_since(start_time));
 
                 let Ok(()) = changed_result else {
-                    return Err(anyhow::anyhow!(
+                    anyhow::bail!(
                         "watchdog: block subscription channel disconnected, possible shutdown or internal restart at {changed_time}",
-                    ));
+                    );
                 };
 
                 // Only borrow the watch channel contents temporarily, to avoid blocking channel updates.
