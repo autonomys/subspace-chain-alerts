@@ -517,7 +517,11 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
                     info!(slack_enabled = %args.slack, "slack alert task finished");
                 }
                 Ok(Err(error)) => {
-                    error!(%error, slack_enabled = %args.slack, "slack alert task failed");
+                    error!(
+                        error = format!("{error:#}"),
+                        slack_enabled = %args.slack,
+                        "slack alert task failed",
+                    );
                 }
                 Err(error) => {
                     error!(%error, slack_enabled = %args.slack, "slack alert task panicked or was cancelled");
@@ -1201,7 +1205,8 @@ async fn main() -> anyhow::Result<()> {
 
                 if let Err(error) = result {
                     error!(
-                        %error,
+                        // We want the context and cause, but not the backtrace.
+                        error = format!("{error:#}"),
                         alert_limit = ?args.alert_limit,
                         %relaunch_attempt,
                         %max_relaunch_attempts,

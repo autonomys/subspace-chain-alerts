@@ -1,6 +1,7 @@
 //! Slack connection and message code.
 
 use crate::alerts::Alert;
+use anyhow::Context;
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
 use slack_morphism::api::{
@@ -245,7 +246,8 @@ impl SlackClientInfo {
         let list_scroller = list_req.scroller();
         let collected_channels: Vec<SlackChannelInfo> = list_scroller
             .collect_items_stream(&session, REQUEST_THROTTLE)
-            .await?;
+            .await
+            .context("Is the Slack secret correct?")?;
         info!("got {} channels", collected_channels.len());
 
         let mut channel_ids = HashMap::new();
