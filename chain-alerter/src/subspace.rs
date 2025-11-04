@@ -49,12 +49,12 @@ pub const MAX_RECONNECTION_DELAY: u64 = 10_000;
 
 /// The maximum number of RPC reconnection attempts before failing and exiting the process.
 /// TODO: make this configurable
-pub const MAX_INTERNAL_RPC_RECONNECTION_ATTEMPTS: usize = 1000;
+pub const MAX_INTERNAL_RPC_RECONNECTION_ATTEMPTS: usize = 100;
 
 /// The maximum number of RPC subscription reconnections without blocks, before failing and exiting
 /// the process.
 /// TODO: make this configurable
-pub const MAX_SUBSCRIPTION_RECONNECTION_ATTEMPTS: usize = 100;
+pub const MAX_SUBSCRIPTION_RECONNECTION_ATTEMPTS: usize = 10;
 
 // Each subscription reconnection takes an internal RPC reconnection, so the internal reconnections
 // must be greater. (The subscription reconnections reset when they see a block, but the internal

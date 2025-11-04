@@ -3,7 +3,7 @@
 //! Initializes logging, connects to a Subspace node, and runs monitoring tasks that
 //! post alerts to Slack.
 
-#![feature(assert_matches, formatting_options)]
+#![feature(assert_matches, duration_constructors_lite, formatting_options)]
 
 mod alerts;
 mod chain_fork_monitor;
@@ -23,13 +23,14 @@ use crate::farming_monitor::{
     DEFAULT_LOW_END_FARMING_ALERT_THRESHOLD, FarmingMonitor, FarmingMonitorConfig,
     MemoryFarmingMonitor,
 };
+use crate::format::fmt_duration;
 use crate::slack::{SLACK_OAUTH_SECRET_PATH, SlackClientInfo};
 use crate::slot_time_monitor::{
     DEFAULT_CHECK_INTERVAL, DEFAULT_FAST_SLOTS_THRESHOLD, DEFAULT_MAX_BLOCK_BUFFER,
     DEFAULT_SLOW_SLOTS_THRESHOLD, SlotTimeMonitorConfig,
 };
 use crate::subspace::{
-    BlockInfo, BlockLink, BlockNumber, BlockSubscription, LOCAL_SUBSPACE_NODE_URL,
+    BlockInfo, BlockLink, BlockNumber, BlockPosition, BlockSubscription, LOCAL_SUBSPACE_NODE_URL,
     MAX_ALERTER_RELAUNCH_ATTEMPTS, MAX_RECONNECTION_DELAY, MAX_SUBSCRIPTION_RECONNECTION_ATTEMPTS,
     RawBlock, RawBlockError, RawBlockResult, RawEvent, RawEventList, RawExtrinsicList,
     RpcClientList, SubType, SubspaceClient, create_subspace_client,
@@ -47,7 +48,7 @@ use subxt::ext::futures::stream::FuturesUnordered;
 use subxt::ext::futures::{FutureExt, StreamExt};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
-use tokio::time::{MissedTickBehavior, interval, sleep};
+use tokio::time::{Instant, MissedTickBehavior, interval, sleep};
 use tokio::{pin, select, task};
 use tracing::{debug, error, info, trace, warn};
 
@@ -62,6 +63,14 @@ const ALERT_BUFFER_SIZE: usize = 100;
 /// The amount of time to wait between uptime kuma status updates.
 /// TODO: make this configurable
 const UPTIME_KUMA_STATUS_INTERVAL: Duration = Duration::from_secs(60);
+
+/// The amount of time to wait between block subscription watchdog checks.
+///
+/// As of November 2025, we see block gaps of a minute every day or so, so we set this threshold
+/// much higher, to make sure it isn't triggered accidentally.
+///
+/// TODO: make this configurable
+const BLOCK_SUBSCRIPTION_WATCHDOG_INTERVAL: Duration = Duration::from_mins(10);
 
 /// A Slack-based alerter that runs on the Autonomys network.
 // The documentation lines above are printed at the start of the `--help` message.
@@ -353,17 +362,17 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
     let best_chain_clients = rpc_client_list.clone();
     let node_rpc_url = rpc_client_list.primary_node_rpc_url().to_string();
 
-    // A channel that shares the latest block info with concurrently running block stall and uptime
-    // tasks.
-    let latest_block_tx = watch::Sender::new(None);
-    let latest_block_rx = latest_block_tx.subscribe();
+    // A channel that shares the latest best block info with concurrently running block stall,
+    // uptime, and block subscription watchdog tasks.
+    let latest_best_block_tx = watch::Sender::new(None);
+    let latest_best_block_rx = latest_best_block_tx.subscribe();
 
     let best_blocks_task = AsyncJoinOnDrop::new(
         tokio::spawn(
             run_on_best_blocks_subscription(
                 best_chain_clients,
                 new_blocks_tx.clone(),
-                latest_block_tx,
+                latest_best_block_tx,
                 alert_tx.clone(),
             )
             .map(|result| (result, node_rpc_url)),
@@ -400,7 +409,7 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
                 send_uptime_kuma_status(
                     http_client.clone(),
                     uptime_kuma_url.clone(),
-                    latest_block_rx.clone(),
+                    latest_best_block_rx.clone(),
                 )
                 .map(|result| (result, uptime_kuma_url)),
             ),
@@ -409,10 +418,16 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
         uptime_kuma_tasks.push(uptime_kuma_task);
     }
 
+    // Spawn a watchdog task to check the block subscriptions are working.
+    let block_subscription_watchdog_task = AsyncJoinOnDrop::new(
+        tokio::spawn(block_subscription_watchdog(latest_best_block_rx.clone())),
+        true,
+    );
+
     // Tasks are listed in rough data flow order.
     select! {
-        // Make the best blocks win the subscription race, to save on best block check RPC calls.
-        biased;
+        // These tasks are all spawned, so tokio determines their scheduling. All this select does
+        // is check the JoinHandles, to see if any tasks have finished.
 
         // Tasks that maintain internal library state, for example, subxt substrate metadata
         result = metadata_update_tasks.next() => {
@@ -523,6 +538,21 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
                 }
             }
         }
+
+        // A task that checks the block subscriptions are working.
+        result = block_subscription_watchdog_task => {
+            match result {
+                Ok(Ok(())) => {
+                    info!("block subscription watchdog task finished");
+                }
+                Ok(Err(error)) => {
+                    error!(%error, "block subscription watchdog task failed");
+                }
+                Err(error) => {
+                    error!(%error, "block subscription watchdog task panicked or was cancelled");
+                }
+            }
+        }
     }
 
     Ok(())
@@ -599,7 +629,7 @@ async fn run_on_all_blocks_subscription(
 async fn run_on_best_blocks_subscription(
     rpc_client_list: RpcClientList,
     new_blocks_tx: mpsc::Sender<BlockSeenMessage>,
-    latest_block_tx: watch::Sender<Option<(BlockLink, bool)>>,
+    latest_best_block_tx: watch::Sender<Option<(BlockLink, bool)>>,
     alert_tx: mpsc::Sender<Alert>,
 ) -> anyhow::Result<()> {
     let chain_client = rpc_client_list.primary();
@@ -649,7 +679,7 @@ async fn run_on_best_blocks_subscription(
 
         // Notify spawned tasks that a new block has arrived, and give them time to process that
         // block. This is needed even if there is a block gap.
-        latest_block_tx.send_replace(Some((block, is_stalled)));
+        latest_best_block_tx.send_replace(Some((block, is_stalled)));
         task::yield_now().await;
 
         // We only check for block stalls on current subscription blocks, and only if we're not
@@ -660,7 +690,7 @@ async fn run_on_best_blocks_subscription(
                 block,
                 &genesis_hash,
                 alert_tx.clone(),
-                latest_block_tx.subscribe(),
+                latest_best_block_tx.subscribe(),
                 node_rpc_url.to_string(),
             )
             .await;
@@ -718,7 +748,7 @@ async fn handle_subscription_error(
             *subscription_failures += 1;
 
             if *subscription_failures <= MAX_SUBSCRIPTION_RECONNECTION_ATTEMPTS {
-                debug!(
+                info!(
                     %error,
                     %subscription_failures,
                     %MAX_SUBSCRIPTION_RECONNECTION_ATTEMPTS,
@@ -765,14 +795,14 @@ async fn handle_subscription_error(
     }
 }
 
-/// Sends an uptime status to `uptime_kuma_url`, using the latest block info from
-/// `latest_block_rx` as the "ping" parameter.
+/// Sends an uptime status to `uptime_kuma_url`, using the latest best block height from
+/// `latest_best_block_rx` as the "ping" parameter.
 ///
 /// Ignores any HTTPS errors, because a failing uptime server should not bring down the alerter.
 async fn send_uptime_kuma_status(
     http_client: reqwest::Client,
     uptime_kuma_url: String,
-    latest_block_rx: watch::Receiver<Option<(BlockLink, bool)>>,
+    latest_best_block_rx: watch::Receiver<Option<(BlockLink, bool)>>,
 ) {
     let mut timer = interval(UPTIME_KUMA_STATUS_INTERVAL);
     // If there is a timer delay, after the delayed tick, wait for the complete period before
@@ -786,7 +816,7 @@ async fn send_uptime_kuma_status(
 
         // Only borrow the watch channel contents temporarily, to avoid blocking channel updates.
         let (latest_height, is_stalled) = {
-            let latest_block = latest_block_rx.borrow();
+            let latest_block = latest_best_block_rx.borrow();
 
             let latest_height = latest_block.as_ref().map(|(block, _)| block.height());
             let is_stalled = latest_block
@@ -828,6 +858,122 @@ async fn send_uptime_kuma_status(
                 %is_stalled,
                 "error sending uptime status to uptime kuma",
             );
+        }
+    }
+}
+
+/// Checks that the best block height increases every `BLOCK_SUBSCRIPTION_WATCHDOG_INTERVAL`, using
+/// the latest best block height from `latest_best_block_rx`.
+///
+/// Returns with an error if the block height has not increased in the last interval.
+async fn block_subscription_watchdog(
+    mut latest_best_block_rx: watch::Receiver<Option<(BlockLink, bool)>>,
+) -> anyhow::Result<()> {
+    let start_time = Instant::now();
+
+    let mut timer = interval(BLOCK_SUBSCRIPTION_WATCHDOG_INTERVAL);
+    // If there is a timer delay, after the delayed tick, wait for the complete period before
+    // ticking again.
+    timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    // Only check after the first interval (the default is immediately).
+    timer.reset();
+
+    let mut prev_highest_position: Option<BlockPosition> = None;
+    let mut highest_position: Option<BlockPosition> = None;
+
+    loop {
+        select! {
+            // Check the timer first, to avoid an always-ready watch channel starving it.
+            biased;
+
+            // Every time the timer ticks, check that the block height has increased since the last interval.
+            watchdog_time = timer.tick() => {
+                let watchdog_time = fmt_duration(watchdog_time.checked_duration_since(start_time));
+
+                let Some(highest) = highest_position else {
+                    // We haven't seen any blocks after the first interval, so the subscription is stalled.
+                    // Do an internal reset to restart the subscription.
+                    return Err(anyhow::anyhow!(
+                        "watchdog: block subscription never received any blocks at {watchdog_time}",
+                    ));
+                };
+
+                // Check the block height has increased since the last interval.
+                let Some(prev_highest) = prev_highest_position else {
+                    info!(
+                        highest_position = ?highest,
+                        "watchdog: first interval passed successfully, updating previous highest position at {watchdog_time}",
+                    );
+                    prev_highest_position = highest_position;
+                    continue;
+                };
+
+                if highest.height <= prev_highest.height {
+                    return Err(anyhow::anyhow!(
+                        "watchdog: block height has not increased since the last interval: current: {highest:?} previous: {prev_highest:?} at {watchdog_time}",
+                    ));
+                }
+
+                info!(
+                    highest_position = ?highest,
+                    prev_highest_position = ?prev_highest,
+                    "watchdog: block height has increased since the last interval at {watchdog_time}",
+                );
+                prev_highest_position = highest_position;
+            }
+
+            // Every time the watch channel changes, record the new block height, if it is higher than the previous highest block.
+            // Watch channels can have spurious change notifications, so we only update the highest position if the block height has increased.
+            changed_result = latest_best_block_rx.changed() => {
+                let changed_time = Instant::now();
+                let changed_time = fmt_duration(changed_time.checked_duration_since(start_time));
+
+                let Ok(()) = changed_result else {
+                    return Err(anyhow::anyhow!(
+                        "watchdog: block subscription channel disconnected, possible shutdown or internal restart at {changed_time}",
+                    ));
+                };
+
+                // Only borrow the watch channel contents temporarily, to avoid blocking channel updates.
+                let latest_position = latest_best_block_rx.borrow().as_ref().map(|(block, _)| block.position);
+
+                match (latest_position, highest_position) {
+                    (Some(latest), Some(highest)) => {
+                        // Ignore backwards and sideways reorgs.
+                        if latest.height > highest.height {
+                            trace!(
+                                latest_position = ?latest,
+                                highest_position = ?highest,
+                                "watchdog: block height has increased, updating highest position at {changed_time}",
+                            );
+                            highest_position = Some(latest);
+                        } else {
+                            trace!(
+                                latest_position = ?latest,
+                                highest_position = ?highest,
+                                "watchdog: block height has not increased, ignoring at {changed_time}",
+                            );
+                        }
+                    }
+                    // First block, so update unconditionally.
+                    (Some(latest), None) => {
+                        trace!(
+                            latest_position = ?latest,
+                            "watchdog: first block received, updating highest position at {changed_time}",
+                        );
+                        highest_position = Some(latest);
+                    }
+                    (None, Some(_highest)) => {
+                        unreachable!("After the first block, the watch channel is never set to None");
+                    }
+                    (None, None) => {
+                        // Do nothing, we haven't seen any blocks yet.
+                        trace!(
+                            "watchdog: no blocks received yet, waiting for first block at {changed_time}",
+                        );
+                    }
+                }
+            }
         }
     }
 }

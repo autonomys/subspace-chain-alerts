@@ -353,6 +353,9 @@ impl SlackClientInfo {
         let channel_id = if alert.is_test_alert() {
             info!(
                 ?alert,
+                ?mode,
+                block = ?block_info.position(),
+                ?node_rpc_urls,
                 is_duplicate = %alert.is_duplicate(),
                 channel_id = ?self.startup_channel_id,
                 "posting startup message to test channel",
@@ -362,6 +365,9 @@ impl SlackClientInfo {
         } else {
             info!(
                 ?alert,
+                ?mode,
+                block = ?block_info.position(),
+                ?node_rpc_urls,
                 is_duplicate = %alert.is_duplicate(),
                 channel_id = ?self.alert_channel_id,
                 "posting alert to alerts channel",

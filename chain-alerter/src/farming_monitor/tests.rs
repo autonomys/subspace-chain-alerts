@@ -3,7 +3,7 @@
 #![allow(clippy::unwrap_in_result, reason = "panics are ok in failing tests")]
 
 use super::*;
-use crate::subspace::test_utils::mock_block_info;
+use crate::subspace::test_utils::{alert_channel_only_setup, mock_block_info};
 use tokio::sync::mpsc;
 
 const FAKE_NODE_RPC_URL: &str = "test";
@@ -102,7 +102,7 @@ async fn test_farmers_going_inactive() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 /// Test that an alert is emitted when the number of farmers with votes decreases suddenly.
 async fn test_alert_emitted_on_drop_in_active_farmers() -> anyhow::Result<()> {
-    let (alert_tx, mut alert_rx) = mpsc::channel(10);
+    let (alert_tx, mut alert_rx) = alert_channel_only_setup();
     let config = FarmingMonitorConfig {
         alert_tx,
         max_block_interval: 10,
@@ -166,7 +166,7 @@ async fn test_alert_emitted_on_drop_in_active_farmers() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 /// Test that an alert is emitted when the number of farmers with votes increases suddenly.
 async fn test_alert_emitted_on_increase_in_active_farmers() -> anyhow::Result<()> {
-    let (alert_tx, mut alert_rx) = mpsc::channel(10);
+    let (alert_tx, mut alert_rx) = alert_channel_only_setup();
     let config = FarmingMonitorConfig {
         alert_tx,
         max_block_interval: 10,
@@ -231,7 +231,7 @@ async fn test_alert_emitted_on_increase_in_active_farmers() -> anyhow::Result<()
 /// Test that no alert is emitted when the number of farmers with votes is within the
 /// thresholds.
 async fn test_no_alert_within_thresholds() -> anyhow::Result<()> {
-    let (alert_tx, mut alert_rx) = mpsc::channel(10);
+    let (alert_tx, mut alert_rx) = alert_channel_only_setup();
     let config = FarmingMonitorConfig {
         alert_tx,
         max_block_interval: 10,

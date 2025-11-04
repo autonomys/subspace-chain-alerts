@@ -1137,7 +1137,7 @@ pub async fn check_block(
 }
 
 /// Spawn a task that waits for `MIN_BLOCK_GAP`, then alerts if there was no block received on
-/// `latest_block_rx` in that gap.
+/// `latest_best_block_rx` in that gap.
 ///
 /// Fatal errors will be returned from the spawned task's join handle.
 ///
@@ -1151,7 +1151,7 @@ pub async fn check_for_block_stall(
     block: BlockLink,
     genesis_hash: &BlockHash,
     alert_tx: mpsc::Sender<Alert>,
-    latest_block_rx: watch::Receiver<Option<(BlockLink, bool)>>,
+    latest_best_block_rx: watch::Receiver<Option<(BlockLink, bool)>>,
     node_rpc_url: String,
 ) -> JoinHandle<anyhow::Result<Option<bool>>> {
     // It doesn't make sense to check the local clock for stalls on replayed blocks, because we
@@ -1166,7 +1166,7 @@ pub async fn check_for_block_stall(
         sleep(MIN_STALL_BLOCK_GAP).await;
 
         // Avoid a potential deadlock by copying the watched value immediately.
-        let (latest_block, is_stalled_already): (BlockLink, bool) = latest_block_rx
+        let (latest_block, is_stalled_already): (BlockLink, bool) = latest_best_block_rx
             .borrow()
             .expect("never empty, a block is sent before spawning this task");
 
