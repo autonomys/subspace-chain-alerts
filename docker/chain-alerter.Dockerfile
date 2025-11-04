@@ -31,11 +31,12 @@ RUN /root/.cargo/bin/cargo build \
 
 FROM ubuntu:24.04
 
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive  apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
 COPY --from=0 /code/subspace-chain-alerter /subspace-chain-alerter
 
 USER nobody:nogroup
 
-# TODO:
-# - when we have a local node, use it by default by dropping the --node-rpc-url argument
-# - when multiple node support is fixed (#74), add the foundation node here as well
-ENTRYPOINT ["/subspace-chain-alerter", "--node-rpc-url", "wss://rpc.mainnet.autonomys.xyz/ws"]
+ENTRYPOINT [ "/subspace-chain-alerter" ]
