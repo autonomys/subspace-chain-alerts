@@ -212,7 +212,7 @@ impl MemorySlotTimeMonitor {
 
         // If time diff is 0, return an error should never happen though
         if time_diff == 0 {
-            return Err(anyhow::anyhow!("time diff is 0"));
+            anyhow::bail!("time diff is 0");
         }
         #[allow(
             clippy::cast_precision_loss,

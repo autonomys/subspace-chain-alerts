@@ -136,8 +136,10 @@ The Slack bot has permission to read and post in channels it is invited into by 
 As of November 2025, this is just the chain-alerts and test channels.
 
 The Slack bot can be managed via your Slack login on [the Slack apps portal](https://api.slack.com/apps):
-  - The Autonomys Slack team ID is T03LJ85UR5G (this is not a secret)
-  - Slack bot tokens can be created and revoked here, and the bot's permissions can be changed
+
+- The Autonomys Slack team ID is T03LJ85UR5G and the App ID is A09956363PY (these are not secrets)
+- Slack bot tokens can be created and revoked on the [Install App](https://api.slack.com/apps/A09956363PY/install-on-team) screen, and the bot's permissions can be changed
+- Bot tokens look like `xoxb-(numbers)-(numbers)-(base64)` as of November 2025
 
 ## Limitations (PoC)
 
@@ -161,7 +163,7 @@ The Slack bot can be managed via your Slack login on [the Slack apps portal](htt
 
 2. Optional: Prepare Slack secret file
 
-   - Get the current Slack "bot token" from [the Slack apps portal](https://api.slack.com/apps)
+   - Get the current Slack "bot token" from [Install App on the Slack apps portal](https://api.slack.com/apps/A09956363PY/install-on-team)
    - Save it to a file named `slack-secret` in the repository root
    - Restrict permissions (Unix):
      - `chmod 400 slack-secret` (or `chmod 600 slack-secret`)

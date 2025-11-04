@@ -1,6 +1,7 @@
 //! Slack connection and message code.
 
 use crate::alerts::Alert;
+use anyhow::Context;
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
 use slack_morphism::api::{
@@ -18,7 +19,6 @@ use slack_morphism::{
     SlackClientSession, SlackMessageContent,
 };
 use std::collections::{HashMap, HashSet};
-use std::io;
 use std::ops::Deref;
 use std::time::Duration;
 use tokio::fs;
@@ -133,7 +133,7 @@ impl SlackSecret {
     /// this process.
     ///
     /// Any returned errors are fatal and require a restart.
-    async fn new(path: &str) -> Result<Self, io::Error> {
+    async fn new(path: &str) -> anyhow::Result<Self> {
         // It is not secure to provide secrets on the command line or in environment variables,
         // because those secrets can be visible to other users of the system via `ps` or `top`.
 
@@ -149,12 +149,17 @@ impl SlackSecret {
             let secret_perms = fs::metadata(path).await?.permissions().mode();
             assert!(
                 secret_perms & 0o777 == USER_READ_ONLY || secret_perms & 0o777 == USER_READ_WRITE,
-                "slack-oauth-secret must be readable only by the user running this process \
+                "{path} must be readable only by the user running this process \
                 ({USER_READ_ONLY:?} or {USER_READ_WRITE:?}), but it is {secret_perms:?}"
             );
         }
 
         let secret = fs::read_to_string(path).await?;
+        let secret = secret.trim().to_string();
+
+        if secret.is_empty() {
+            anyhow::bail!("{path} is an empty file (or only contains whitespace)");
+        }
 
         Ok(Self(
             SlackApiToken::new(secret.into()).with_team_id(AUTONOMYS_TEAM_ID.into()),
@@ -241,7 +246,8 @@ impl SlackClientInfo {
         let list_scroller = list_req.scroller();
         let collected_channels: Vec<SlackChannelInfo> = list_scroller
             .collect_items_stream(&session, REQUEST_THROTTLE)
-            .await?;
+            .await
+            .context("Is the Slack secret correct?")?;
         info!("got {} channels", collected_channels.len());
 
         let mut channel_ids = HashMap::new();
