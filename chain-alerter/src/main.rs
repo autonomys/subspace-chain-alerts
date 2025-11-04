@@ -23,6 +23,7 @@ use crate::farming_monitor::{
     DEFAULT_LOW_END_FARMING_ALERT_THRESHOLD, FarmingMonitor, FarmingMonitorConfig,
     MemoryFarmingMonitor,
 };
+use crate::format::fmt_duration;
 use crate::slack::{SLACK_OAUTH_SECRET_PATH, SlackClientInfo};
 use crate::slot_time_monitor::{
     DEFAULT_CHECK_INTERVAL, DEFAULT_FAST_SLOTS_THRESHOLD, DEFAULT_MAX_BLOCK_BUFFER,
@@ -47,7 +48,7 @@ use subxt::ext::futures::stream::FuturesUnordered;
 use subxt::ext::futures::{FutureExt, StreamExt};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
-use tokio::time::{MissedTickBehavior, interval, sleep};
+use tokio::time::{Instant, MissedTickBehavior, interval, sleep};
 use tokio::{pin, select, task};
 use tracing::{debug, error, info, trace, warn};
 
@@ -868,6 +869,8 @@ async fn send_uptime_kuma_status(
 async fn block_subscription_watchdog(
     mut latest_best_block_rx: watch::Receiver<Option<(BlockLink, bool)>>,
 ) -> anyhow::Result<()> {
+    let start_time = Instant::now();
+
     let mut timer = interval(BLOCK_SUBSCRIPTION_WATCHDOG_INTERVAL);
     // If there is a timer delay, after the delayed tick, wait for the complete period before
     // ticking again.
@@ -885,27 +888,36 @@ async fn block_subscription_watchdog(
 
             // Every time the timer ticks, check that the block height has increased since the last interval.
             watchdog_time = timer.tick() => {
+                let watchdog_time = fmt_duration(watchdog_time.checked_duration_since(start_time));
+
                 let Some(highest) = highest_position else {
                     // We haven't seen any blocks after the first interval, so the subscription is stalled.
                     // Do an internal reset to restart the subscription.
-                    return Err(anyhow::anyhow!("watchdog: block subscription never received any blocks at {watchdog_time:?}"));
+                    return Err(anyhow::anyhow!(
+                        "watchdog: block subscription never received any blocks at {watchdog_time}",
+                    ));
                 };
 
                 // Check the block height has increased since the last interval.
                 let Some(prev_highest) = prev_highest_position else {
-                    info!(highest_position = ?highest, "watchdog: first interval passed successfully, updating previous highest position at {watchdog_time:?}");
+                    info!(
+                        highest_position = ?highest,
+                        "watchdog: first interval passed successfully, updating previous highest position at {watchdog_time}",
+                    );
                     prev_highest_position = highest_position;
                     continue;
                 };
 
                 if highest.height <= prev_highest.height {
-                    return Err(anyhow::anyhow!("watchdog: block height has not increased since the last interval: current: {highest:?} previous: {prev_highest:?} at {watchdog_time:?}"));
+                    return Err(anyhow::anyhow!(
+                        "watchdog: block height has not increased since the last interval: current: {highest:?} previous: {prev_highest:?} at {watchdog_time}",
+                    ));
                 }
 
                 info!(
                     highest_position = ?highest,
                     prev_highest_position = ?prev_highest,
-                    "watchdog: block height has increased since the last interval at {watchdog_time:?}",
+                    "watchdog: block height has increased since the last interval at {watchdog_time}",
                 );
                 prev_highest_position = highest_position;
             }
@@ -913,8 +925,13 @@ async fn block_subscription_watchdog(
             // Every time the watch channel changes, record the new block height, if it is higher than the previous highest block.
             // Watch channels can have spurious change notifications, so we only update the highest position if the block height has increased.
             changed_result = latest_best_block_rx.changed() => {
+                let changed_time = Instant::now();
+                let changed_time = fmt_duration(changed_time.checked_duration_since(start_time));
+
                 let Ok(()) = changed_result else {
-                    return Err(anyhow::anyhow!("watchdog: block subscription channel disconnected, possible shutdown or internal restart"));
+                    return Err(anyhow::anyhow!(
+                        "watchdog: block subscription channel disconnected, possible shutdown or internal restart at {changed_time}",
+                    ));
                 };
 
                 // Only borrow the watch channel contents temporarily, to avoid blocking channel updates.
@@ -927,14 +944,14 @@ async fn block_subscription_watchdog(
                             trace!(
                                 latest_position = ?latest,
                                 highest_position = ?highest,
-                                "watchdog: block height has increased, updating highest position",
+                                "watchdog: block height has increased, updating highest position at {changed_time}",
                             );
                             highest_position = Some(latest);
                         } else {
                             trace!(
                                 latest_position = ?latest,
                                 highest_position = ?highest,
-                                "watchdog: block height has not increased, ignoring",
+                                "watchdog: block height has not increased, ignoring at {changed_time}",
                             );
                         }
                     }
@@ -942,7 +959,7 @@ async fn block_subscription_watchdog(
                     (Some(latest), None) => {
                         trace!(
                             latest_position = ?latest,
-                            "watchdog: first block received, updating highest position",
+                            "watchdog: first block received, updating highest position at {changed_time}",
                         );
                         highest_position = Some(latest);
                     }
@@ -951,7 +968,9 @@ async fn block_subscription_watchdog(
                     }
                     (None, None) => {
                         // Do nothing, we haven't seen any blocks yet.
-                        trace!("watchdog: no blocks received yet, waiting for first block");
+                        trace!(
+                            "watchdog: no blocks received yet, waiting for first block at {changed_time}",
+                        );
                     }
                 }
             }
