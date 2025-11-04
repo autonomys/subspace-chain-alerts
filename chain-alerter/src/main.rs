@@ -355,15 +355,15 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
 
     // A channel that shares the latest block info with concurrently running block stall and uptime
     // tasks.
-    let latest_block_tx = watch::Sender::new(None);
-    let latest_block_rx = latest_block_tx.subscribe();
+    let latest_best_block_tx = watch::Sender::new(None);
+    let latest_best_block_rx = latest_best_block_tx.subscribe();
 
     let best_blocks_task = AsyncJoinOnDrop::new(
         tokio::spawn(
             run_on_best_blocks_subscription(
                 best_chain_clients,
                 new_blocks_tx.clone(),
-                latest_block_tx,
+                latest_best_block_tx,
                 alert_tx.clone(),
             )
             .map(|result| (result, node_rpc_url)),
@@ -400,7 +400,7 @@ async fn run(args: &mut Args) -> anyhow::Result<()> {
                 send_uptime_kuma_status(
                     http_client.clone(),
                     uptime_kuma_url.clone(),
-                    latest_block_rx.clone(),
+                    latest_best_block_rx.clone(),
                 )
                 .map(|result| (result, uptime_kuma_url)),
             ),
@@ -599,7 +599,7 @@ async fn run_on_all_blocks_subscription(
 async fn run_on_best_blocks_subscription(
     rpc_client_list: RpcClientList,
     new_blocks_tx: mpsc::Sender<BlockSeenMessage>,
-    latest_block_tx: watch::Sender<Option<(BlockLink, bool)>>,
+    latest_best_block_tx: watch::Sender<Option<(BlockLink, bool)>>,
     alert_tx: mpsc::Sender<Alert>,
 ) -> anyhow::Result<()> {
     let chain_client = rpc_client_list.primary();
@@ -649,7 +649,7 @@ async fn run_on_best_blocks_subscription(
 
         // Notify spawned tasks that a new block has arrived, and give them time to process that
         // block. This is needed even if there is a block gap.
-        latest_block_tx.send_replace(Some((block, is_stalled)));
+        latest_best_block_tx.send_replace(Some((block, is_stalled)));
         task::yield_now().await;
 
         // We only check for block stalls on current subscription blocks, and only if we're not
@@ -660,7 +660,7 @@ async fn run_on_best_blocks_subscription(
                 block,
                 &genesis_hash,
                 alert_tx.clone(),
-                latest_block_tx.subscribe(),
+                latest_best_block_tx.subscribe(),
                 node_rpc_url.to_string(),
             )
             .await;
@@ -765,14 +765,14 @@ async fn handle_subscription_error(
     }
 }
 
-/// Sends an uptime status to `uptime_kuma_url`, using the latest block info from
-/// `latest_block_rx` as the "ping" parameter.
+/// Sends an uptime status to `uptime_kuma_url`, using the latest best block height from
+/// `latest_best_block_rx` as the "ping" parameter.
 ///
 /// Ignores any HTTPS errors, because a failing uptime server should not bring down the alerter.
 async fn send_uptime_kuma_status(
     http_client: reqwest::Client,
     uptime_kuma_url: String,
-    latest_block_rx: watch::Receiver<Option<(BlockLink, bool)>>,
+    latest_best_block_rx: watch::Receiver<Option<(BlockLink, bool)>>,
 ) {
     let mut timer = interval(UPTIME_KUMA_STATUS_INTERVAL);
     // If there is a timer delay, after the delayed tick, wait for the complete period before
@@ -786,7 +786,7 @@ async fn send_uptime_kuma_status(
 
         // Only borrow the watch channel contents temporarily, to avoid blocking channel updates.
         let (latest_height, is_stalled) = {
-            let latest_block = latest_block_rx.borrow();
+            let latest_block = latest_best_block_rx.borrow();
 
             let latest_height = latest_block.as_ref().map(|(block, _)| block.height());
             let is_stalled = latest_block
