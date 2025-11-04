@@ -130,6 +130,15 @@ Some alerts are only issued if they happen on the primary RPC server.
 - The token is wrapped and zeroized on drop to reduce in-memory exposure.
 - Do not commit or log the token. The `.gitignore` and `Debug` impl handle this by default.
 
+### Managing the Slack Bot
+
+The Slack bot has permission to read and post in channels it is invited into by Slack users.
+As of November 2025, this is just the chain-alerts and test channels.
+
+The Slack bot can be managed via your Slack login on [the Slack apps portal](https://api.slack.com/apps):
+  - The Autonomys Slack team ID is T03LJ85UR5G (this is not a secret)
+  - Slack bot tokens can be created and revoked here, and the bot's permissions can be changed
+
 ## Limitations (PoC)
 
 - Hardcoded Slack channel, workspace ID, and thresholds.
@@ -152,7 +161,8 @@ Some alerts are only issued if they happen on the primary RPC server.
 
 2. Optional: Prepare Slack secret file
 
-   - Save the Slack "bot token" to a file named `slack-secret` in the repository root
+   - Get the current Slack "bot token" from [the Slack apps portal](https://api.slack.com/apps)
+   - Save it to a file named `slack-secret` in the repository root
    - Restrict permissions (Unix):
      - `chmod 400 slack-secret` (or `chmod 600 slack-secret`)
 
