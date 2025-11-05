@@ -7,7 +7,6 @@ use crate::alerts::{Alert, AlertKind, BlockCheckMode};
 use crate::subspace::BlockInfo;
 use anyhow::Ok;
 use std::collections::VecDeque;
-use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::warn;
 
@@ -24,10 +23,8 @@ pub const DEFAULT_SLOW_SLOTS_THRESHOLD: f64 = 1.10;
 pub const DEFAULT_FAST_SLOTS_THRESHOLD: f64 = 0.94;
 
 /// The default maximum block buffer size.
+/// The check interval is approximately 6 times this number (the target block time is 6 seconds).
 pub const DEFAULT_MAX_BLOCK_BUFFER: usize = 100;
-
-/// The default check interval for the slot time monitor.
-pub const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_secs(600);
 
 /// Interface for slot time monitors that consume blocks and perform checks.
 pub trait SlotTimeMonitor {
@@ -43,8 +40,6 @@ pub trait SlotTimeMonitor {
 /// Configuration for the slot time monitor.
 #[derive(Clone, Debug)]
 pub struct SlotTimeMonitorConfig {
-    /// Interval between checks of slot timing.
-    pub check_interval: Duration,
     /// Maximum block buffer
     pub max_block_buffer: usize,
     /// Minimum threshold for alerting based on time-per-slot ratio.
@@ -90,19 +85,12 @@ pub enum AlertingStatus {
 impl SlotTimeMonitorConfig {
     /// Create a new slot time monitor configuration with the provided parameters.
     pub fn new(
-        check_interval: Duration,
         max_block_buffer: usize,
         slow_slots_threshold: f64,
         fast_slots_threshold: f64,
         alert_tx: mpsc::Sender<Alert>,
     ) -> Self {
-        assert!(
-            u64::try_from(check_interval.as_millis()).is_ok(),
-            "unexpectedly large check interval"
-        );
-
         Self {
-            check_interval,
             max_block_buffer,
             slow_slots_threshold,
             fast_slots_threshold,
