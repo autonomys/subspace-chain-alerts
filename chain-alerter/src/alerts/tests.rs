@@ -697,8 +697,8 @@ async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
         Alert::new(
             AlertKind::SlowSlotTime {
                 slot_amount: 100,
-                time_elapsed: 100,
-                current_ratio: 1.0,
+                seconds_elapsed: 100,
+                seconds_per_slot: 1.0,
                 threshold: 0.2f64,
             },
             BlockCheckMode::Replay,
@@ -752,8 +752,8 @@ async fn test_slot_time_above_slow_threshold() -> anyhow::Result<()> {
         Alert::new(
             AlertKind::SlowSlotTime {
                 slot_amount: 1,
-                time_elapsed: 100,
-                current_ratio: 100.0, // 100_000ms / 1 slots = 100 seconds per slot
+                seconds_elapsed: 100,
+                seconds_per_slot: 100.0, // 100_000ms / 1 slots = 100 seconds per slot
                 threshold: 2f64,
             },
             BlockCheckMode::Replay,
@@ -807,8 +807,8 @@ async fn test_slot_time_below_fast_threshold() -> anyhow::Result<()> {
         Alert::new(
             AlertKind::FastSlotTime {
                 slot_amount: 100,
-                time_elapsed: 100,
-                current_ratio: 1.0, // 100 slots / 100000ms = 1.0 slots per second
+                seconds_elapsed: 100,
+                seconds_per_slot: 1.0, // 100 slots / 100000ms = 1.0 slots per second
                 threshold: 2f64,
             },
             BlockCheckMode::Replay,

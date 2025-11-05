@@ -413,10 +413,10 @@ pub enum AlertKind {
 
         /// The number of seconds between the block times of the first and last block in the
         /// state.
-        time_elapsed: u64,
+        seconds_elapsed: u64,
 
         /// The current ratio of slots to time.
-        current_ratio: f64,
+        seconds_per_slot: f64,
 
         /// The applicable threshold for this alert.
         threshold: f64,
@@ -432,10 +432,10 @@ pub enum AlertKind {
 
         /// The number of seconds between the block times of the first and last block in the
         /// state.
-        time_elapsed: u64,
+        seconds_elapsed: u64,
 
         /// The current ratio of slots to time.
-        current_ratio: f64,
+        seconds_per_slot: f64,
 
         /// The applicable threshold for this alert.
         threshold: f64,
@@ -681,33 +681,33 @@ impl Display for AlertKind {
 
             Self::SlowSlotTime {
                 slot_amount,
-                time_elapsed,
-                current_ratio,
+                seconds_elapsed,
+                seconds_per_slot,
                 threshold,
             } => {
                 write!(
                     f,
                     "**Slow slot time alert**\n\
-                    Current ratio: {current_ratio:.2} seconds per slot\n\
+                    Current ratio: {seconds_per_slot:.2} seconds per slot\n\
                     Threshold: {threshold:.2} seconds per slot\n\
                     Slot amount: {slot_amount}\n\
-                    Time elapsed: {time_elapsed} seconds",
+                    Time elapsed: {seconds_elapsed} seconds",
                 )
             }
 
             Self::FastSlotTime {
                 slot_amount,
-                time_elapsed,
-                current_ratio,
+                seconds_elapsed,
+                seconds_per_slot,
                 threshold,
             } => {
                 write!(
                     f,
                     "**Fast slot time alert**\n\
-                    Current ratio: {current_ratio:.2} seconds per slot\n\
+                    Current ratio: {seconds_per_slot:.2} seconds per slot\n\
                     Threshold: {threshold:.2} seconds per slot\n\
                     Slot amount: {slot_amount}\n\
-                    Time elapsed: {time_elapsed} seconds",
+                    Time elapsed: {seconds_elapsed} seconds",
                 )
             }
 
