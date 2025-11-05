@@ -225,6 +225,7 @@ impl MemorySlotTimeMonitor {
                 mode,
                 *block_info,
                 slot_diff,
+                time_diff,
                 time_per_slot,
                 node_rpc_url,
             )
@@ -234,6 +235,7 @@ impl MemorySlotTimeMonitor {
                 mode,
                 *block_info,
                 slot_diff,
+                time_diff,
                 time_per_slot,
                 node_rpc_url,
             )
@@ -251,6 +253,7 @@ impl MemorySlotTimeMonitor {
         mode: BlockCheckMode,
         block_info: BlockInfo,
         slot_diff: u64,
+        time_diff: u64,
         time_per_slot: f64,
         node_rpc_url: &str,
     ) -> anyhow::Result<()> {
@@ -264,9 +267,9 @@ impl MemorySlotTimeMonitor {
                 .send(Alert::new(
                     AlertKind::SlowSlotTime {
                         slot_amount: slot_diff,
+                        time_elapsed: time_diff,
                         current_ratio: time_per_slot,
                         threshold: self.config.slow_slots_threshold,
-                        interval: self.config.check_interval,
                     },
                     mode,
                     block_info,
@@ -283,6 +286,7 @@ impl MemorySlotTimeMonitor {
         mode: BlockCheckMode,
         block_info: BlockInfo,
         slot_diff: u64,
+        time_diff: u64,
         time_per_slot: f64,
         node_rpc_url: &str,
     ) -> anyhow::Result<()> {
@@ -296,9 +300,9 @@ impl MemorySlotTimeMonitor {
                 .send(Alert::new(
                     AlertKind::FastSlotTime {
                         slot_amount: slot_diff,
+                        time_elapsed: time_diff,
                         current_ratio: time_per_slot,
                         threshold: self.config.fast_slots_threshold,
-                        interval: self.config.check_interval,
                     },
                     mode,
                     block_info,

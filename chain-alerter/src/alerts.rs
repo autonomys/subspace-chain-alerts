@@ -10,7 +10,7 @@ mod tests;
 use crate::alerts::account::Accounts;
 use crate::alerts::transfer::TransferValue;
 use crate::chain_fork_monitor::ChainForkEvent;
-use crate::format::{fmt_amount, fmt_duration, fmt_time_delta};
+use crate::format::{fmt_amount, fmt_time_delta};
 use crate::subspace::{
     AI3, Balance, BlockHash, BlockInfo, BlockLink, BlockPosition, EventInfo, ExtrinsicInfo,
     RawEvent, RawExtrinsic, chain_time_gap_between_blocks, local_time_gap_between_blocks,
@@ -19,7 +19,6 @@ use crate::subspace::{
 use chrono::TimeDelta;
 use std::fmt::{self, Display};
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
@@ -412,14 +411,15 @@ pub enum AlertKind {
         /// The amount of slots.
         slot_amount: u64,
 
+        /// The number of seconds between the block times of the first and last block in the
+        /// state.
+        time_elapsed: u64,
+
         /// The current ratio of slots to time.
         current_ratio: f64,
 
         /// The applicable threshold for this alert.
         threshold: f64,
-
-        /// The duration of the interval.
-        interval: Duration,
     },
 
     /// Slot timing is faster than expected.
@@ -430,14 +430,15 @@ pub enum AlertKind {
         /// The amount of slots.
         slot_amount: u64,
 
+        /// The number of seconds between the block times of the first and last block in the
+        /// state.
+        time_elapsed: u64,
+
         /// The current ratio of slots to time.
         current_ratio: f64,
 
         /// The applicable threshold for this alert.
         threshold: f64,
-
-        /// The duration of the interval.
-        interval: Duration,
     },
 
     /// Farmers count has decreased suddenly.
@@ -680,9 +681,9 @@ impl Display for AlertKind {
 
             Self::SlowSlotTime {
                 slot_amount,
+                time_elapsed,
                 current_ratio,
                 threshold,
-                interval,
             } => {
                 write!(
                     f,
@@ -690,16 +691,15 @@ impl Display for AlertKind {
                     Current ratio: {current_ratio:.2} seconds per slot\n\
                     Threshold: {threshold:.2} seconds per slot\n\
                     Slot amount: {slot_amount}\n\
-                    Interval: {}",
-                    fmt_duration(*interval),
+                    Time elapsed: {time_elapsed} seconds",
                 )
             }
 
             Self::FastSlotTime {
                 slot_amount,
+                time_elapsed,
                 current_ratio,
                 threshold,
-                interval,
             } => {
                 write!(
                     f,
@@ -707,8 +707,7 @@ impl Display for AlertKind {
                     Current ratio: {current_ratio:.2} seconds per slot\n\
                     Threshold: {threshold:.2} seconds per slot\n\
                     Slot amount: {slot_amount}\n\
-                    Interval: {}",
-                    fmt_duration(*interval),
+                    Time elapsed: {time_elapsed} seconds",
                 )
             }
 
