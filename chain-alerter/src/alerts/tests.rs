@@ -17,7 +17,6 @@ use crate::subspace::{
 };
 use anyhow::Ok;
 use std::assert_matches::assert_matches;
-use std::time::Duration;
 use subxt::ext::futures::{FutureExt, StreamExt};
 
 /// The extrinsic and event for a recent sudo call.
@@ -643,7 +642,6 @@ async fn no_expected_test_slot_time_alert() -> anyhow::Result<()> {
     let second_block = mock_block_info(200000, Slot(200));
 
     let mut naive_slot_time_monitor = MemorySlotTimeMonitor::new(SlotTimeMonitorConfig::new(
-        Duration::from_secs(1),
         2,      // max_block_buffer - small buffer for testing
         2f64,   // slow_slots_threshold
         0.1f64, // fast_slots_threshold
@@ -676,7 +674,6 @@ async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
     let second_block = mock_block_info(200000, Slot(200));
 
     let mut strict_slot_time_monitor = MemorySlotTimeMonitor::new(SlotTimeMonitorConfig::new(
-        Duration::from_secs(1),
         2,      // max_block_buffer - small buffer for testing
         0.2f64, // slow_slots_threshold
         0.1f64, // fast_slots_threshold
@@ -700,9 +697,9 @@ async fn expected_test_slot_time_alert() -> anyhow::Result<()> {
         Alert::new(
             AlertKind::SlowSlotTime {
                 slot_amount: 100,
-                current_ratio: 1.0,
+                seconds_elapsed: 100,
+                seconds_per_slot: 1.0,
                 threshold: 0.2f64,
-                interval: Duration::from_secs(1),
             },
             BlockCheckMode::Replay,
             second_block,
@@ -732,7 +729,6 @@ async fn test_slot_time_above_slow_threshold() -> anyhow::Result<()> {
     let second_block = mock_block_info(200000, Slot(101));
 
     let mut slot_time_monitor = MemorySlotTimeMonitor::new(SlotTimeMonitorConfig::new(
-        Duration::from_secs(1),
         2,       // max_block_buffer - small buffer for testing
         2f64,    // slow_slots_threshold
         0.01f64, // fast_slots_threshold
@@ -756,9 +752,9 @@ async fn test_slot_time_above_slow_threshold() -> anyhow::Result<()> {
         Alert::new(
             AlertKind::SlowSlotTime {
                 slot_amount: 1,
-                current_ratio: 100.0, // 100_000ms / 1 slots = 100 seconds per slot
+                seconds_elapsed: 100,
+                seconds_per_slot: 100.0, // 100_000ms / 1 slots = 100 seconds per slot
                 threshold: 2f64,
-                interval: Duration::from_secs(1),
             },
             BlockCheckMode::Replay,
             second_block,
@@ -788,7 +784,6 @@ async fn test_slot_time_below_fast_threshold() -> anyhow::Result<()> {
     let second_block = mock_block_info(200000, Slot(200));
 
     let mut slot_time_monitor = MemorySlotTimeMonitor::new(SlotTimeMonitorConfig::new(
-        Duration::from_secs(1),
         2,     // max_block_buffer - small buffer for testing
         10f64, // slow_slots_threshold
         2f64,  // fast_slots_threshold
@@ -812,9 +807,9 @@ async fn test_slot_time_below_fast_threshold() -> anyhow::Result<()> {
         Alert::new(
             AlertKind::FastSlotTime {
                 slot_amount: 100,
-                current_ratio: 1.0, // 100 slots / 100000ms = 1.0 slots per second
+                seconds_elapsed: 100,
+                seconds_per_slot: 1.0, // 100 slots / 100000ms = 1.0 slots per second
                 threshold: 2f64,
-                interval: Duration::from_secs(1),
             },
             BlockCheckMode::Replay,
             second_block,
@@ -840,7 +835,6 @@ async fn test_slot_time_alerts_ignored_during_startup() -> anyhow::Result<()> {
     let second_block = mock_block_info(2000, Slot(200));
 
     let mut slot_time_monitor = MemorySlotTimeMonitor::new(SlotTimeMonitorConfig::new(
-        Duration::from_secs(1),
         2,      // max_block_buffer - small buffer for testing
         0.5f64, // slow_slots_threshold (0.1 < 0.5, so would normally trigger)
         0.1f64, // fast_slots_threshold
@@ -874,7 +868,6 @@ async fn test_slot_time_alerts_not_triggered_when_buffer_not_full() -> anyhow::R
     let second_block = mock_block_info(200000, Slot(200));
 
     let mut slot_time_monitor = MemorySlotTimeMonitor::new(SlotTimeMonitorConfig::new(
-        Duration::from_secs(1),
         3,      // max_block_buffer - need 3 blocks to fill buffer
         0.5f64, // slow_slots_threshold (1.0 > 0.5, so would trigger if buffer was full)
         0.1f64, // fast_slots_threshold
