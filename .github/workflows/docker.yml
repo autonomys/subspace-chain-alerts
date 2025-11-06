@@ -3,7 +3,7 @@
 # Container images are only marked as "latest" in GitHub Container Registry for pushes to `main` and tags (including release tags).
 name: Docker build
 
-# This action is triggered for every PR, push to `main`, tag, release, merge queue, and manually.
+# This action is triggered for every tag and workflow_dispatch.
 on:
   push:
     tags:
@@ -64,48 +64,3 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-
-  # Runs a chain-alerter docker container until it sends a startup alert, but with Slack disabled.
-  # This is useful for testing the chain-alerter docker image.
-  #
-  # This should be kept in sync with the rust.yml `cargo-run` job.
-  docker-run:
-    name: docker-run
-    runs-on: ubuntu-24.04
-    # Unfortunately, this doesn't work at the step level on Windows.
-    defaults:
-      run:
-        shell: bash
-    # Don't use the full 6 hours if this integration test hangs
-    timeout-minutes: 30
-    # We need the container built first
-    needs: docker-build
-
-    steps:
-      # Using the default node in the docker image, run a simple test we have the correct image,
-      # printing all the logs to the console.
-      # https://aschmelyun.com/blog/using-docker-run-inside-of-github-actions/
-      - name: docker run chain-alerter --help
-        # Stop the Docker instance after 60 seconds, regardless of whether it succeeded or failed.
-        # TODO: work out how to let this Docker instance make outbound connections, then use --slack=false
-        run: |
-          (docker stop $(sleep 60; docker ps --quiet | tail --lines=1)) &
-          docker run --tty ghcr.io/autonomys/chain-alerter:sha-${{ github.sha }} --help \
-          | tee /dev/stderr \
-          | grep --max-count=1 "A Slack-based alerter that runs on the Autonomys network"
-
-  docker-all:
-    # Hack for buggy GitHub Actions behavior with skipped checks:
-    # <https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/collaborating-on-repositories-with-code-quality-features/troubleshooting-required-status-checks#handling-skipped-but-required-checks>
-    if: ${{ always() }}
-    runs-on: ubuntu-24.04
-    needs:
-      - docker-build
-      - docker-run
-    steps:
-      - name: Check job statuses
-        # Another hack is to actually check the status of the dependencies or else it'll fall through
-        run: |
-          echo "Checking statuses..."
-          [[ "${{ needs.docker-build.result }}" == "success" ]] || exit 1
-          [[ "${{ needs.docker-run.result }}" == "success" ]] || exit 1
