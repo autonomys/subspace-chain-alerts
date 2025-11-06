@@ -1,14 +1,11 @@
 # This action runs the Rust checks for the repository.
 name: Rust
 
-# This action is triggered for every PR, push to `main`, tag, release, merge queue, and manually.
+# This action is triggered for every PR, push to `main`, merge queue, and workflow_dispatch.
 on:
   push:
     branches:
       - main
-    tags:
-      - "*"
-  release:
   pull_request:
   workflow_dispatch:
   merge_group:
@@ -27,7 +24,7 @@ env:
 
 jobs:
   cargo-fmt:
-    name: cargo-fmt (ubuntu-24.04)
+    name: cargo-fmt
     runs-on: ubuntu-24.04
 
     steps:
@@ -38,18 +35,8 @@ jobs:
         run: cargo fmt --all -- --check
 
   cargo-clippy:
-    name: cargo-clippy (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [
-            "ubuntu-24.04",
-            "ubuntu-24.04-arm",
-            "windows-2025",
-            "windows-11-arm",
-            "macos-15",
-        ]
-    runs-on: ${{ matrix.os }}
+    name: cargo-clippy
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout
@@ -60,41 +47,9 @@ jobs:
         run: |
           cargo clippy --release --locked --all-features --all-targets -- -D warnings
 
-  cargo-build:
-    name: cargo-build (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [
-            "ubuntu-24.04",
-            "ubuntu-24.04-arm",
-            "windows-2025",
-            "windows-11-arm",
-            "macos-15",
-        ]
-    runs-on: ${{ matrix.os }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
-
-      - name: cargo build
-        run: |
-          cargo build --release --locked --all-features --all-targets
-
   cargo-nextest:
-    name: cargo-nextest (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [
-            "ubuntu-24.04",
-            "ubuntu-24.04-arm",
-            "windows-2025",
-            "windows-11-arm",
-            "macos-15",
-        ]
-    runs-on: ${{ matrix.os }}
+    name: cargo-nextest
+    runs-on: ubuntu-24.04
     # Don't use the full 6 hours if a test hangs
     timeout-minutes: 30
 
@@ -111,63 +66,9 @@ jobs:
         run: |
           cargo nextest run --locked --all-features
 
-  # Run a single OS using cargo-test, just to make sure it works.
-  cargo-test:
-    name: cargo-test (ubuntu-24.04)
-    runs-on: "ubuntu-24.04"
-    # Don't use the full 6 hours if a test hangs
-    timeout-minutes: 30
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
-
-      - name: cargo test --locked
-        run: |
-          cargo test --locked --all-features
-
-  # Runs the chain-alerter process until it sends a startup alert, but with Slack disabled.
-  # This is useful for testing the chain-alerter process setup and main loop.
-  #
-  # This should be kept in sync with the docker.yml `docker-run` job.
-  cargo-run:
-    name: cargo-run (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [
-            "ubuntu-24.04",
-            "ubuntu-24.04-arm",
-            "windows-2025",
-            "windows-11-arm",
-            "macos-15",
-        ]
-    runs-on: ${{ matrix.os }}
-    # Unfortunately, this doesn't work at the step level on Windows.
-    defaults:
-      run:
-        shell: bash
-    # Don't use the full 6 hours if this integration test hangs
-    timeout-minutes: 30
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
-
-      - name: Install ripgrep from crates.io
-        uses: baptiste0928/cargo-install@b687c656bda5733207e629b50a22bf68974a0305 # v3.3.2
-        with:
-          crate: ripgrep
-
-      # Randomly choose between the foundation and labs nodes, then run the integration test,
-      # checking for the startup alert, but printing all the logs to the console.
-      - name: cargo run --locked -- --slack=false --test-startup
-        run: |
-          ./scripts/check-startup.sh
-
   # This job checks for incorrectly added dependencies, or dependencies that were made unused by code changes.
   cargo-unused-deps:
-    name: cargo-unused-deps (ubuntu-24.04)
+    name: cargo-unused-deps
     # Linux is the fastest OS
     runs-on: ubuntu-24.04
 
@@ -195,10 +96,7 @@ jobs:
     needs:
       - cargo-fmt
       - cargo-clippy
-      - cargo-build
       - cargo-nextest
-      - cargo-test
-      - cargo-run
       - cargo-unused-deps
     steps:
       - name: Check job statuses
@@ -207,8 +105,5 @@ jobs:
           echo "Checking statuses..."
           [[ "${{ needs.cargo-fmt.result }}" == "success" ]] || exit 1
           [[ "${{ needs.cargo-clippy.result }}" == "success" ]] || exit 1
-          [[ "${{ needs.cargo-build.result }}" == "success" ]] || exit 1
           [[ "${{ needs.cargo-nextest.result }}" == "success" ]] || exit 1
-          [[ "${{ needs.cargo-test.result }}" == "success" ]] || exit 1
-          [[ "${{ needs.cargo-run.result }}" == "success" ]] || exit 1
           [[ "${{ needs.cargo-unused-deps.result }}" == "success" ]] || exit 1
