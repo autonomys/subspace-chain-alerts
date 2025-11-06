@@ -403,6 +403,12 @@ pub enum AlertKind {
         event_info: EventInfo,
     },
 
+    /// An operator offline event has been detected.
+    OperatorOffline {
+        /// The operator offline event information.
+        event_info: EventInfo,
+    },
+
     /// Slot timing is slower than expected.
     ///
     /// The associated `Alert.node_rpc_url` is the RPC node that received the last block in the
@@ -679,6 +685,14 @@ impl Display for AlertKind {
                 )
             }
 
+            Self::OperatorOffline { event_info } => {
+                write!(
+                    f,
+                    "**Operator offline detected**\n\
+                    {event_info}",
+                )
+            }
+
             Self::SlowSlotTime {
                 slot_amount,
                 seconds_elapsed,
@@ -760,6 +774,7 @@ impl AlertKind {
             | Self::SudoCall { .. }
             | Self::SudoEvent { .. }
             | Self::OperatorSlashed { .. }
+            | Self::OperatorOffline { .. }
             | Self::SlowSlotTime { .. }
             | Self::FastSlotTime { .. }
             | Self::FarmersDecreasedSuddenly { .. }
@@ -796,6 +811,7 @@ impl AlertKind {
             | Self::ImportantAddressExtrinsic { .. }
             | Self::SudoCall { .. }
             | Self::OperatorSlashed { .. }
+            | Self::OperatorOffline { .. }
             | Self::SlowSlotTime { .. }
             | Self::FastSlotTime { .. }
             | Self::FarmersDecreasedSuddenly { .. }
@@ -832,6 +848,7 @@ impl AlertKind {
             | Self::SudoCall { .. }
             | Self::SudoEvent { .. }
             | Self::OperatorSlashed { .. }
+            | Self::OperatorOffline { .. }
             | Self::SlowSlotTime { .. }
             | Self::FastSlotTime { .. }
             | Self::FarmersDecreasedSuddenly { .. }
@@ -870,6 +887,7 @@ impl AlertKind {
             | Self::SudoCall { .. }
             | Self::SudoEvent { .. }
             | Self::OperatorSlashed { .. }
+            | Self::OperatorOffline { .. }
             | Self::SlowSlotTime { .. }
             | Self::FastSlotTime { .. }
             | Self::FarmersDecreasedSuddenly { .. }
@@ -898,6 +916,7 @@ impl AlertKind {
             | Self::Reorg { .. }
             | Self::SudoEvent { .. }
             | Self::OperatorSlashed { .. }
+            | Self::OperatorOffline { .. }
             | Self::SlowSlotTime { .. }
             | Self::FastSlotTime { .. }
             | Self::FarmersDecreasedSuddenly { .. }
@@ -926,6 +945,7 @@ impl AlertKind {
             | Self::SudoCall { .. }
             | Self::SudoEvent { .. }
             | Self::OperatorSlashed { .. }
+            | Self::OperatorOffline { .. }
             | Self::SlowSlotTime { .. }
             | Self::FastSlotTime { .. }
             | Self::FarmersDecreasedSuddenly { .. }
@@ -941,6 +961,7 @@ impl AlertKind {
             | Self::ImportantAddressTransferEvent { event_info, .. }
             | Self::SudoEvent { event_info }
             | Self::OperatorSlashed { event_info }
+            | Self::OperatorOffline { event_info }
             | Self::ImportantAddressEvent { event_info, .. } => Some(event_info),
             Self::Startup { .. }
             | Self::BlockReceiveGap { .. }
@@ -981,6 +1002,7 @@ impl AlertKind {
             | Self::SudoCall { .. }
             | Self::SudoEvent { .. }
             | Self::OperatorSlashed { .. }
+            | Self::OperatorOffline { .. }
             | Self::SlowSlotTime { .. }
             | Self::FastSlotTime { .. }
             | Self::FarmersDecreasedSuddenly { .. }
@@ -1384,6 +1406,19 @@ pub async fn check_event(
         alert_tx
             .send(Alert::new(
                 AlertKind::OperatorSlashed {
+                    event_info: event_info.clone(),
+                },
+                mode,
+                *block_info,
+                node_rpc_url,
+            ))
+            .await?;
+    }
+
+    if event_info.pallet == "Domains" && event_info.kind == "OperatorOffline" {
+        alert_tx
+            .send(Alert::new(
+                AlertKind::OperatorOffline {
                     event_info: event_info.clone(),
                 },
                 mode,
