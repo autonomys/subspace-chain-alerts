@@ -837,7 +837,7 @@ async fn send_uptime_kuma_status(
         timer.tick().await;
 
         // Only borrow the watch channel contents temporarily, to avoid blocking channel updates.
-        let (latest_height, is_stalled) = {
+        let (latest_height, _) = {
             let latest_block = latest_best_block_rx.borrow();
 
             let latest_height = latest_block.as_ref().map(|(block, _)| block.height());
@@ -850,14 +850,12 @@ async fn send_uptime_kuma_status(
         };
 
         // If we've failed to get a block at startup, or we're stalled, the service is down.
-        let status = if is_stalled || latest_height.is_none() {
+        let status = if latest_height.is_none() {
             "down"
         } else {
             "up"
         };
-        let msg = if is_stalled {
-            "STALL"
-        } else if latest_height.is_none() {
+        let msg = if latest_height.is_none() {
             "STARTUP"
         } else {
             "OK"
@@ -877,7 +875,6 @@ async fn send_uptime_kuma_status(
                 ?error,
                 %uptime_kuma_url,
                 ?latest_height,
-                %is_stalled,
                 "error sending uptime status to uptime kuma",
             );
         }
