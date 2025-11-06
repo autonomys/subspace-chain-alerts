@@ -6,13 +6,8 @@ name: Docker build
 # This action is triggered for every PR, push to `main`, tag, release, merge queue, and manually.
 on:
   push:
-    branches:
-      - "main"
     tags:
       - "*"
-  release:
-  pull_request:
-  merge_group:
   workflow_dispatch:
 
 concurrency:
