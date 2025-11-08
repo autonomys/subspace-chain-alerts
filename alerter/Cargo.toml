@@ -1,0 +1,20 @@
+[package]
+name = "alerter"
+version = "1.0.0"
+edition.workspace = true
+
+[dependencies]
+env_logger.workspace = true
+subxt = { workspace = true, features = ["native", "jsonrpsee"] }
+subxt-core.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["full"] }
+clap = { workspace = true, features = ["derive"] }
+log.workspace = true
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
+serde = { workspace = true, features = ["derive"] }
+humantime.workspace = true
+subxt-rpcs.workspace = true
+sp-blockchain.workspace = true
+sp-runtime.workspace = true
+futures-util.workspace = true
