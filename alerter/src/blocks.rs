@@ -1,3 +1,4 @@
+//! Module that follows the chain and broadcast blocks data.
 use crate::error::Error;
 use futures_util::{StreamExt, TryStreamExt, stream};
 use log::{debug, error, info};
@@ -17,11 +18,11 @@ use subxt_rpcs::{LegacyRpcMethods, RpcClient};
 use tokio::sync::broadcast::{Receiver, Sender, channel};
 
 /// Opaque block header type.
-type Header = generic::Header<u32, BlakeTwo256>;
+pub(crate) type Header = generic::Header<u32, BlakeTwo256>;
 /// Opaque block type.
-type Block = generic::Block<Header, OpaqueExtrinsic>;
+pub(crate) type Block = generic::Block<Header, OpaqueExtrinsic>;
 type BlockHashFor<Block> = <Block as BlockT>::Hash;
-type BlockNumberFor<Block> = <<Block as BlockT>::Header as HeaderT>::Number;
+pub(crate) type BlockNumberFor<Block> = <<Block as BlockT>::Header as HeaderT>::Number;
 type SubspaceClient = OnlineClient<SubstrateConfig>;
 type SubspaceRpcClient = LegacyRpcMethods<SubstrateConfig>;
 type BlocksSink = Sender<BlocksExt>;
@@ -211,7 +212,7 @@ impl Blocks {
                 error!("Error sending blocks data: {err}");
             }
             let number_to_clean = block_number.saturating_sub(CACHE_HEADER_DEPTH);
-            header_metadata.remove_header(number_to_clean);
+            header_metadata.remove_header_until(number_to_clean);
         }
     }
 
@@ -348,12 +349,15 @@ impl HeadersMetadataCache {
         replaced.is_some()
     }
 
-    fn remove_header(&mut self, number: BlockNumberFor<Block>) {
-        debug!("Removing header from cache: {number}");
-        let hashes = self.block_number_hashes.remove(&number).unwrap_or_default();
-        hashes.into_iter().for_each(|hash| {
-            self.block_header_data.remove(&hash);
-        })
+    fn remove_header_until(&mut self, number: BlockNumberFor<Block>) {
+        let mut to_remove = number;
+        while let Some(hashes) = self.block_number_hashes.remove(&to_remove) {
+            debug!("Removing header from cache: {number}");
+            hashes.into_iter().for_each(|hash| {
+                self.block_header_data.remove(&hash);
+            });
+            to_remove = to_remove.saturating_sub(1);
+        }
     }
 
     fn get_header(&self, hash: BlockHashFor<Block>) -> Result<Header, Error> {

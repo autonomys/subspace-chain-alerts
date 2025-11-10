@@ -2,10 +2,12 @@
 #![allow(clippy::result_large_err)]
 // TODO: remove once connected
 #![allow(dead_code)]
+extern crate core;
 
 mod blocks;
 mod cli;
 mod error;
+mod slots;
 mod stall_and_reorg;
 mod uptime;
 
@@ -64,6 +66,12 @@ async fn main() -> Result<(), Error> {
             )
             .await
         }
+    });
+
+    // monitor slot times
+    join_set.spawn({
+        let stream = blocks.blocks_stream();
+        async move { slots::monitor_chain_slots(stream, cli.slot).await }
     });
 
     join_set.spawn(async move { blocks.listen_for_all_blocks().await });

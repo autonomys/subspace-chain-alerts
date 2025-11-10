@@ -1,3 +1,4 @@
+//! Monitoring and alerting for chain stalls and re-orgs.
 use crate::blocks::{BlocksStream, ReorgData};
 use crate::cli::StallAndReorgConfig;
 use crate::error::Error;
@@ -9,6 +10,7 @@ pub(crate) async fn watch_chain_stall_and_reorg(
     mut stream: BlocksStream,
     config: StallAndReorgConfig,
 ) -> Result<(), Error> {
+    info!("Starting stall and reorg monitor with config {config:?} ...");
     let mut timeout_fired = None;
     let stall_threshold = config.non_block_import_threshold.into();
     let reorg_depth_threshold = config.reorg_depth_threshold;

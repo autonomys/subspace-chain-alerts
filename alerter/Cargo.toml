@@ -18,3 +18,4 @@ subxt-rpcs.workspace = true
 sp-blockchain.workspace = true
 sp-runtime.workspace = true
 futures-util.workspace = true
+rust_decimal.workspace = true

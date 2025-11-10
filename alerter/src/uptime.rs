@@ -1,6 +1,6 @@
 use crate::error::Error;
 use humantime::Duration;
-use log::{debug, error};
+use log::{debug, error, info};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
@@ -12,6 +12,7 @@ struct Response {
 /// Push alerter status to uptimekuma.
 /// This simply calls the urls with ping time and status as up.
 pub(crate) async fn push_uptime_status(url: String, every: Duration) -> Result<(), Error> {
+    info!("Starting uptimekuma health push for every {every} ...");
     let mut tick = tokio::time::interval(every.into());
     let client = Client::builder()
         .build()
