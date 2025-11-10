@@ -1,22 +1,22 @@
-mod block_importer;
+#![feature(iterator_try_collect)]
+#![allow(clippy::result_large_err)]
+// TODO: remove once connected
+#![allow(dead_code)]
+
+mod blocks;
 mod cli;
 mod error;
+mod stall_and_reorg;
 mod uptime;
 
-use crate::block_importer::listen_for_all_blocks;
-use crate::cli::Cli;
+use crate::blocks::Blocks;
+use crate::cli::Config;
 use crate::error::Error;
 use crate::uptime::push_uptime_status;
 use clap::Parser;
 use env_logger::{Builder, Env, Target};
 use std::io::Write;
-use subxt::backend::legacy::LegacyRpcMethods;
-use subxt::ext::subxt_rpcs::RpcClient;
-use subxt::{OnlineClient, SubstrateConfig};
 use tokio::task::JoinSet;
-
-pub(crate) type SubspaceClient = OnlineClient<SubstrateConfig>;
-pub(crate) type SubspaceRpcClient = LegacyRpcMethods<SubstrateConfig>;
 
 /// Initiate logger with either RUST_LOG or default to info
 pub fn init_logger() {
@@ -38,16 +38,13 @@ pub fn init_logger() {
 }
 
 #[tokio::main]
-#[allow(clippy::result_large_err)]
 async fn main() -> Result<(), Error> {
     init_logger();
-    let cli = Cli::parse();
-    let rpc_client = RpcClient::from_url(&cli.rpc_url).await?;
-    let rpc = LegacyRpcMethods::<SubstrateConfig>::new(rpc_client.clone());
-    let client = SubspaceClient::from_url(&cli.rpc_url).await?;
-    let mut join_set = JoinSet::default();
+    let cli = Config::parse();
+    let blocks = Blocks::new_from_url(&cli.rpc_url).await?;
 
-    let updater = client.updater();
+    let mut join_set = JoinSet::default();
+    let updater = blocks.runtime_metadata_updater();
     join_set.spawn(async move { updater.perform_runtime_updates().await.map_err(Into::into) });
 
     if let Some(uptimekuma_url) = cli.uptimekuma.uptimekuma_url {
@@ -57,11 +54,19 @@ async fn main() -> Result<(), Error> {
         ));
     }
 
-    join_set.spawn(listen_for_all_blocks(
-        rpc,
-        client,
-        cli.non_block_import_threshold.into(),
-    ));
+    // monitor chain stall
+    join_set.spawn({
+        let stream = blocks.blocks_stream();
+        async move {
+            stall_and_reorg::watch_chain_stall_and_reorg(
+                stream,
+                cli.stall_and_reorg,
+            )
+            .await
+        }
+    });
+
+    join_set.spawn(async move { blocks.listen_for_all_blocks().await });
 
     // no task in the join set should exit
     // if exits, it is a failure
