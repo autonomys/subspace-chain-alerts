@@ -19,3 +19,7 @@ sp-blockchain.workspace = true
 sp-runtime.workspace = true
 futures-util.workspace = true
 rust_decimal.workspace = true
+toml.workspace = true
+scale-decode-derive.workspace = true
+scale-decode.workspace = true
+hex.workspace = true

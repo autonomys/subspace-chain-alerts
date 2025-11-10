@@ -1,7 +1,7 @@
 //! Monitoring and alerting for chain stalls and re-orgs.
-use crate::blocks::{BlocksStream, ReorgData};
 use crate::cli::StallAndReorgConfig;
 use crate::error::Error;
+use crate::subspace::{BlocksStream, ReorgData};
 use humantime::format_duration;
 use log::{debug, error, info};
 use tokio::time;

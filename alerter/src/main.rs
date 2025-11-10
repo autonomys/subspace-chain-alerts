@@ -2,22 +2,28 @@
 #![allow(clippy::result_large_err)]
 // TODO: remove once connected
 #![allow(dead_code)]
-extern crate core;
 
-mod blocks;
 mod cli;
 mod error;
+mod event_types;
+mod events;
 mod slots;
 mod stall_and_reorg;
+mod subspace;
 mod uptime;
 
-use crate::blocks::Blocks;
 use crate::cli::Config;
 use crate::error::Error;
+use crate::subspace::{AccountId, Subspace};
 use crate::uptime::push_uptime_status;
 use clap::Parser;
 use env_logger::{Builder, Env, Target};
+use log::info;
+use serde::Deserialize;
+use sp_runtime::app_crypto::sp_core::crypto::set_default_ss58_version;
+use std::collections::BTreeMap;
 use std::io::Write;
+use std::{env, fs};
 use tokio::task::JoinSet;
 
 /// Initiate logger with either RUST_LOG or default to info
@@ -39,14 +45,53 @@ pub fn init_logger() {
         .init();
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub(crate) struct Account {
+    pub(crate) name: String,
+    pub(crate) address: AccountId,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub(crate) struct Network {
+    pub(crate) accounts: Vec<Account>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct Networks {
+    networks: BTreeMap<String, Network>,
+}
+
+fn load_networks() -> Result<Networks, Error> {
+    let path = match env::var("CARGO_MANIFEST_DIR") {
+        Ok(base_dir) => format!("{base_dir}/networks.toml"),
+        Err(_) => "config.toml".to_string(),
+    };
+    info!("Loading network configuration from `{path}`",);
+    let config = fs::read_to_string(path)?;
+    let networks = toml::from_str(config.as_str())?;
+    Ok(networks)
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     init_logger();
     let cli = Config::parse();
-    let blocks = Blocks::new_from_url(&cli.rpc_url).await?;
+    let subspace = Subspace::new_from_url(&cli.rpc_url).await?;
+    let network_details = subspace.network_details().await?;
+    set_default_ss58_version(network_details.ss58_format);
+    info!("Detected network: {}", network_details.name);
+    let networks = load_networks()?;
+    let network_config = networks
+        .networks
+        .get(&network_details.name)
+        .cloned()
+        .ok_or(Error::Config(format!(
+            "Missing network config: {}",
+            network_details.name
+        )))?;
 
     let mut join_set = JoinSet::default();
-    let updater = blocks.runtime_metadata_updater();
+    let updater = subspace.runtime_metadata_updater();
     join_set.spawn(async move { updater.perform_runtime_updates().await.map_err(Into::into) });
 
     if let Some(uptimekuma_url) = cli.uptimekuma.uptimekuma_url {
@@ -58,7 +103,7 @@ async fn main() -> Result<(), Error> {
 
     // monitor chain stall
     join_set.spawn({
-        let stream = blocks.blocks_stream();
+        let stream = subspace.blocks_stream();
         async move {
             stall_and_reorg::watch_chain_stall_and_reorg(
                 stream,
@@ -70,11 +115,17 @@ async fn main() -> Result<(), Error> {
 
     // monitor slot times
     join_set.spawn({
-        let stream = blocks.blocks_stream();
+        let stream = subspace.blocks_stream();
         async move { slots::monitor_chain_slots(stream, cli.slot).await }
     });
 
-    join_set.spawn(async move { blocks.listen_for_all_blocks().await });
+    // monitor ai3 transfers
+    join_set.spawn({
+        let stream = subspace.blocks_stream();
+        async move { events::watch_events(stream, network_details, network_config.accounts).await }
+    });
+
+    join_set.spawn(async move { subspace.listen_for_all_blocks().await });
 
     // no task in the join set should exit
     // if exits, it is a failure

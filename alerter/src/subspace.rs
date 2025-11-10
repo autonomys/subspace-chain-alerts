@@ -3,6 +3,7 @@ use crate::error::Error;
 use futures_util::{StreamExt, TryStreamExt, stream};
 use log::{debug, error, info};
 use sp_blockchain::{CachedHeaderMetadata, HashAndNumber};
+use sp_runtime::app_crypto::sp_core::crypto::Ss58AddressFormat;
 use sp_runtime::codec::{Decode, Encode};
 use sp_runtime::traits::{BlakeTwo256, Block as BlockT, Header as HeaderT};
 use sp_runtime::{OpaqueExtrinsic, generic};
@@ -18,11 +19,13 @@ use subxt_rpcs::{LegacyRpcMethods, RpcClient};
 use tokio::sync::broadcast::{Receiver, Sender, channel};
 
 /// Opaque block header type.
-pub(crate) type Header = generic::Header<u32, BlakeTwo256>;
+type Header = generic::Header<u32, BlakeTwo256>;
 /// Opaque block type.
-pub(crate) type Block = generic::Block<Header, OpaqueExtrinsic>;
-type BlockHashFor<Block> = <Block as BlockT>::Hash;
-pub(crate) type BlockNumberFor<Block> = <<Block as BlockT>::Header as HeaderT>::Number;
+type Block = generic::Block<Header, OpaqueExtrinsic>;
+pub(crate) type BlockHash = <Block as BlockT>::Hash;
+pub(crate) type BlockNumber = <<Block as BlockT>::Header as HeaderT>::Number;
+pub(crate) type AccountId = <SubstrateConfig as Config>::AccountId;
+pub(crate) type Balance = u128;
 type SubspaceClient = OnlineClient<SubstrateConfig>;
 type SubspaceRpcClient = LegacyRpcMethods<SubstrateConfig>;
 type BlocksSink = Sender<BlocksExt>;
@@ -35,11 +38,11 @@ pub(crate) type Timestamp = u64;
 /// Block with extracted details.
 #[derive(Debug, Clone)]
 pub(crate) struct BlockExt {
-    pub(crate) number: BlockNumberFor<Block>,
-    pub(crate) hash: BlockHashFor<Block>,
-    pub(crate) parent_hash: BlockHashFor<Block>,
-    pub(crate) state_root: BlockHashFor<Block>,
-    pub(crate) extrinsics_root: BlockHashFor<Block>,
+    pub(crate) number: BlockNumber,
+    pub(crate) hash: BlockHash,
+    pub(crate) parent_hash: BlockHash,
+    pub(crate) state_root: BlockHash,
+    pub(crate) extrinsics_root: BlockHash,
     client: Arc<SubspaceClient>,
 }
 
@@ -68,7 +71,7 @@ impl BlockExt {
     /// Returns block slot.
     pub(crate) async fn slot(&self) -> Result<Slot, Error> {
         let slots = self
-            .read_storage::<_, BTreeMap<BlockNumberFor<Block>, Slot>>("Subspace", "BlockSlots", ())
+            .read_storage::<_, BTreeMap<BlockNumber, Slot>>("Subspace", "BlockSlots", ())
             .await?;
         slots
             .get(&self.number)
@@ -117,16 +120,24 @@ pub(crate) struct BlocksExt {
 /// Maximum number of headers to load in the cache.
 const CACHE_HEADER_DEPTH: u32 = 100;
 
-/// Blocks listen for all the blocks imported to the chain
-/// handle the tree_route and broadcast the BlockExt with ReOrg depth if any.
-pub(crate) struct Blocks {
+/// Overarching Subspace network wrapper
+/// for listening blocks, read storages etc..
+pub(crate) struct Subspace {
     rpc_client: Arc<SubspaceRpcClient>,
     client: Arc<SubspaceClient>,
     sink: BlocksSink,
     stream: BlocksStream,
 }
 
-impl Blocks {
+/// Network specific details
+pub(crate) struct NetworkDetails {
+    pub(crate) name: String,
+    pub(crate) ss58_format: Ss58AddressFormat,
+    pub(crate) token_symbol: String,
+    pub(crate) token_decimals: u8,
+}
+
+impl Subspace {
     pub(crate) async fn new_from_url(url: &str) -> Result<Self, Error> {
         let rpc_client = RpcClient::from_url(url).await?;
         let rpc = Arc::new(LegacyRpcMethods::<SubstrateConfig>::new(rpc_client.clone()));
@@ -148,9 +159,38 @@ impl Blocks {
         self.stream.resubscribe()
     }
 
+    pub(crate) async fn network_details(&self) -> Result<NetworkDetails, Error> {
+        let name = self.rpc_client.system_chain().await?;
+        let system_properties = self.rpc_client.system_properties().await?;
+        let ss58_format = system_properties
+            .get("ss58Format")
+            .cloned()
+            .and_then(|val| Some(Ss58AddressFormat::custom(val.as_u64()? as u16)))
+            .ok_or(Error::Config("Failed to get Ss58Format".to_string()))?;
+        let token_symbol = system_properties
+            .get("tokenSymbol")
+            .and_then(|v| v.as_str())
+            .ok_or(Error::Config("Failed to get Token Symbol".to_string()))?
+            .to_string();
+
+        let token_decimals = system_properties
+            .get("tokenDecimals")
+            .and_then(|v| v.as_u64())
+            .ok_or(Error::Config("Failed to get Token Symbol".to_string()))?
+            as u8;
+
+        Ok(NetworkDetails {
+            name,
+            ss58_format,
+            token_symbol,
+            token_decimals,
+        })
+    }
+
     /// Listens for all the blocks being imported,
     /// calculate the tree route if there is a re-org,
-    /// and broadcast the best blocks.
+    /// and broadcast the best blocks and reorg data.
+    // TODO: restart subscription
     pub(crate) async fn listen_for_all_blocks(&self) -> Result<(), Error> {
         let blocks_client = self.client.blocks();
         let mut sub = blocks_client.subscribe_all().await?.fuse();
@@ -218,8 +258,8 @@ impl Blocks {
 
     async fn is_canonical_block(
         &self,
-        block_number: BlockNumberFor<Block>,
-        block_hash: BlockHashFor<Block>,
+        block_number: BlockNumber,
+        block_hash: BlockHash,
     ) -> Result<bool, Error> {
         let hash = self
             .rpc_client
@@ -232,7 +272,7 @@ impl Blocks {
     async fn get_block_ext(
         &self,
         cache: &HeadersMetadataCache,
-        hash: BlockHashFor<Block>,
+        hash: BlockHash,
     ) -> Result<BlockExt, Error> {
         let header = cache.get_header(hash)?;
         let Header {
@@ -311,16 +351,12 @@ impl Blocks {
 
 #[derive(Debug, Default)]
 struct HeadersMetadataCache {
-    block_header_data: BTreeMap<BlockHashFor<Block>, Header>,
-    block_number_hashes: BTreeMap<BlockNumberFor<Block>, BTreeSet<BlockHashFor<Block>>>,
+    block_header_data: BTreeMap<BlockHash, Header>,
+    block_number_hashes: BTreeMap<BlockNumber, BTreeSet<BlockHash>>,
 }
 
 impl HeadersMetadataCache {
-    fn add_header(
-        &mut self,
-        hash: BlockHashFor<Block>,
-        header: <SubstrateConfig as Config>::Header,
-    ) -> bool {
+    fn add_header(&mut self, hash: BlockHash, header: <SubstrateConfig as Config>::Header) -> bool {
         let SubstrateHeader {
             parent_hash,
             number,
@@ -349,7 +385,7 @@ impl HeadersMetadataCache {
         replaced.is_some()
     }
 
-    fn remove_header_until(&mut self, number: BlockNumberFor<Block>) {
+    fn remove_header_until(&mut self, number: BlockNumber) {
         let mut to_remove = number;
         while let Some(hashes) = self.block_number_hashes.remove(&to_remove) {
             debug!("Removing header from cache: {number}");
@@ -360,7 +396,7 @@ impl HeadersMetadataCache {
         }
     }
 
-    fn get_header(&self, hash: BlockHashFor<Block>) -> Result<Header, Error> {
+    fn get_header(&self, hash: BlockHash) -> Result<Header, Error> {
         self.block_header_data
             .get(&hash)
             .cloned()
@@ -371,10 +407,7 @@ impl HeadersMetadataCache {
 impl sp_blockchain::HeaderMetadata<Block> for HeadersMetadataCache {
     type Error = Error;
 
-    fn header_metadata(
-        &self,
-        hash: BlockHashFor<Block>,
-    ) -> Result<CachedHeaderMetadata<Block>, Self::Error> {
+    fn header_metadata(&self, hash: BlockHash) -> Result<CachedHeaderMetadata<Block>, Self::Error> {
         debug!("Retrieving header from cache: {hash}");
         let block_header_meta = self.block_header_data.get(&hash);
         block_header_meta
@@ -382,11 +415,11 @@ impl sp_blockchain::HeaderMetadata<Block> for HeadersMetadataCache {
             .ok_or(Error::MissingBlockHashFromCache(hash))
     }
 
-    fn insert_header_metadata(&self, _: BlockHashFor<Block>, _: CachedHeaderMetadata<Block>) {
+    fn insert_header_metadata(&self, _: BlockHash, _: CachedHeaderMetadata<Block>) {
         // nothing to do here
     }
 
-    fn remove_header_metadata(&self, _: BlockHashFor<Block>) {
+    fn remove_header_metadata(&self, _: BlockHash) {
         // nothing to do here
     }
 }

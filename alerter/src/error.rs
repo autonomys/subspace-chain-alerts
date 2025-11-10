@@ -25,6 +25,14 @@ pub(crate) enum Error {
     Scale(sp_runtime::codec::Error),
     #[error("Broadcast Receive error: {0}")]
     BroadRecvErr(RecvError),
+    #[error("Io error: {0}")]
+    Io(std::io::Error),
+    #[error("Toml error: {0}")]
+    Toml(toml::de::Error),
+    #[error("Config error: {0}")]
+    Config(String),
+    #[error("Event decode error: {0}")]
+    EventDecode(String),
 }
 
 impl From<subxt::Error> for Error {
@@ -60,5 +68,17 @@ impl From<sp_runtime::codec::Error> for Error {
 impl From<RecvError> for Error {
     fn from(err: RecvError) -> Self {
         Self::BroadRecvErr(err)
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(err: std::io::Error) -> Self {
+        Self::Io(err)
+    }
+}
+
+impl From<toml::de::Error> for Error {
+    fn from(err: toml::de::Error) -> Self {
+        Self::Toml(err)
     }
 }
