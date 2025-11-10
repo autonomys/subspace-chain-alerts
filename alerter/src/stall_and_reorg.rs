@@ -25,8 +25,9 @@ pub(crate) async fn watch_chain_stall_and_reorg(
                 if let Some(timeout) = last_timeout {
                     // TODO: send slack message on recovery
                     info!(
-                        "Block[{}] imported after: {}",
+                        "Block: {}[{}] imported after: {}",
                         latest_block.number,
+                        latest_block.hash,
                         format_duration(timeout)
                     );
                 }

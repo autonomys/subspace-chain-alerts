@@ -1,16 +1,18 @@
 use crate::error::Error;
-use futures_util::{StreamExt, TryStreamExt, stream, try_join};
+use futures_util::{StreamExt, TryStreamExt, stream};
 use log::{debug, error, info};
 use sp_blockchain::{CachedHeaderMetadata, HashAndNumber};
 use sp_runtime::codec::{Decode, Encode};
 use sp_runtime::traits::{BlakeTwo256, Block as BlockT, Header as HeaderT};
 use sp_runtime::{OpaqueExtrinsic, generic};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use subxt::client::ClientRuntimeUpdater;
 use subxt::config::substrate::SubstrateHeader;
 use subxt::events::Events;
 use subxt::{OnlineClient, SubstrateConfig};
 use subxt_core::Config;
+use subxt_core::storage::address::StorageKey;
 use subxt_rpcs::{LegacyRpcMethods, RpcClient};
 use tokio::sync::broadcast::{Receiver, Sender, channel};
 
@@ -37,10 +39,64 @@ pub(crate) struct BlockExt {
     pub(crate) parent_hash: BlockHashFor<Block>,
     pub(crate) state_root: BlockHashFor<Block>,
     pub(crate) extrinsics_root: BlockHashFor<Block>,
-    pub(crate) timestamp: Timestamp,
-    pub(crate) slot: Slot,
-    pub(crate) events: Events<SubstrateConfig>,
-    pub(crate) extrinsics: Vec<OpaqueExtrinsic>,
+    client: Arc<SubspaceClient>,
+}
+
+impl BlockExt {
+    async fn read_storage<Args: StorageKey, T: Decode>(
+        &self,
+        pallet: &str,
+        storage: &str,
+        arg_data: Args,
+    ) -> Result<T, Error> {
+        let query = subxt::dynamic::storage(pallet, storage, arg_data);
+        self.client
+            .storage()
+            .at(self.hash)
+            .fetch(&query)
+            .await?
+            .map(|encoded| T::decode(&mut encoded.encoded()).map_err(Error::Scale))
+            .ok_or(Error::Storage(format!("{pallet}.{storage}")))?
+    }
+
+    /// Returns block timestamp.
+    pub(crate) async fn timestamp(&self) -> Result<Timestamp, Error> {
+        self.read_storage("Timestamp", "Now", ()).await
+    }
+
+    /// Returns block slot.
+    pub(crate) async fn slot(&self) -> Result<Slot, Error> {
+        let slots = self
+            .read_storage::<_, BTreeMap<BlockNumberFor<Block>, Slot>>("Subspace", "BlockSlots", ())
+            .await?;
+        slots
+            .get(&self.number)
+            .cloned()
+            .ok_or(Error::Storage(format!(
+                "Missing slot for block: {})",
+                self.number
+            )))
+    }
+
+    /// Returns block extrinsics.
+    pub(crate) async fn extrinsics<Ext: Decode>(&self) -> Result<Vec<Ext>, Error> {
+        let exts = self
+            .client
+            .backend()
+            .block_body(self.hash)
+            .await?
+            .ok_or(Error::MissingBlockBody(self.hash))?
+            .into_iter()
+            .map(|ext| Ext::decode(&mut &ext[..]))
+            .try_collect::<Vec<_>>()?;
+        Ok(exts)
+    }
+
+    /// Returns block events
+    pub(crate) async fn events(&self) -> Result<Events<SubstrateConfig>, Error> {
+        let events = self.client.events().at(self.hash).await?;
+        Ok(events)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -63,8 +119,8 @@ const CACHE_HEADER_DEPTH: u32 = 100;
 /// Blocks listen for all the blocks imported to the chain
 /// handle the tree_route and broadcast the BlockExt with ReOrg depth if any.
 pub(crate) struct Blocks {
-    rpc_client: SubspaceRpcClient,
-    client: SubspaceClient,
+    rpc_client: Arc<SubspaceRpcClient>,
+    client: Arc<SubspaceClient>,
     sink: BlocksSink,
     stream: BlocksStream,
 }
@@ -72,8 +128,8 @@ pub(crate) struct Blocks {
 impl Blocks {
     pub(crate) async fn new_from_url(url: &str) -> Result<Self, Error> {
         let rpc_client = RpcClient::from_url(url).await?;
-        let rpc = LegacyRpcMethods::<SubstrateConfig>::new(rpc_client.clone());
-        let client = SubspaceClient::from_url(url).await?;
+        let rpc = Arc::new(LegacyRpcMethods::<SubstrateConfig>::new(rpc_client.clone()));
+        let client = Arc::new(SubspaceClient::from_url(url).await?);
         let (sink, stream) = channel(100);
         Ok(Self {
             rpc_client: rpc,
@@ -186,43 +242,13 @@ impl Blocks {
             ..
         } = header;
 
-        let timestamp_query = subxt::dynamic::storage("Timestamp", "Now", ());
-        let slot_query = subxt::dynamic::storage("Subspace", "BlockSlots", ());
-
-        let (events, extrinsics, timestamp, slots) = try_join!(
-            self.client.events().at(hash),
-            self.client.backend().block_body(hash),
-            self.client.storage().at(hash).fetch(&timestamp_query),
-            self.client.storage().at(hash).fetch(&slot_query),
-        )?;
-        let extrinsics = extrinsics
-            .ok_or(Error::MissingBlockBody(hash))?
-            .into_iter()
-            .map(|ext| OpaqueExtrinsic::decode(&mut &ext[..]))
-            .try_collect()?;
-
-        let timestamp = timestamp
-            .and_then(|encoded| encoded.as_type::<u64>().ok())
-            .ok_or(Error::Storage("Timestamp.Now()".to_string()))?;
-
-        let slot = slots
-            .and_then(|v| {
-                let slots =
-                    BTreeMap::<BlockNumberFor<Block>, Slot>::decode(&mut v.encoded()).ok()?;
-                slots.get(&number).cloned()
-            })
-            .ok_or(Error::Storage("Subspace.BlockSlots()".to_string()))?;
-
         Ok(BlockExt {
             number,
             hash,
             parent_hash,
             state_root,
             extrinsics_root,
-            timestamp,
-            slot,
-            events,
-            extrinsics,
+            client: self.client.clone(),
         })
     }
 
