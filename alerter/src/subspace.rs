@@ -123,7 +123,7 @@ const CACHE_HEADER_DEPTH: u32 = 100;
 /// Overarching Subspace network wrapper
 /// for listening blocks, read storages etc..
 pub(crate) struct Subspace {
-    rpc_client: Arc<SubspaceRpcClient>,
+    rpc: Arc<SubspaceRpcClient>,
     client: Arc<SubspaceClient>,
     sink: BlocksSink,
     stream: BlocksStream,
@@ -139,12 +139,17 @@ pub(crate) struct NetworkDetails {
 
 impl Subspace {
     pub(crate) async fn new_from_url(url: &str) -> Result<Self, Error> {
-        let rpc_client = RpcClient::from_url(url).await?;
+        let rpc_client = RpcClient::new(
+            subxt_rpcs::client::ReconnectingRpcClient::builder()
+                .build(url)
+                .await
+                .map_err(|err| Error::Rpc(subxt_rpcs::Error::Client(Box::new(err))))?,
+        );
         let rpc = Arc::new(LegacyRpcMethods::<SubstrateConfig>::new(rpc_client.clone()));
         let client = Arc::new(SubspaceClient::from_url(url).await?);
         let (sink, stream) = channel(100);
         Ok(Self {
-            rpc_client: rpc,
+            rpc,
             client,
             sink,
             stream,
@@ -160,8 +165,8 @@ impl Subspace {
     }
 
     pub(crate) async fn network_details(&self) -> Result<NetworkDetails, Error> {
-        let name = self.rpc_client.system_chain().await?;
-        let system_properties = self.rpc_client.system_properties().await?;
+        let name = self.rpc.system_chain().await?;
+        let system_properties = self.rpc.system_properties().await?;
         let ss58_format = system_properties
             .get("ss58Format")
             .cloned()
@@ -190,7 +195,8 @@ impl Subspace {
     /// Listens for all the blocks being imported,
     /// calculate the tree route if there is a re-org,
     /// and broadcast the best blocks and reorg data.
-    // TODO: restart subscription
+    // TODO: once subspace client exposes archive_rpc, use it
+    //  to load all forks blocks while loading cache
     pub(crate) async fn listen_for_all_blocks(&self) -> Result<(), Error> {
         let blocks_client = self.client.blocks();
         let mut sub = blocks_client.subscribe_all().await?.fuse();
@@ -202,7 +208,7 @@ impl Subspace {
             let block_hash = block.hash();
             let block_number = block.number();
 
-            header_metadata.add_header(block_hash, block.header().clone());
+            header_metadata.add_header(block.header().clone());
             if !self.is_canonical_block(block_number, block_hash).await? {
                 info!("⚠️ Imported fork block: {block_number}[{block_hash}]");
                 continue;
@@ -262,7 +268,7 @@ impl Subspace {
         block_hash: BlockHash,
     ) -> Result<bool, Error> {
         let hash = self
-            .rpc_client
+            .rpc
             .chain_get_block_hash(Some(block_number.into()))
             .await?
             .ok_or(Error::MissingBlock)?;
@@ -297,12 +303,12 @@ impl Subspace {
         &self,
     ) -> Result<(HeadersMetadataCache, HashAndNumber<Block>), Error> {
         let latest_hash = self
-            .rpc_client
+            .rpc
             .chain_get_block_hash(None)
             .await?
             .ok_or(Error::MissingBlock)?;
         let latest_head = self
-            .rpc_client
+            .rpc
             .chain_get_header(Some(latest_hash))
             .await?
             .ok_or(Error::MissingBlock)?;
@@ -317,25 +323,25 @@ impl Subspace {
         stream::iter(
             (cache_start_number..=latest_head.number).map(|number| async move {
                 let block_hash = self
-                    .rpc_client
+                    .rpc
                     .chain_get_block_hash(Some(number.into()))
                     .await?
                     .ok_or(Error::MissingBlock)?;
                 let header = self
-                    .rpc_client
+                    .rpc
                     .chain_get_header(Some(block_hash))
                     .await?
                     .ok_or(Error::MissingBlock)?;
                 debug!("Block header from RPC {number} - {block_hash}");
-                Ok::<_, Error>((block_hash, header))
+                Ok::<_, Error>(header)
             }),
         )
         .buffered(30)
         .try_collect::<Vec<_>>()
         .await?
         .into_iter()
-        .for_each(|(hash, header)| {
-            header_metadata.add_header(hash, header);
+        .for_each(|header| {
+            header_metadata.add_header(header);
         });
 
         info!("Cache header metadata completed.");
@@ -356,7 +362,7 @@ struct HeadersMetadataCache {
 }
 
 impl HeadersMetadataCache {
-    fn add_header(&mut self, hash: BlockHash, header: <SubstrateConfig as Config>::Header) -> bool {
+    fn add_header(&mut self, header: <SubstrateConfig as Config>::Header) -> bool {
         let SubstrateHeader {
             parent_hash,
             number,
@@ -374,7 +380,7 @@ impl HeadersMetadataCache {
             extrinsics_root,
             digest: decoded_digest,
         };
-        assert_eq!(hash, header.hash());
+        let hash = header.hash();
         let number = header.number;
         let replaced = self.block_header_data.insert(hash, header);
         self.block_number_hashes
