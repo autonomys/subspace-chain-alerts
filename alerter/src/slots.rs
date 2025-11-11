@@ -40,7 +40,7 @@ pub(crate) async fn monitor_chain_slots(
             remove_cached_child_blocks(&mut cache, common_block);
         }
 
-        for block in blocks_ext.blocks.iter() {
+        'inner: for block in blocks_ext.blocks.iter() {
             let block_number = block.number;
             let block_hash = block.hash;
             let slot = block.slot().await?;
@@ -52,7 +52,7 @@ pub(crate) async fn monitor_chain_slots(
 
             let Some(last_best_block) = maybe_best_block else {
                 maybe_best_block = Some(block_number);
-                continue;
+                continue 'inner;
             };
 
             maybe_best_block = Some(block_number);

@@ -14,7 +14,7 @@ mod uptime;
 
 use crate::cli::Config;
 use crate::error::Error;
-use crate::subspace::{AccountId, Subspace};
+use crate::subspace::Subspace;
 use crate::uptime::push_uptime_status;
 use clap::Parser;
 use env_logger::{Builder, Env, Target};
@@ -48,7 +48,7 @@ pub fn init_logger() {
 #[derive(Debug, Deserialize, Clone)]
 pub(crate) struct Account {
     pub(crate) name: String,
-    pub(crate) address: AccountId,
+    pub(crate) address: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -122,7 +122,7 @@ async fn main() -> Result<(), Error> {
     // monitor ai3 transfers
     join_set.spawn({
         let stream = subspace.blocks_stream();
-        async move { events::watch_events(stream, network_details, network_config.accounts).await }
+        async move { events::watch_events(stream, network_config.accounts).await }
     });
 
     join_set.spawn(async move { subspace.listen_for_all_blocks().await });

@@ -1,7 +1,7 @@
 //! Module that follows the chain and broadcast blocks data.
 use crate::error::Error;
 use futures_util::{StreamExt, TryStreamExt, stream};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use sp_blockchain::{CachedHeaderMetadata, HashAndNumber};
 use sp_runtime::app_crypto::sp_core::crypto::Ss58AddressFormat;
 use sp_runtime::codec::{Decode, Encode};
@@ -198,25 +198,53 @@ impl Subspace {
     // TODO: once subspace client exposes archive_rpc, use it
     //  to load all forks blocks while loading cache
     pub(crate) async fn listen_for_all_blocks(&self) -> Result<(), Error> {
-        let blocks_client = self.client.blocks();
-        let mut sub = blocks_client.subscribe_all().await?.fuse();
         let (mut header_metadata, mut current_best_block) =
             self.load_header_metadata_cache().await?;
+        loop {
+            let res = self
+                .subscribe_and_listen(&mut header_metadata, &mut current_best_block)
+                .await;
+            // if disconnected, reinitiate for reconnection
+            if let Err(Error::Rpc(_)) = res {
+                warn!("RPC connection disconnected. Reinitiating...");
+                continue;
+            }
 
+            return res;
+        }
+    }
+
+    async fn subscribe_and_listen(
+        &self,
+        header_metadata: &mut HeadersMetadataCache,
+        current_best_block: &mut HashAndNumber<Block>,
+    ) -> Result<(), Error> {
+        let blocks_client = self.client.blocks();
+        let mut sub = blocks_client.subscribe_all().await?.fuse();
         loop {
             let block = sub.next().await.ok_or(Error::MissingBlock)??;
             let block_hash = block.hash();
             let block_number = block.number();
 
-            header_metadata.add_header(block.header().clone());
+            debug!("Received new block: {block_number}[{block_hash}]");
+
+            assert_eq!(
+                header_metadata.add_header(block.header().clone()),
+                block_hash
+            );
+
             if !self.is_canonical_block(block_number, block_hash).await? {
                 info!("⚠️ Imported fork block: {block_number}[{block_hash}]");
                 continue;
             }
 
             // calculate tree route from previous best to current best
+            debug!(
+                "Calculating tree_route from {}[{}] to {block_number}[{block_hash}]",
+                current_best_block.number, current_best_block.hash
+            );
             let tree_route =
-                sp_blockchain::tree_route(&header_metadata, current_best_block.hash, block_hash)?;
+                sp_blockchain::tree_route(header_metadata, current_best_block.hash, block_hash)?;
             let enacted = tree_route.enacted().to_vec();
             let retracted = tree_route.retracted().to_vec();
             if enacted.is_empty() && retracted.is_empty() {
@@ -230,7 +258,7 @@ impl Subspace {
                 continue;
             }
 
-            current_best_block = enacted
+            *current_best_block = enacted
                 .last()
                 .expect("Latest enacted should exist as checked above; qed")
                 .clone();
@@ -362,7 +390,7 @@ struct HeadersMetadataCache {
 }
 
 impl HeadersMetadataCache {
-    fn add_header(&mut self, header: <SubstrateConfig as Config>::Header) -> bool {
+    fn add_header(&mut self, header: <SubstrateConfig as Config>::Header) -> BlockHash {
         let SubstrateHeader {
             parent_hash,
             number,
@@ -382,13 +410,13 @@ impl HeadersMetadataCache {
         };
         let hash = header.hash();
         let number = header.number;
-        let replaced = self.block_header_data.insert(hash, header);
+        self.block_header_data.insert(hash, header);
         self.block_number_hashes
             .entry(number)
             .or_default()
             .insert(hash);
         debug!("Block[{number}] {hash} cached");
-        replaced.is_some()
+        hash
     }
 
     fn remove_header_until(&mut self, number: BlockNumber) {
