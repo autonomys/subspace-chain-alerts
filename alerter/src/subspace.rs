@@ -2,7 +2,7 @@
 use crate::error::Error;
 use futures_util::{StreamExt, TryStreamExt, stream};
 use log::{debug, error, info, warn};
-use sp_blockchain::{CachedHeaderMetadata, HashAndNumber};
+use sp_blockchain::{CachedHeaderMetadata, HashAndNumber, TreeRoute};
 use sp_runtime::app_crypto::sp_core::crypto::Ss58AddressFormat;
 use sp_runtime::codec::{Decode, Encode};
 use sp_runtime::traits::{BlakeTwo256, Block as BlockT, Header as HeaderT};
@@ -21,7 +21,7 @@ use tokio::sync::broadcast::{Receiver, Sender, channel};
 /// Opaque block header type.
 type Header = generic::Header<u32, BlakeTwo256>;
 /// Opaque block type.
-type Block = generic::Block<Header, OpaqueExtrinsic>;
+pub(crate) type Block = generic::Block<Header, OpaqueExtrinsic>;
 pub(crate) type BlockHash = <Block as BlockT>::Hash;
 pub(crate) type BlockNumber = <<Block as BlockT>::Header as HeaderT>::Number;
 pub(crate) type AccountId = <SubstrateConfig as Config>::AccountId;
@@ -220,6 +220,7 @@ impl Subspace {
         current_best_block: &mut HashAndNumber<Block>,
     ) -> Result<(), Error> {
         let blocks_client = self.client.blocks();
+        // TODO: cache can miss block during cache sync and subscription
         let mut sub = blocks_client.subscribe_all().await?.fuse();
         loop {
             let block = sub.next().await.ok_or(Error::MissingBlock)??;
@@ -243,9 +244,14 @@ impl Subspace {
                 "Calculating tree_route from {}[{}] to {block_number}[{block_hash}]",
                 current_best_block.number, current_best_block.hash
             );
-            let tree_route =
-                sp_blockchain::tree_route(header_metadata, current_best_block.hash, block_hash)?;
-            let enacted = tree_route.enacted().to_vec();
+
+            // it is possible that when alerter started,
+            // it would not sync the fork blocks due to api limitation
+            // so for all missed blocks, we fetch and retry until successful
+            let tree_route = self
+                .recursive_tree_route(header_metadata, current_best_block.hash, block_hash)
+                .await?;
+            let mut enacted = tree_route.enacted().to_vec();
             let retracted = tree_route.retracted().to_vec();
             if enacted.is_empty() && retracted.is_empty() {
                 // happens when best block == imported block
@@ -258,16 +264,16 @@ impl Subspace {
                 continue;
             }
 
-            *current_best_block = enacted
-                .last()
-                .expect("Latest enacted should exist as checked above; qed")
-                .clone();
-
             let block_exts = stream::iter(enacted.clone())
-                .map(|hash_and_number| self.get_block_ext(&header_metadata, hash_and_number.hash))
+                .map(|hash_and_number| self.get_block_ext(header_metadata, hash_and_number.hash))
                 .buffered(5)
                 .try_collect::<Vec<_>>()
                 .await?;
+
+            *current_best_block = enacted
+                .pop()
+                .expect("Latest enacted should exist as checked above; qed")
+                .clone();
 
             info!(
                 "✅ Imported best block: {}[{}]",
@@ -276,7 +282,7 @@ impl Subspace {
 
             let maybe_reorg_data = (!retracted.is_empty()).then(|| ReorgData {
                 enacted,
-                retracted,
+                retracted: retracted.into_iter().rev().collect(),
                 common_block: tree_route.common_block().clone(),
             });
             if let Err(err) = self.sink.send(BlocksExt {
@@ -380,6 +386,29 @@ impl Subspace {
                 hash: latest_hash,
             },
         ))
+    }
+
+    async fn recursive_tree_route(
+        &self,
+        header_metadata: &mut HeadersMetadataCache,
+        from: BlockHash,
+        to: BlockHash,
+    ) -> Result<TreeRoute<Block>, Error> {
+        match sp_blockchain::tree_route(header_metadata, from, to) {
+            Ok(tree_route) => Ok(tree_route),
+            Err(err) => match err {
+                Error::MissingBlockHashFromCache(hash) => {
+                    let header = self
+                        .rpc
+                        .chain_get_header(Some(hash))
+                        .await?
+                        .ok_or(Error::MissingBlock)?;
+                    header_metadata.add_header(header);
+                    Box::pin(self.recursive_tree_route(header_metadata, from, to)).await
+                }
+                _ => Err(err),
+            },
+        }
     }
 }
 

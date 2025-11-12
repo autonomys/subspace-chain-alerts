@@ -1,3 +1,4 @@
+use slack_morphism::errors::SlackClientError;
 use subxt::utils::H256;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::task::JoinError;
@@ -33,6 +34,10 @@ pub(crate) enum Error {
     Config(String),
     #[error("Event decode error: {0}")]
     EventDecode(String),
+    #[error("Slack error: {0}")]
+    Slack(SlackClientError),
+    #[error("Application error: {0}")]
+    App(String),
 }
 
 impl From<subxt::Error> for Error {
@@ -80,5 +85,11 @@ impl From<std::io::Error> for Error {
 impl From<toml::de::Error> for Error {
     fn from(err: toml::de::Error) -> Self {
         Self::Toml(err)
+    }
+}
+
+impl From<SlackClientError> for Error {
+    fn from(err: SlackClientError) -> Self {
+        Self::Slack(err)
     }
 }

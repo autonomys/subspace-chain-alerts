@@ -7,6 +7,8 @@ mod cli;
 mod error;
 mod event_types;
 mod events;
+mod md_format;
+mod slack;
 mod slots;
 mod stall_and_reorg;
 mod subspace;
@@ -14,6 +16,8 @@ mod uptime;
 
 use crate::cli::Config;
 use crate::error::Error;
+use crate::md_format::FormatConfig;
+use crate::slack::SlackAlerter;
 use crate::subspace::Subspace;
 use crate::uptime::push_uptime_status;
 use clap::Parser;
@@ -94,6 +98,8 @@ async fn main() -> Result<(), Error> {
     let updater = subspace.runtime_metadata_updater();
     join_set.spawn(async move { updater.perform_runtime_updates().await.map_err(Into::into) });
 
+    let mut slack = SlackAlerter::new(cli.slack).await?;
+
     if let Some(uptimekuma_url) = cli.uptimekuma.uptimekuma_url {
         join_set.spawn(push_uptime_status(
             uptimekuma_url,
@@ -104,25 +110,35 @@ async fn main() -> Result<(), Error> {
     // monitor chain stall
     join_set.spawn({
         let stream = subspace.blocks_stream();
+        let alert_sink = slack.sink();
         async move {
-            stall_and_reorg::watch_chain_stall_and_reorg(
-                stream,
-                cli.stall_and_reorg,
-            )
-            .await
+            stall_and_reorg::watch_chain_stall_and_reorg(stream, cli.stall_and_reorg, alert_sink)
+                .await
         }
     });
 
     // monitor slot times
     join_set.spawn({
         let stream = subspace.blocks_stream();
-        async move { slots::monitor_chain_slots(stream, cli.slot).await }
+        let alert_sink = slack.sink();
+        async move { slots::monitor_chain_slots(stream, alert_sink, cli.slot).await }
     });
 
     // monitor ai3 transfers
     join_set.spawn({
         let stream = subspace.blocks_stream();
-        async move { events::watch_events(stream, network_config.accounts).await }
+        let alert_sink = slack.sink();
+        async move { events::watch_events(stream, alert_sink, network_config.accounts).await }
+    });
+
+    // start slack alerter
+    join_set.spawn({
+        let format_config = FormatConfig {
+            rpc_url: cli.rpc_url,
+            token_name: network_details.token_symbol,
+            token_decimals: network_details.token_decimals,
+        };
+        async move { slack.run(format_config).await }
     });
 
     join_set.spawn(async move { subspace.listen_for_all_blocks().await });

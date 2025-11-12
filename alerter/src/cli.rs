@@ -14,6 +14,8 @@ pub(crate) struct Config {
     pub(crate) stall_and_reorg: StallAndReorgConfig,
     #[clap(flatten)]
     pub(crate) slot: SlotConfig,
+    #[clap(flatten)]
+    pub(crate) slack: SlackConfig,
 }
 
 /// Cli config for uptimekuma.
@@ -41,10 +43,22 @@ pub(crate) struct StallAndReorgConfig {
 /// Cli config for block slots.
 #[derive(Debug, Parser)]
 pub(crate) struct SlotConfig {
-    /// Fast slot time threshold.
-    #[arg(long, default_value = "0.93")]
-    pub(crate) fast_slot_threshold: Decimal,
     /// Slow slot time threshold.
-    #[arg(long, default_value = "1.10")]
+    #[arg(long, default_value = "1.6")]
     pub(crate) slow_slot_threshold: Decimal,
+}
+
+/// Cli config for slack.
+#[derive(Debug, Parser)]
+pub(crate) struct SlackConfig {
+    #[arg(long, default_value = "T03LJ85UR5G")]
+    pub(crate) slack_team_id: String,
+    #[arg(long, required = true)]
+    pub(crate) slack_bot_name: String,
+    #[arg(long, default_value = "robot_face")]
+    pub(crate) slack_bot_icon: String,
+    #[arg(long, required = true)]
+    pub(crate) slack_channel_name: String,
+    #[arg(long, default_value = "/slack-secret")]
+    pub(crate) slack_secret_path: String,
 }

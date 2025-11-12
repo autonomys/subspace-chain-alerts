@@ -8,6 +8,7 @@ use subxt_core::events::StaticEvent;
 use subxt_core::utils::Static;
 
 /// Overarching event type
+#[derive(Debug)]
 pub(crate) enum Event {
     Transfer(TransferKnownAccountEvent),
     DomainRuntimeUpgraded(DomainRuntimeUpgraded),
@@ -47,7 +48,7 @@ pub(crate) enum ChainId {
 
 #[derive(Debug, Clone, DecodeAsType)]
 pub(crate) struct DomainRuntimeUpgraded {
-    runtime_id: RuntimeId,
+    pub(crate) runtime_id: RuntimeId,
 }
 
 impl From<DomainRuntimeUpgraded> for Event {
@@ -63,7 +64,7 @@ impl StaticEvent for DomainRuntimeUpgraded {
 
 #[derive(Debug, Clone, DecodeAsType)]
 pub(crate) struct DomainInstantiated {
-    domain_id: DomainId,
+    pub(crate) domain_id: DomainId,
 }
 
 impl From<DomainInstantiated> for Event {
@@ -79,8 +80,8 @@ impl StaticEvent for DomainInstantiated {
 
 #[derive(Debug, Clone, DecodeAsType)]
 pub(crate) struct FraudProofProcessed {
-    domain_id: DomainId,
-    new_head_receipt_number: Option<BlockNumber>,
+    pub(crate) domain_id: DomainId,
+    pub(crate) new_head_receipt_number: Option<BlockNumber>,
 }
 
 impl From<FraudProofProcessed> for Event {
@@ -104,8 +105,8 @@ pub(crate) enum SlashedReason {
 
 #[derive(Debug, Clone, DecodeAsType)]
 pub(crate) struct OperatorSlashed {
-    operator_id: OperatorId,
-    reason: SlashedReason,
+    pub(crate) operator_id: OperatorId,
+    pub(crate) reason: SlashedReason,
 }
 
 impl From<OperatorSlashed> for Event {
@@ -122,17 +123,17 @@ impl StaticEvent for OperatorSlashed {
 #[derive(Debug, Clone, DecodeAsType)]
 pub(crate) struct OperatorEpochExpectations {
     /// floor(μ) = floor(S * p_slot_exact): integer expected bundles this epoch.
-    pub expected_bundles: u64,
+    pub(crate) expected_bundles: u64,
     /// Chernoff lower-bound r: minimum bundles to pass with false-positive ≤ τ.
-    pub min_required_bundles: u64,
+    pub(crate) min_required_bundles: u64,
 }
 
 #[derive(Debug, Clone, DecodeAsType)]
 pub(crate) struct OperatorOffline {
-    operator_id: OperatorId,
-    domain_id: DomainId,
-    submitted_bundles: u64,
-    expectations: OperatorEpochExpectations,
+    pub(crate) operator_id: OperatorId,
+    pub(crate) domain_id: DomainId,
+    pub(crate) submitted_bundles: u64,
+    pub(crate) expectations: OperatorEpochExpectations,
 }
 
 impl From<OperatorOffline> for Event {
@@ -207,7 +208,7 @@ impl StaticEvent for BalanceDeposit {
 #[derive(Debug, Clone, DecodeAsType)]
 pub(crate) struct Sudo {
     /// The result of the call made by the sudo user.
-    sudo_result: Static<DispatchResult>,
+    pub(crate) sudo_result: Static<DispatchResult>,
 }
 
 impl From<Sudo> for Event {

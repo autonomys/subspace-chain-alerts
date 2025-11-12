@@ -4,6 +4,7 @@ version = "1.0.0"
 edition.workspace = true
 
 [dependencies]
+chrono.workspace = true
 env_logger.workspace = true
 subxt = { workspace = true, features = ["native", "jsonrpsee", "reconnecting-rpc-client"] }
 subxt-core.workspace = true
@@ -23,3 +24,6 @@ toml.workspace = true
 scale-decode-derive.workspace = true
 scale-decode.workspace = true
 hex.workspace = true
+slack-morphism = { workspace = true, features = ["hyper"] }
+zeroize.workspace = true
+urlencoding.workspace = true

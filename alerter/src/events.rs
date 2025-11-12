@@ -7,8 +7,9 @@ use crate::event_types::{
     DomainRuntimeUpgraded, Event, FraudProofProcessed, OperatorOffline, OperatorSlashed, Sudo,
     TransferDirection, TransferEvent, TransferKnownAccountEvent,
 };
+use crate::slack::{Alert, AlertSink};
 use crate::subspace::{AccountId, BlocksStream};
-use log::{debug, info};
+use log::{debug, error, info};
 use std::collections::BTreeMap;
 use std::str::FromStr;
 use subxt::events::Events;
@@ -17,6 +18,7 @@ use subxt_core::events::StaticEvent;
 
 pub(crate) async fn watch_events(
     mut stream: BlocksStream,
+    alert_sink: AlertSink,
     accounts: Vec<Account>,
 ) -> Result<(), Error> {
     info!("Watching block events...");
@@ -53,13 +55,17 @@ pub(crate) async fn watch_events(
             events.extend(as_events::<OperatorOffline>(&block_events)?);
             events.extend(as_events::<Sudo>(&block_events)?);
             events.extend(as_events::<CodeUpdated>(&block_events)?);
-            // TODO: send slack alert
             debug!(
                 "Found {} events in block {}[{}]",
                 events.len(),
                 block.number,
                 block.hash
             );
+            events.into_iter().for_each(|event| {
+                if let Err(err) = alert_sink.send(Alert::Event(event)) {
+                    error!("⛔️failed to send Block production recovery alert: {err}");
+                }
+            })
         }
     }
 }
