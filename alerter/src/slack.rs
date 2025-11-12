@@ -127,7 +127,12 @@ impl SlackAlerter {
         Ok(SlackAlerter {
             bot_name: slack_bot_name,
             bot_icon: slack_bot_icon,
-            channel_name: slack_channel_name,
+            channel_name: format!(
+                "#{}",
+                slack_channel_name
+                    .strip_prefix("#")
+                    .unwrap_or(&slack_channel_name)
+            ),
             secret,
             stream,
             sink,

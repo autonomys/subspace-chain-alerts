@@ -26,8 +26,8 @@ use log::info;
 use serde::Deserialize;
 use sp_runtime::app_crypto::sp_core::crypto::set_default_ss58_version;
 use std::collections::BTreeMap;
+use std::fs;
 use std::io::Write;
-use std::{env, fs};
 use tokio::task::JoinSet;
 
 /// Initiate logger with either RUST_LOG or default to info
@@ -65,11 +65,7 @@ struct Networks {
     networks: BTreeMap<String, Network>,
 }
 
-fn load_networks() -> Result<Networks, Error> {
-    let path = match env::var("CARGO_MANIFEST_DIR") {
-        Ok(base_dir) => format!("{base_dir}/networks.toml"),
-        Err(_) => "config.toml".to_string(),
-    };
+fn load_networks(path: &str) -> Result<Networks, Error> {
     info!("Loading network configuration from `{path}`",);
     let config = fs::read_to_string(path)?;
     let networks = toml::from_str(config.as_str())?;
@@ -84,7 +80,7 @@ async fn main() -> Result<(), Error> {
     let network_details = subspace.network_details().await?;
     set_default_ss58_version(network_details.ss58_format);
     info!("Detected network: {}", network_details.name);
-    let networks = load_networks()?;
+    let networks = load_networks(&cli.network_config_path)?;
     let network_config = networks
         .networks
         .get(&network_details.name)

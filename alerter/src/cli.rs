@@ -8,6 +8,8 @@ pub(crate) struct Config {
     /// Node RPC Url.
     #[arg(long, required = true)]
     pub(crate) rpc_url: String,
+    #[arg(long, default_value = "/networks.toml")]
+    pub(crate) network_config_path: String,
     #[clap(flatten)]
     pub(crate) uptimekuma: UptimekumaConfig,
     #[clap(flatten)]

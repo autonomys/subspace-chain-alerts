@@ -5,26 +5,9 @@ edition = "2024"
 resolver = "2"
 members = [
     "alerter",
-    "chain-alerter",
 ]
 
 [workspace.dependencies]
-anyhow = "1.0.100"
-
-hex-literal = "0.4.1"
-
-hyper-rustls = { version = "0.27.7", default-features = false }
-hyper-util = { version = "0.1.17", default-features = false }
-rand = { version = "0.9.2", default-features = false }
-rustls = { version = "0.23.32", default-features = false }
-scale-value = { version = "0.18.0", default-features = false }
-serde_json = { version = "1.0.145", default-features = false }
-sp-core = "38.0.0"
-static_assertions = "1.1.0"
-subspace-process = { version = "0.0.1", git = "https://github.com/autonomys/subspace", rev = "cc0c86c8e4a72e3578be3c32ff8b03f9d4c8d36c" }
-tracing = { version = "0.1.41", default-features = false }
-
-
 chrono = "0.4.42"
 env_logger = "0.11.8"
 subxt = { version = "0.44.0", default-features = false }
