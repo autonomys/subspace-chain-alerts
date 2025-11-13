@@ -4,7 +4,6 @@ use crate::cli::SlackConfig;
 use crate::error::Error;
 use crate::event_types::Event;
 use crate::md_format::{FormatConfig, MdFormat};
-use crate::slots::SlowSlot;
 use crate::stall_and_reorg::{ChainRecovery, ChainReorg, ChainStall};
 use log::{debug, error, info};
 use slack_morphism::api::SlackApiChatPostMessageRequest;
@@ -25,7 +24,6 @@ pub(crate) enum Alert {
     Stall(ChainStall),
     Recovery(ChainRecovery),
     Reorg(ChainReorg),
-    SlowSlot(SlowSlot),
 }
 
 type AlertStream = UnboundedReceiver<Alert>;

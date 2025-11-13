@@ -2,28 +2,30 @@
 name = "alerter"
 version = "1.0.0"
 edition.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
 
 [dependencies]
-chrono.workspace = true
-env_logger.workspace = true
-subxt = { workspace = true, features = ["native", "jsonrpsee", "reconnecting-rpc-client"] }
-subxt-core.workspace = true
-thiserror.workspace = true
-tokio = { workspace = true, features = ["full"] }
 clap = { workspace = true, features = ["derive"] }
+env_logger.workspace = true
+futures-util.workspace = true
+hex.workspace = true
+humantime.workspace = true
 log.workspace = true
 reqwest = { workspace = true, features = ["json", "rustls-tls"] }
+rust_decimal.workspace = true
+scale-decode.workspace = true
+scale-decode-derive.workspace = true
 serde = { workspace = true, features = ["derive"] }
-humantime.workspace = true
-subxt-rpcs.workspace = true
+slack-morphism = { workspace = true, features = ["hyper"] }
 sp-blockchain.workspace = true
 sp-runtime.workspace = true
-futures-util.workspace = true
-rust_decimal.workspace = true
+subxt = { workspace = true, features = ["native", "jsonrpsee", "reconnecting-rpc-client"] }
+subxt-core.workspace = true
+subxt-rpcs.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["full"] }
 toml.workspace = true
-scale-decode-derive.workspace = true
-scale-decode.workspace = true
-hex.workspace = true
-slack-morphism = { workspace = true, features = ["hyper"] }
-zeroize.workspace = true
 urlencoding.workspace = true
+zeroize.workspace = true

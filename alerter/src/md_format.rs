@@ -2,10 +2,8 @@
 
 use crate::event_types::{Event, TransferKnownAccountEvent};
 use crate::slack::Alert;
-use crate::slots::{SlotAndTimestamp, SlowSlot};
 use crate::stall_and_reorg::{ChainRecovery, ChainReorg, ChainStall};
 use crate::subspace::{Balance, Block};
-use chrono::DateTime;
 use humantime::format_duration;
 use rust_decimal::Decimal;
 use sp_blockchain::HashAndNumber;
@@ -31,7 +29,6 @@ impl MdFormat {
             Alert::Stall(chain_stall) => self.format_chain_stall(chain_stall),
             Alert::Recovery(recovery) => self.format_recovery(recovery),
             Alert::Reorg(reorg) => self.format_reorg(reorg),
-            Alert::SlowSlot(slow_slot) => self.format_slow_slot(slow_slot),
         }
     }
 
@@ -112,25 +109,6 @@ impl MdFormat {
             "**Block production resumed**\nBest block: {}\nResumed after: {}",
             self.format_hash_and_number(best_block),
             format_duration(duration)
-        )
-    }
-
-    fn format_slow_slot(&self, slow_slot: SlowSlot) -> String {
-        let SlowSlot {
-            slot_and_timestamp,
-            seconds_per_slot,
-            block,
-            slots_produced,
-        } = slow_slot;
-        let SlotAndTimestamp { slot, timestamp } = slot_and_timestamp;
-        let timestamp = DateTime::from_timestamp_millis(timestamp as i64)
-            .expect("Is always a valid block timestamp");
-        format!(
-            "**Slow slot**\nSeconds per slot: {}s\nSlot: {slot}\nBlock: {}\nBlock time: {}\nSlots produced: {}",
-            seconds_per_slot,
-            self.format_hash_and_number(block),
-            timestamp.to_rfc3339(),
-            slots_produced
         )
     }
 

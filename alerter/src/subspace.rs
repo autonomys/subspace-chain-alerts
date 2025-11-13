@@ -1,5 +1,6 @@
 //! Module that follows the chain and broadcast blocks data.
 use crate::error::Error;
+use futures_util::stream::Fuse;
 use futures_util::{StreamExt, TryStreamExt, stream};
 use log::{debug, error, info, warn};
 use sp_blockchain::{CachedHeaderMetadata, HashAndNumber, TreeRoute};
@@ -30,6 +31,8 @@ type SubspaceClient = OnlineClient<SubstrateConfig>;
 type SubspaceRpcClient = LegacyRpcMethods<SubstrateConfig>;
 type BlocksSink = Sender<BlocksExt>;
 pub(crate) type BlocksStream = Receiver<BlocksExt>;
+type SubxtBlockStream =
+    Fuse<subxt::backend::StreamOfResults<subxt::blocks::Block<SubstrateConfig, SubspaceClient>>>;
 
 /// Subspace slot type.
 pub(crate) type Slot = u64;
@@ -198,12 +201,17 @@ impl Subspace {
     // TODO: once subspace client exposes archive_rpc, use it
     //  to load all forks blocks while loading cache
     pub(crate) async fn listen_for_all_blocks(&self) -> Result<(), Error> {
-        let (mut header_metadata, mut current_best_block) =
-            self.load_header_metadata_cache().await?;
+        let blocks_client = self.client.blocks();
+        let mut header_metadata = HeadersMetadataCache::default();
         loop {
+            let mut sub = blocks_client.subscribe_all().await?.fuse();
+            let mut current_best_block = self
+                .load_header_metadata_cache(&mut sub, &mut header_metadata)
+                .await?;
             let res = self
-                .subscribe_and_listen(&mut header_metadata, &mut current_best_block)
+                .listen_for_blocks(&mut header_metadata, &mut current_best_block, sub)
                 .await;
+            error!("Block subscription closed: {res:?}");
             // if disconnected, reinitiate for reconnection
             if let Err(Error::Rpc(_)) = res {
                 warn!("RPC connection disconnected. Reinitiating...");
@@ -214,14 +222,12 @@ impl Subspace {
         }
     }
 
-    async fn subscribe_and_listen(
+    async fn listen_for_blocks(
         &self,
         header_metadata: &mut HeadersMetadataCache,
         current_best_block: &mut HashAndNumber<Block>,
+        mut sub: SubxtBlockStream,
     ) -> Result<(), Error> {
-        let blocks_client = self.client.blocks();
-        // TODO: cache can miss block during cache sync and subscription
-        let mut sub = blocks_client.subscribe_all().await?.fuse();
         loop {
             let block = sub.next().await.ok_or(Error::MissingBlock)??;
             let block_hash = block.hash();
@@ -335,12 +341,20 @@ impl Subspace {
 
     async fn load_header_metadata_cache(
         &self,
-    ) -> Result<(HeadersMetadataCache, HashAndNumber<Block>), Error> {
-        let latest_hash = self
-            .rpc
-            .chain_get_block_hash(None)
-            .await?
-            .ok_or(Error::MissingBlock)?;
+        sub: &mut SubxtBlockStream,
+        header_metadata: &mut HeadersMetadataCache,
+    ) -> Result<HashAndNumber<Block>, Error> {
+        let mut latest_block_hash = None;
+        while latest_block_hash.is_none() {
+            let block = sub.next().await.ok_or(Error::MissingBlock)??;
+            let hash = block.hash();
+            let block_number = block.number();
+            if self.is_canonical_block(block_number, hash).await? {
+                latest_block_hash = Some(hash);
+            }
+        }
+
+        let latest_hash = latest_block_hash.expect("Latest block hash should exists; qed");
         let latest_head = self
             .rpc
             .chain_get_header(Some(latest_hash))
@@ -353,7 +367,7 @@ impl Subspace {
             "Loading header cache from block {} to {}",
             cache_start_number, latest_head.number
         );
-        let mut header_metadata = HeadersMetadataCache::default();
+
         stream::iter(
             (cache_start_number..=latest_head.number).map(|number| async move {
                 let block_hash = self
@@ -379,13 +393,10 @@ impl Subspace {
         });
 
         info!("Cache header metadata completed.");
-        Ok((
-            header_metadata,
-            HashAndNumber {
-                number: latest_head.number,
-                hash: latest_hash,
-            },
-        ))
+        Ok(HashAndNumber {
+            number: latest_head.number,
+            hash: latest_hash,
+        })
     }
 
     async fn recursive_tree_route(

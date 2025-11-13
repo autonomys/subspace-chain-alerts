@@ -1,6 +1,5 @@
 use clap::Parser;
 use humantime::Duration;
-use rust_decimal::Decimal;
 
 /// Cli config for alerter.
 #[derive(Debug, Parser)]
@@ -14,8 +13,6 @@ pub(crate) struct Config {
     pub(crate) uptimekuma: UptimekumaConfig,
     #[clap(flatten)]
     pub(crate) stall_and_reorg: StallAndReorgConfig,
-    #[clap(flatten)]
-    pub(crate) slot: SlotConfig,
     #[clap(flatten)]
     pub(crate) slack: SlackConfig,
 }
@@ -40,14 +37,6 @@ pub(crate) struct StallAndReorgConfig {
     /// Reorg depth threshold
     #[arg(long, default_value = "6")]
     pub(crate) reorg_depth_threshold: usize,
-}
-
-/// Cli config for block slots.
-#[derive(Debug, Parser)]
-pub(crate) struct SlotConfig {
-    /// Slow slot time threshold.
-    #[arg(long, default_value = "1.6")]
-    pub(crate) slow_slot_threshold: Decimal,
 }
 
 /// Cli config for slack.

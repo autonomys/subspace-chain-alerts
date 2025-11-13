@@ -1,5 +1,7 @@
 #![feature(iterator_try_collect)]
 #![allow(clippy::result_large_err)]
+#![forbid(unsafe_code)]
+#![deny(unused_crate_dependencies)]
 // TODO: remove once connected
 #![allow(dead_code)]
 
@@ -9,7 +11,6 @@ mod event_types;
 mod events;
 mod md_format;
 mod slack;
-mod slots;
 mod stall_and_reorg;
 mod subspace;
 mod uptime;
@@ -111,13 +112,6 @@ async fn main() -> Result<(), Error> {
             stall_and_reorg::watch_chain_stall_and_reorg(stream, cli.stall_and_reorg, alert_sink)
                 .await
         }
-    });
-
-    // monitor slot times
-    join_set.spawn({
-        let stream = subspace.blocks_stream();
-        let alert_sink = slack.sink();
-        async move { slots::monitor_chain_slots(stream, alert_sink, cli.slot).await }
     });
 
     // monitor ai3 transfers
