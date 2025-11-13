@@ -32,8 +32,6 @@ pub(crate) enum Error {
     Toml(toml::de::Error),
     #[error("Config error: {0}")]
     Config(String),
-    #[error("Event decode error: {0}")]
-    EventDecode(String),
     #[error("Slack error: {0}")]
     Slack(SlackClientError),
     #[error("Application error: {0}")]

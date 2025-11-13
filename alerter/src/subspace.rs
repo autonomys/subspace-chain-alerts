@@ -40,6 +40,7 @@ pub(crate) type Slot = u64;
 pub(crate) type Timestamp = u64;
 /// Block with extracted details.
 #[derive(Debug, Clone)]
+#[expect(dead_code, reason = "included for block details completeness")]
 pub(crate) struct BlockExt {
     pub(crate) number: BlockNumber,
     pub(crate) hash: BlockHash,
@@ -67,11 +68,13 @@ impl BlockExt {
     }
 
     /// Returns block timestamp.
+    #[expect(dead_code, reason = "included for later use")]
     pub(crate) async fn timestamp(&self) -> Result<Timestamp, Error> {
         self.read_storage("Timestamp", "Now", ()).await
     }
 
     /// Returns block slot.
+    #[expect(dead_code, reason = "included for later use")]
     pub(crate) async fn slot(&self) -> Result<Slot, Error> {
         let slots = self
             .read_storage::<_, BTreeMap<BlockNumber, Slot>>("Subspace", "BlockSlots", ())
@@ -86,6 +89,7 @@ impl BlockExt {
     }
 
     /// Returns block extrinsics.
+    #[expect(dead_code, reason = "included for later use")]
     pub(crate) async fn extrinsics<Ext: Decode>(&self) -> Result<Vec<Ext>, Error> {
         let exts = self
             .client

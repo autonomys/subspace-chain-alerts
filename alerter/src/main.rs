@@ -2,8 +2,6 @@
 #![allow(clippy::result_large_err)]
 #![forbid(unsafe_code)]
 #![deny(unused_crate_dependencies)]
-// TODO: remove once connected
-#![allow(dead_code)]
 
 mod cli;
 mod error;

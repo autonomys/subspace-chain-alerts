@@ -16,17 +16,8 @@ pub(crate) enum Event {
     FraudProofProcessed(FraudProofProcessed),
     OperatorSlashed(OperatorSlashed),
     OperatorOffline(OperatorOffline),
-    Sudo(Sudo),
+    Sudo,
     CodeUpdated(CodeUpdated),
-}
-
-#[derive(Clone, DecodeAsType)]
-pub(crate) struct FarmerPublicKey([u8; 32]);
-
-impl fmt::Debug for FarmerPublicKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", hex::encode(self.0))
-    }
 }
 
 /// Type representing the runtime ID.
@@ -39,11 +30,10 @@ pub(crate) type OperatorId = u64;
 #[derive(Debug, Clone, DecodeAsType)]
 pub(crate) struct DomainId(u32);
 
-/// Unique identifier of a chain.
-#[derive(Debug, Clone, DecodeAsType)]
-pub(crate) enum ChainId {
-    Consensus,
-    Domain(DomainId),
+impl fmt::Display for DomainId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Domain({})", self.0)
+    }
 }
 
 #[derive(Debug, Clone, DecodeAsType)]
@@ -208,12 +198,12 @@ impl StaticEvent for BalanceDeposit {
 #[derive(Debug, Clone, DecodeAsType)]
 pub(crate) struct Sudo {
     /// The result of the call made by the sudo user.
-    pub(crate) sudo_result: Static<DispatchResult>,
+    pub(crate) _sudo_result: Static<DispatchResult>,
 }
 
 impl From<Sudo> for Event {
-    fn from(value: Sudo) -> Self {
-        Self::Sudo(value)
+    fn from(_: Sudo) -> Self {
+        Self::Sudo
     }
 }
 
@@ -264,19 +254,6 @@ impl TransferEvent for BalanceTransfer {
 impl StaticEvent for BalanceTransfer {
     const PALLET: &'static str = "Balances";
     const EVENT: &'static str = "Transfer";
-}
-
-#[derive(Debug, Clone, DecodeAsType)]
-pub(crate) struct FarmerVote {
-    pub(crate) public_key: FarmerPublicKey,
-    pub(crate) reward_address: AccountId,
-    pub(crate) height: BlockNumber,
-    pub(crate) parent_hash: BlockHash,
-}
-
-impl StaticEvent for FarmerVote {
-    const PALLET: &'static str = "Subspace";
-    const EVENT: &'static str = "FarmerVote";
 }
 
 #[derive(Debug, Clone)]

@@ -74,7 +74,7 @@ impl MdFormat {
                 e.expectations.expected_bundles,
                 e.expectations.min_required_bundles
             ),
-            Event::Sudo(_) => "**Sudo event triggered**".to_string(),
+            Event::Sudo => "**Sudo event triggered**".to_string(),
             Event::CodeUpdated(_) => "**Runtime code updated**".to_string(),
         }
     }
