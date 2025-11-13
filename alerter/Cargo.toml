@@ -1,0 +1,31 @@
+[package]
+name = "alerter"
+version = "1.0.0"
+edition.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+clap = { workspace = true, features = ["derive"] }
+env_logger.workspace = true
+futures-util.workspace = true
+hex.workspace = true
+humantime.workspace = true
+log.workspace = true
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
+rust_decimal.workspace = true
+scale-decode.workspace = true
+scale-decode-derive.workspace = true
+serde = { workspace = true, features = ["derive"] }
+slack-morphism = { workspace = true, features = ["hyper"] }
+sp-blockchain.workspace = true
+sp-runtime.workspace = true
+subxt = { workspace = true, features = ["native", "jsonrpsee", "reconnecting-rpc-client"] }
+subxt-core.workspace = true
+subxt-rpcs.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["full"] }
+toml.workspace = true
+urlencoding.workspace = true
+zeroize.workspace = true

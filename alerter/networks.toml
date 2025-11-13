@@ -1,0 +1,21 @@
+[networks."Autonomys Mainnet"]
+accounts = [
+    # Official foundation and labs addresses:
+    # https://forum.autonomys.xyz/t/subspace-foundation-autonomys-labs-wallets-official-addresses-for-transparency/4917
+    { name = "Investors", address = "sucGPHK3b4REe2DNRvNaUrmcoXVDDZVasm7zBNtev4zUpLrp4" },
+    { name = "Subspace Foundation Long-Term Treasury", address = "sugc77Zny6kg9X4mCs1pe2aunLSb1UcUrDokDLp1ho2FUE6wj" },
+    { name = "Team (Founders + Staff)", address = "suc7ykog1bVpzUAFCHDsobCtmtcVEXjTpPNJ7vEHGmcZA13kd" },
+    { name = "Subspace Foundation Near-Term Treasury", address = "sudqduciRx3fZcNRbW1mmmBAntuZLkwhcXyVctsGJyrjRTPaA" },
+    { name = "DevCo Treasury", address = "sucVFW97RnRYzXE1hncq4Q6E3ygxVv4Ap8KvcWMCEfF4QZwGY" },
+    { name = "Advisors", address = "sudUExCScaD4JEk3iALh69PFPUJcmu4ziwBByGiGnMgr1ouj5" },
+    { name = "Market Liquidity", address = "subTKWVig3CiwwnPfKccXZHQKwnE36vNHfNTEUx3yYja4UNR9" },
+    { name = "Vendors", address = "sugKyc3Qs9WWqeT2vVynQsnQukTrfGwofg8FdrtTPprQCUXS7" },
+    { name = "Ambassadors", address = "sufqKMnmLekD1NA8smBMLei7cZvvaHLpEXkExdsoi97ezCEtY" },
+    { name = "Operations", address = "suesYE9yAqNJrMiZPY4hKNMjMTXBkkD1rHgQrSNes1bUnw37U" },
+    { name = "Game of Domains", address = "sueCdBhsNJ9LH76wYyJYhK8fvcvYt1q3J3AwWq674rwPEvbKS" },
+    # https://forum.autonomys.xyz/t/boosting-early-staking-the-guardians-of-growth-initiative/4962/2
+    { name = "Guardians of Growth", address = "sugQzjjyAfhzktFDdAkZrcTq5qzMaRoSV2qs1gTcjjuBeybWT" },
+]
+
+[networks."Autonomys Chronos Testnet"]
+accounts = []
