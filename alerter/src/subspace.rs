@@ -142,6 +142,7 @@ pub(crate) struct NetworkDetails {
     pub(crate) ss58_format: Ss58AddressFormat,
     pub(crate) token_symbol: String,
     pub(crate) token_decimals: u8,
+    pub(crate) genesis_hash: BlockHash,
 }
 
 impl Subspace {
@@ -174,6 +175,11 @@ impl Subspace {
     pub(crate) async fn network_details(&self) -> Result<NetworkDetails, Error> {
         let name = self.rpc.system_chain().await?;
         let system_properties = self.rpc.system_properties().await?;
+        let genesis_hash = self
+            .rpc
+            .chain_get_block_hash(Some(0u32.into()))
+            .await?
+            .expect("Block hash always exists");
         let ss58_format = system_properties
             .get("ss58Format")
             .cloned()
@@ -196,6 +202,7 @@ impl Subspace {
             ss58_format,
             token_symbol,
             token_decimals,
+            genesis_hash,
         })
     }
 

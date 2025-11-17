@@ -8,6 +8,7 @@ mod error;
 mod event_types;
 mod events;
 mod md_format;
+mod p2p_network;
 mod slack;
 mod stall_and_reorg;
 mod subspace;
@@ -16,11 +17,13 @@ mod uptime;
 use crate::cli::Config;
 use crate::error::Error;
 use crate::md_format::FormatConfig;
+use crate::p2p_network::Network;
 use crate::slack::SlackAlerter;
 use crate::subspace::Subspace;
 use crate::uptime::push_uptime_status;
 use clap::Parser;
 use env_logger::{Builder, Env, Target};
+use libp2p::Multiaddr;
 use log::info;
 use serde::Deserialize;
 use sp_runtime::app_crypto::sp_core::crypto::set_default_ss58_version;
@@ -55,16 +58,17 @@ pub(crate) struct Account {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-pub(crate) struct Network {
+pub(crate) struct NetworkConfig {
     pub(crate) accounts: Vec<Account>,
+    pub(crate) bootnodes: Vec<Multiaddr>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
-struct Networks {
-    networks: BTreeMap<String, Network>,
+struct NetworksConfig {
+    networks: BTreeMap<String, NetworkConfig>,
 }
 
-fn load_networks(path: &str) -> Result<Networks, Error> {
+fn load_networks_config(path: &str) -> Result<NetworksConfig, Error> {
     info!("Loading network configuration from `{path}`",);
     let config = fs::read_to_string(path)?;
     let networks = toml::from_str(config.as_str())?;
@@ -79,7 +83,7 @@ async fn main() -> Result<(), Error> {
     let network_details = subspace.network_details().await?;
     set_default_ss58_version(network_details.ss58_format);
     info!("Detected network: {}", network_details.name);
-    let networks = load_networks(&cli.network_config_path)?;
+    let networks = load_networks_config(&cli.network_config_path)?;
     let network_config = networks
         .networks
         .get(&network_details.name)
@@ -130,6 +134,10 @@ async fn main() -> Result<(), Error> {
     });
 
     join_set.spawn(async move { subspace.listen_for_all_blocks().await });
+
+    let mut network = Network::new(network_config.bootnodes, network_details.genesis_hash).await?;
+
+    join_set.spawn(async move { network.run().await });
 
     // no task in the join set should exit
     // if exits, it is a failure
