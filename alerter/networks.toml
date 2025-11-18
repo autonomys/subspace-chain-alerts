@@ -16,6 +16,13 @@ accounts = [
     # https://forum.autonomys.xyz/t/boosting-early-staking-the-guardians-of-growth-initiative/4962/2
     { name = "Guardians of Growth", address = "sugQzjjyAfhzktFDdAkZrcTq5qzMaRoSV2qs1gTcjjuBeybWT" },
 ]
+bootnodes = [
+    "/dns/bootstrap-0.mainnet.subspace.foundation/tcp/30333/p2p/12D3KooWGRxjFz98yZ1Wks6kzJmDYwnF95dVQLvoXj5JJXp8Z7eD",
+    "/dns/bootstrap-0.mainnet.autonomys.xyz/tcp/30333/p2p/12D3KooWQa1GzBpDf6o2nXc65kSfBJs2fP6XNCJYFJZ89e82iCDa"
+]
 
 [networks."Autonomys Chronos Testnet"]
 accounts = []
+bootnodes = [
+    "/dns/bootstrap-0.chronos.autonomys.xyz/tcp/30333/p2p/12D3KooWFf1TpfEFPQ6cun4dg2VkF3kiDNzzx7tJKe2AXbtkfmPq"
+]

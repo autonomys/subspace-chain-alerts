@@ -16,7 +16,9 @@ env_logger = "0.11.8"
 futures-util = "0.3.31"
 hex = "0.4.3"
 humantime = "2.3.0"
+libp2p = { version = "0.56.0", default-features = false }
 log = "0.4.28"
+parity-scale-codec = "3.7.5"
 reqwest = { version = "0.12.24", default-features = false }
 rust_decimal = "1.39.0"
 scale-decode = "0.16.0"
@@ -25,6 +27,7 @@ serde = "1.0.228"
 slack-morphism = "2.16.0"
 sp-blockchain = "42.0.0"
 sp-runtime = "44.0.0"
+substrate-p2p = { git = "https://github.com/vedhavyas/substrate-p2p", rev = "f7d157dee94486e9477f8edff481d738e16e5cac" }
 subxt = { version = "0.44.0", default-features = false }
 subxt-core = "0.44.0"
 subxt-rpcs = "0.44.0"

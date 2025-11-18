@@ -12,7 +12,9 @@ env_logger.workspace = true
 futures-util.workspace = true
 hex.workspace = true
 humantime.workspace = true
+libp2p = { workspace = true, features = ["tcp", "tokio", "noise", "yamux", "dns", "macros", "identify", "kad"] }
 log.workspace = true
+parity-scale-codec = { workspace = true, features = ["derive"] }
 reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 rust_decimal.workspace = true
 scale-decode.workspace = true
@@ -21,6 +23,7 @@ serde = { workspace = true, features = ["derive"] }
 slack-morphism = { workspace = true, features = ["hyper"] }
 sp-blockchain.workspace = true
 sp-runtime.workspace = true
+substrate-p2p.workspace = true
 subxt = { workspace = true, features = ["native", "jsonrpsee", "reconnecting-rpc-client"] }
 subxt-core.workspace = true
 subxt-rpcs.workspace = true
