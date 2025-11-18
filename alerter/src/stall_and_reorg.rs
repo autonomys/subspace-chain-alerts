@@ -63,7 +63,7 @@ pub(crate) async fn watch_chain_stall_and_reorg(
                         format_duration(timeout)
                     );
 
-                    let alert = Alert::Recovery(ChainRecovery {
+                    let alert = Alert::ChainRecovery(ChainRecovery {
                         best_block: maybe_last_best_block
                             .clone()
                             .expect("There is always at least one block imported; qed"),
@@ -118,7 +118,7 @@ pub(crate) async fn watch_chain_stall_and_reorg(
                     format_duration(non_import_duration)
                 );
                 if let Some(last_best_block) = maybe_last_best_block.clone() {
-                    let alert = Alert::Stall(ChainStall {
+                    let alert = Alert::ChainStall(ChainStall {
                         last_block: last_best_block,
                         duration: non_import_duration,
                     });

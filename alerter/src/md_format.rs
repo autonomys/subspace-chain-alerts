@@ -2,6 +2,7 @@
 
 use crate::event_types::{Event, TransferKnownAccountEvent};
 use crate::slack::Alert;
+use crate::slots::{AvgSlowSlot, SlowSlot, TimekeeperRecovery, TimekeeperStall};
 use crate::stall_and_reorg::{ChainRecovery, ChainReorg, ChainStall};
 use crate::subspace::{Balance, Block};
 use humantime::format_duration;
@@ -26,9 +27,13 @@ impl MdFormat {
     pub(crate) fn format_alert(&self, alert: Alert) -> String {
         match alert {
             Alert::Event(event) => self.format_event(event),
-            Alert::Stall(chain_stall) => self.format_chain_stall(chain_stall),
-            Alert::Recovery(recovery) => self.format_recovery(recovery),
+            Alert::ChainStall(chain_stall) => self.format_chain_stall(chain_stall),
+            Alert::ChainRecovery(recovery) => self.format_chain_recovery(recovery),
             Alert::Reorg(reorg) => self.format_reorg(reorg),
+            Alert::TimekeeperStall(stall) => self.format_timekeeper_stall(stall),
+            Alert::TimekeeperRecovery(recovery) => self.format_timekeeper_recovery(recovery),
+            Alert::SlowSlot(slow_slot) => self.format_slow_slot(slow_slot),
+            Alert::AvgSlowSlots(avg_slow_slot) => self.format_avg_slow_slot(avg_slow_slot),
         }
     }
 
@@ -100,7 +105,7 @@ impl MdFormat {
         format!("{scaled_balance} {token_name}")
     }
 
-    fn format_recovery(&self, recovery: ChainRecovery) -> String {
+    fn format_chain_recovery(&self, recovery: ChainRecovery) -> String {
         let ChainRecovery {
             best_block,
             duration,
@@ -108,6 +113,42 @@ impl MdFormat {
         format!(
             "**Block production resumed**\nBest block: {}\nResumed after: {}",
             self.format_hash_and_number(best_block),
+            format_duration(duration)
+        )
+    }
+
+    fn format_slow_slot(&self, slow_slot: SlowSlot) -> String {
+        let SlowSlot {
+            slot,
+            previous_slot,
+            slot_time,
+            threshold,
+        } = slow_slot;
+        format!(
+            "**Slot slot**\nSlot: {slot}\nPrevious slot: {previous_slot}\nSlot time: {}\nThreshold: {}",
+            format_duration(slot_time),
+            format_duration(threshold)
+        )
+    }
+
+    fn format_avg_slow_slot(&self, avg_slow_slot: AvgSlowSlot) -> String {
+        let AvgSlowSlot {
+            slot,
+            slot_count,
+            avg_slot_time,
+            threshold,
+        } = avg_slow_slot;
+        format!(
+            "**Average Slot slots**\nSlot: {slot}\nSlot count: {slot_count}\nAvg Slot time: {}\nThreshold: {}",
+            format_duration(avg_slot_time),
+            format_duration(threshold)
+        )
+    }
+
+    fn format_timekeeper_recovery(&self, recovery: TimekeeperRecovery) -> String {
+        let TimekeeperRecovery { slot, duration } = recovery;
+        format!(
+            "**Timekeeper resumed**\nSlot: {slot}\nResumed after: {}",
             format_duration(duration)
         )
     }
@@ -139,6 +180,18 @@ impl MdFormat {
         format!(
             "**Block production stalled**\nLast block: {}\nTime since last block: {}",
             self.format_hash_and_number(last_block),
+            format_duration(duration)
+        )
+    }
+
+    fn format_timekeeper_stall(&self, stall: TimekeeperStall) -> String {
+        let TimekeeperStall {
+            last_slot,
+            duration,
+        } = stall;
+
+        format!(
+            "**Timekeeper stalled**\nLast slot: {last_slot}\nTime since last block: {}",
             format_duration(duration)
         )
     }

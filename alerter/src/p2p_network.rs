@@ -70,7 +70,7 @@ impl Network {
         })
     }
 
-    pub(crate) async fn pot_stream(&self) -> PoTStream {
+    pub(crate) fn pot_stream(&self) -> PoTStream {
         self.pot_stream.resubscribe()
     }
 

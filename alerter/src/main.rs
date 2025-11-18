@@ -10,6 +10,7 @@ mod events;
 mod md_format;
 mod p2p_network;
 mod slack;
+mod slots;
 mod stall_and_reorg;
 mod subspace;
 mod uptime;
@@ -93,6 +94,7 @@ async fn main() -> Result<(), Error> {
             network_details.name
         )))?;
 
+    let mut network = Network::new(network_config.bootnodes, network_details.genesis_hash).await?;
     let mut join_set = JoinSet::default();
     let updater = subspace.runtime_metadata_updater();
     join_set.spawn(async move { updater.perform_runtime_updates().await.map_err(Into::into) });
@@ -123,6 +125,13 @@ async fn main() -> Result<(), Error> {
         async move { events::watch_events(stream, alert_sink, network_config.accounts).await }
     });
 
+    // monitor slots
+    join_set.spawn({
+        let pot_stream = network.pot_stream();
+        let alert_sink = slack.sink();
+        async move { slots::monitor_slots(pot_stream, cli.slots, alert_sink).await }
+    });
+
     // start slack alerter
     join_set.spawn({
         let format_config = FormatConfig {
@@ -134,8 +143,6 @@ async fn main() -> Result<(), Error> {
     });
 
     join_set.spawn(async move { subspace.listen_for_all_blocks().await });
-
-    let mut network = Network::new(network_config.bootnodes, network_details.genesis_hash).await?;
 
     join_set.spawn(async move { network.run().await });
 
