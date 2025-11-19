@@ -125,7 +125,7 @@ impl MdFormat {
             threshold,
         } = slow_slot;
         format!(
-            "**Slot slot**\nSlot: {slot}\nPrevious slot: {previous_slot}\nSlot time: {}\nThreshold: {}",
+            "**Slow slot**\nSlot: {slot}\nPrevious slot: {previous_slot}\nSlot time: {}\nThreshold: {}",
             format_duration(slot_time),
             format_duration(threshold)
         )
@@ -139,7 +139,7 @@ impl MdFormat {
             threshold,
         } = avg_slow_slot;
         format!(
-            "**Average Slot slots**\nSlot: {slot}\nSlot count: {slot_count}\nAvg Slot time: {}\nThreshold: {}",
+            "**Average Slow slots**\nSlot: {slot}\nSlot count: {slot_count}\nAvg Slot time: {}\nThreshold: {}",
             format_duration(avg_slot_time),
             format_duration(threshold)
         )
