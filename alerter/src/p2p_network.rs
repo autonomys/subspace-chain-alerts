@@ -15,7 +15,7 @@ use substrate_p2p::discovery::{Discovery, DiscoveryBuilder};
 use substrate_p2p::notifications::behavior::{
     Behavior as NotificationsBehavior, Event as NotificationsEvent, Protocol,
 };
-use substrate_p2p::notifications::messages::ProtocolRole;
+use substrate_p2p::notifications::messages::{BlockAnnouncesHandshake, ProtocolRole};
 use tokio::sync::broadcast::{Receiver, Sender, channel};
 
 const POT_PROTOCOL: &str = "/subspace/subspace-proof-of-time/1";
@@ -48,6 +48,11 @@ pub(crate) struct GossipProof {
 struct Behavior {
     discovery: Discovery,
     pot_notifications: NotificationsBehavior<BlockNumber, BlockHash, GossipProof>,
+    block_announce: NotificationsBehavior<
+        BlockNumber,
+        BlockHash,
+        BlockAnnouncesHandshake<BlockNumber, BlockHash>,
+    >,
     connection_limits: ConnectionLimits,
 }
 
@@ -157,12 +162,19 @@ impl Network {
                                     }
                                 }
                             },
+                            BehaviorEvent::BlockAnnounce(event) => if let NotificationsEvent::ProtocolOpen { peer_id, role, .. } = event {
+                                info!("New peer[{peer_id:?}] block announced with role: {role:?}");
+                                self.add_peer_role(peer_id, role);
+                            }
                             BehaviorEvent::ConnectionLimits(_) => {}
                         }
                     }
-                    SwarmEvent::ConnectionClosed{ peer_id, .. } => {
-                        self.authorities.remove(&peer_id);
-                        self.fullnodes.remove(&peer_id);
+                    SwarmEvent::ConnectionClosed{ peer_id, num_established,..} => {
+                        if num_established == 0{
+                            self.authorities.remove(&peer_id);
+                            self.fullnodes.remove(&peer_id);
+                        }
+
                     }
                     _ => {}
                }
@@ -187,6 +199,10 @@ fn build_swarm(genesis_hash: BlockHash) -> Result<Swarm<Behavior>, Error> {
                 NotificationsBehavior::<BlockNumber, BlockHash, GossipProof>::new(
                     Protocol::Protocol::<BlockHash>(POT_PROTOCOL.into()),
                 );
+            let block_announce =
+                NotificationsBehavior::<BlockNumber, BlockHash, _>::new(Protocol::BlockAnnounce {
+                    genesis_hash,
+                });
             let local_peer_id = PeerId::from_public_key(&key.public());
             let discovery = DiscoveryBuilder::default()
                 .record_ttl(Some(Duration::from_secs(60 * 30)))
@@ -203,6 +219,7 @@ fn build_swarm(genesis_hash: BlockHash) -> Result<Swarm<Behavior>, Error> {
             Behavior {
                 discovery,
                 pot_notifications,
+                block_announce,
                 connection_limits,
             }
         })
