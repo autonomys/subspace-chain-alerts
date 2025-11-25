@@ -7,12 +7,14 @@ use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
 use libp2p::{Multiaddr, PeerId, Swarm, SwarmBuilder, noise, tcp, yamux};
 use log::{debug, error, info};
 use parity_scale_codec::{Decode, Encode};
+use std::collections::BTreeSet;
 use std::num::NonZeroU32;
 use std::time::Duration;
 use substrate_p2p::discovery::{Discovery, DiscoveryBuilder};
 use substrate_p2p::notifications::behavior::{
     Behavior as NotificationsBehavior, Event as NotificationsEvent, Protocol,
 };
+use substrate_p2p::notifications::messages::ProtocolRole;
 use tokio::sync::broadcast::{Receiver, Sender, channel};
 
 const POT_PROTOCOL: &str = "/subspace/subspace-proof-of-time/1";
@@ -53,6 +55,8 @@ pub(crate) struct Network {
     bootnodes: Vec<Multiaddr>,
     pot_sink: PoTSink,
     pot_stream: PoTStream,
+    authorities: BTreeSet<PeerId>,
+    fullnodes: BTreeSet<PeerId>,
 }
 
 impl Network {
@@ -67,11 +71,25 @@ impl Network {
             bootnodes,
             pot_sink,
             pot_stream,
+            authorities: Default::default(),
+            fullnodes: Default::default(),
         })
     }
 
     pub(crate) fn pot_stream(&self) -> PoTStream {
         self.pot_stream.resubscribe()
+    }
+
+    fn add_peer_role(&mut self, peer: PeerId, role: ProtocolRole) {
+        match role {
+            ProtocolRole::FullNode => {
+                self.fullnodes.insert(peer);
+            }
+            ProtocolRole::LightNode => {}
+            ProtocolRole::Authority => {
+                self.authorities.insert(peer);
+            }
+        }
     }
 
     pub(crate) async fn run(&mut self) -> Result<(), Error> {
@@ -107,10 +125,12 @@ impl Network {
                     // Log currently connected peers
                     let connected_peers = self.swarm.connected_peers().count();
                     info!("🤝 Connected peers: {connected_peers:?}");
+                    info!("🤝 Authority nodes: {:?}", self.authorities.len());
+                    info!("🤝 Full nodes: {:?}", self.fullnodes.len());
                 }
 
-                event = self.swarm.select_next_some() => {
-                    if let SwarmEvent::Behaviour(event) = event {
+                event = self.swarm.select_next_some() => match event {
+                    SwarmEvent::Behaviour(event) => {
                         match event {
                             BehaviorEvent::Discovery(event) => {
                                 if let KadEvent::RoutablePeer { peer, address } = event {
@@ -121,8 +141,9 @@ impl Network {
                                 }
                             }
                             BehaviorEvent::PotNotifications(event) => match event {
-                                NotificationsEvent::ProtocolOpen { peer_id, .. } => {
-                                    info!("📡 PoT slot stream opened with peer[{peer_id}]");
+                                NotificationsEvent::ProtocolOpen { peer_id, role, .. } => {
+                                    info!("📡 PoT slot stream opened with peer[{peer_id}] with role: {role:?}");
+                                    self.add_peer_role(peer_id, role);
                                 }
                                 NotificationsEvent::ProtocolClosed { peer_id } => {
                                     info!("❌ PoT slot stream closed with peer[{peer_id}]");
@@ -136,7 +157,12 @@ impl Network {
                             },
                         }
                     }
-                }
+                    SwarmEvent::ConnectionClosed{ peer_id, .. } => {
+                        self.authorities.remove(&peer_id);
+                        self.fullnodes.remove(&peer_id);
+                    }
+                    _ => {}
+               }
             }
         }
     }
