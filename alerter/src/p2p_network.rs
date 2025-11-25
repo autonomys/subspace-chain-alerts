@@ -5,6 +5,7 @@ use libp2p::kad::Event as KadEvent;
 use libp2p::multiaddr::Protocol as MultiAddrProtocol;
 use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
 use libp2p::{Multiaddr, PeerId, Swarm, SwarmBuilder, noise, tcp, yamux};
+use libp2p_connection_limits::Behaviour as ConnectionLimits;
 use log::{debug, error, info};
 use parity_scale_codec::{Decode, Encode};
 use std::collections::BTreeSet;
@@ -47,6 +48,7 @@ pub(crate) struct GossipProof {
 struct Behavior {
     discovery: Discovery,
     pot_notifications: NotificationsBehavior<BlockNumber, BlockHash, GossipProof>,
+    connection_limits: ConnectionLimits,
 }
 
 /// Overarching p2p network with discovery through Kad.
@@ -155,6 +157,7 @@ impl Network {
                                     }
                                 }
                             },
+                            BehaviorEvent::ConnectionLimits(_) => {}
                         }
                     }
                     SwarmEvent::ConnectionClosed{ peer_id, .. } => {
@@ -191,9 +194,16 @@ fn build_swarm(genesis_hash: BlockHash) -> Result<Swarm<Behavior>, Error> {
                 .query_timeout(Duration::from_secs(5 * 60))
                 .build(local_peer_id, &hex::encode(genesis_hash));
 
+            let limits = libp2p_connection_limits::ConnectionLimits::default()
+                .with_max_established(Some(500))
+                .with_max_established_incoming(Some(500))
+                .with_max_established_outgoing(Some(500));
+            let connection_limits = ConnectionLimits::new(limits);
+
             Behavior {
                 discovery,
                 pot_notifications,
+                connection_limits,
             }
         })
         .expect("infallible behavior construction")

@@ -13,6 +13,7 @@ futures-util.workspace = true
 hex.workspace = true
 humantime.workspace = true
 libp2p = { workspace = true, features = ["tcp", "tokio", "noise", "yamux", "dns", "macros", "identify", "kad"] }
+libp2p-connection-limits.workspace = true
 log.workspace = true
 parity-scale-codec = { workspace = true, features = ["derive"] }
 reqwest = { workspace = true, features = ["json", "rustls-tls"] }

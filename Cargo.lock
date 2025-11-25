@@ -105,6 +105,7 @@ dependencies = [
  "hex",
  "humantime",
  "libp2p",
+ "libp2p-connection-limits",
  "log",
  "parity-scale-codec",
  "reqwest",
