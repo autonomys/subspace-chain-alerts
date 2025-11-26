@@ -2,7 +2,7 @@
 
 use crate::cli::SlotsConfig;
 use crate::error::Error;
-use crate::p2p_network::{GossipProof, PoTStream};
+use crate::p2p_network::{GossipProof, PoTInfo, PoTStream};
 use crate::slack::{Alert, AlertSink};
 use crate::subspace::Slot;
 use humantime::format_duration;
@@ -60,27 +60,23 @@ pub(crate) async fn monitor_slots(
     loop {
         match time::timeout(slot_timeout, slot_stream.recv()).await {
             Ok(slot) => {
-                let slot = slot?;
-                debug!("Received slot {}", slot.slot);
-                let now = Instant::now();
+                let PoTInfo { at: now, proof } = slot?;
+                debug!("Received slot {}", proof.slot);
                 let duration = now.duration_since(last_instant);
                 let Some(last_slot) = slots.last() else {
-                    slots.force_push(SlotDetails {
-                        proof: slot,
-                        duration,
-                    });
+                    slots.force_push(SlotDetails { proof, duration });
                     last_instant = now;
                     continue;
                 };
 
-                if slot.slot != last_slot.proof.slot + 1 {
+                if proof.slot != last_slot.proof.slot + 1 {
                     continue;
                 }
 
                 info!(
                     "✅ Timekeeper chain extended from[{}] to [{}] in {}",
                     last_slot.proof.slot,
-                    slot.slot,
+                    proof.slot,
                     format_duration(duration)
                 );
 
@@ -88,12 +84,12 @@ pub(crate) async fn monitor_slots(
                 if let Some(timeout) = last_timeout {
                     info!(
                         "✅ Timekeeper recovered: slot[{}] after: {} ⏱️",
-                        slot.slot,
+                        proof.slot,
                         format_duration(timeout)
                     );
 
                     let alert = Alert::TimekeeperRecovery(TimekeeperRecovery {
-                        slot: slot.slot,
+                        slot: proof.slot,
                         duration: timeout,
                     });
 
@@ -106,12 +102,12 @@ pub(crate) async fn monitor_slots(
                     info!(
                         "⛔️ Per slot threshold breached: Last Slot[{}] New Slot[{}] Time[{}]",
                         last_slot.proof.slot,
-                        slot.slot,
+                        proof.slot,
                         format_duration(duration)
                     );
 
                     let alert = Alert::SlowSlot(SlowSlot {
-                        slot: slot.slot,
+                        slot: proof.slot,
                         previous_slot: last_slot.proof.slot,
                         slot_time: duration,
                         threshold: config.per_slot_threshold.into(),
@@ -123,10 +119,7 @@ pub(crate) async fn monitor_slots(
                 }
 
                 // extension
-                let slot_details = SlotDetails {
-                    proof: slot,
-                    duration,
-                };
+                let slot_details = SlotDetails { proof, duration };
                 last_instant = now;
 
                 slots.force_push(slot_details);
@@ -144,7 +137,7 @@ pub(crate) async fn monitor_slots(
                     );
 
                     let alert = Alert::AvgSlowSlots(AvgSlowSlot {
-                        slot: slot.slot,
+                        slot: proof.slot,
                         slot_count: length,
                         threshold: config.avg_slot_threshold.into(),
                         avg_slot_time,
