@@ -5,14 +5,17 @@ use libp2p::kad::Event as KadEvent;
 use libp2p::multiaddr::Protocol as MultiAddrProtocol;
 use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
 use libp2p::{Multiaddr, PeerId, Swarm, SwarmBuilder, noise, tcp, yamux};
+use libp2p_connection_limits::Behaviour as ConnectionLimits;
 use log::{debug, error, info};
 use parity_scale_codec::{Decode, Encode};
+use std::collections::BTreeSet;
 use std::num::NonZeroU32;
 use std::time::Duration;
 use substrate_p2p::discovery::{Discovery, DiscoveryBuilder};
 use substrate_p2p::notifications::behavior::{
     Behavior as NotificationsBehavior, Event as NotificationsEvent, Protocol,
 };
+use substrate_p2p::notifications::messages::{BlockAnnouncesHandshake, ProtocolRole};
 use tokio::sync::broadcast::{Receiver, Sender, channel};
 
 const POT_PROTOCOL: &str = "/subspace/subspace-proof-of-time/1";
@@ -45,6 +48,12 @@ pub(crate) struct GossipProof {
 struct Behavior {
     discovery: Discovery,
     pot_notifications: NotificationsBehavior<BlockNumber, BlockHash, GossipProof>,
+    block_announce: NotificationsBehavior<
+        BlockNumber,
+        BlockHash,
+        BlockAnnouncesHandshake<BlockNumber, BlockHash>,
+    >,
+    connection_limits: ConnectionLimits,
 }
 
 /// Overarching p2p network with discovery through Kad.
@@ -53,6 +62,8 @@ pub(crate) struct Network {
     bootnodes: Vec<Multiaddr>,
     pot_sink: PoTSink,
     pot_stream: PoTStream,
+    authorities: BTreeSet<PeerId>,
+    fullnodes: BTreeSet<PeerId>,
 }
 
 impl Network {
@@ -67,11 +78,27 @@ impl Network {
             bootnodes,
             pot_sink,
             pot_stream,
+            authorities: Default::default(),
+            fullnodes: Default::default(),
         })
     }
 
     pub(crate) fn pot_stream(&self) -> PoTStream {
         self.pot_stream.resubscribe()
+    }
+
+    fn add_peer_role(&mut self, peer: PeerId, role: ProtocolRole) {
+        match role {
+            ProtocolRole::FullNode => {
+                self.authorities.remove(&peer);
+                self.fullnodes.insert(peer);
+            }
+            ProtocolRole::LightNode => {}
+            ProtocolRole::Authority => {
+                self.fullnodes.remove(&peer);
+                self.authorities.insert(peer);
+            }
+        }
     }
 
     pub(crate) async fn run(&mut self) -> Result<(), Error> {
@@ -107,10 +134,12 @@ impl Network {
                     // Log currently connected peers
                     let connected_peers = self.swarm.connected_peers().count();
                     info!("🤝 Connected peers: {connected_peers:?}");
+                    info!("🤝 Authority nodes: {:?}", self.authorities.len());
+                    info!("🤝 Full nodes: {:?}", self.fullnodes.len());
                 }
 
-                event = self.swarm.select_next_some() => {
-                    if let SwarmEvent::Behaviour(event) = event {
+                event = self.swarm.select_next_some() => match event {
+                    SwarmEvent::Behaviour(event) => {
                         match event {
                             BehaviorEvent::Discovery(event) => {
                                 if let KadEvent::RoutablePeer { peer, address } = event {
@@ -121,8 +150,9 @@ impl Network {
                                 }
                             }
                             BehaviorEvent::PotNotifications(event) => match event {
-                                NotificationsEvent::ProtocolOpen { peer_id, .. } => {
-                                    info!("📡 PoT slot stream opened with peer[{peer_id}]");
+                                NotificationsEvent::ProtocolOpen { peer_id, role, .. } => {
+                                    info!("📡 PoT slot stream opened with peer[{peer_id}] with role: {role:?}");
+                                    self.add_peer_role(peer_id, role);
                                 }
                                 NotificationsEvent::ProtocolClosed { peer_id } => {
                                     info!("❌ PoT slot stream closed with peer[{peer_id}]");
@@ -134,9 +164,23 @@ impl Network {
                                     }
                                 }
                             },
+                            BehaviorEvent::BlockAnnounce(event) => if let NotificationsEvent::ProtocolOpen { peer_id, role, .. } = event {
+                                info!("New peer[{peer_id:?}] block announced with role: {role:?}");
+                                self.add_peer_role(peer_id, role);
+                            }
+                            BehaviorEvent::ConnectionLimits(_) => {}
                         }
                     }
-                }
+                    SwarmEvent::ConnectionClosed{ peer_id, num_established,..} => {
+                        if num_established == 0{
+                            debug!("Peer[{peer_id:?}] connection closed");
+                            self.authorities.remove(&peer_id);
+                            self.fullnodes.remove(&peer_id);
+                        }
+
+                    }
+                    _ => {}
+               }
             }
         }
     }
@@ -158,6 +202,10 @@ fn build_swarm(genesis_hash: BlockHash) -> Result<Swarm<Behavior>, Error> {
                 NotificationsBehavior::<BlockNumber, BlockHash, GossipProof>::new(
                     Protocol::Protocol::<BlockHash>(POT_PROTOCOL.into()),
                 );
+            let block_announce =
+                NotificationsBehavior::<BlockNumber, BlockHash, _>::new(Protocol::BlockAnnounce {
+                    genesis_hash,
+                });
             let local_peer_id = PeerId::from_public_key(&key.public());
             let discovery = DiscoveryBuilder::default()
                 .record_ttl(Some(Duration::from_secs(60 * 30)))
@@ -165,9 +213,17 @@ fn build_swarm(genesis_hash: BlockHash) -> Result<Swarm<Behavior>, Error> {
                 .query_timeout(Duration::from_secs(5 * 60))
                 .build(local_peer_id, &hex::encode(genesis_hash));
 
+            let limits = libp2p_connection_limits::ConnectionLimits::default()
+                .with_max_established(Some(500))
+                .with_max_established_incoming(Some(500))
+                .with_max_established_outgoing(Some(500));
+            let connection_limits = ConnectionLimits::new(limits);
+
             Behavior {
                 discovery,
                 pot_notifications,
+                block_announce,
+                connection_limits,
             }
         })
         .expect("infallible behavior construction")
