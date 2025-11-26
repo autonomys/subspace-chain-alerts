@@ -10,7 +10,7 @@ use log::{debug, error, info};
 use parity_scale_codec::{Decode, Encode};
 use std::collections::BTreeSet;
 use std::num::NonZeroU32;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use substrate_p2p::discovery::{Discovery, DiscoveryBuilder};
 use substrate_p2p::notifications::behavior::{
     Behavior as NotificationsBehavior, Event as NotificationsEvent, Protocol,
@@ -20,8 +20,8 @@ use tokio::sync::broadcast::{Receiver, Sender, channel};
 
 const POT_PROTOCOL: &str = "/subspace/subspace-proof-of-time/1";
 
-pub(crate) type PoTStream = Receiver<GossipProof>;
-type PoTSink = Sender<GossipProof>;
+pub(crate) type PoTStream = Receiver<PoTInfo>;
+type PoTSink = Sender<PoTInfo>;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Encode, Decode)]
 pub(crate) struct PotSeed([u8; 16]);
@@ -42,6 +42,14 @@ pub(crate) struct GossipProof {
     pub(crate) slot_iterations: NonZeroU32,
     /// Proof of time checkpoints
     pub(crate) checkpoints: PotCheckpoints,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PoTInfo {
+    /// time at which the notification is received.
+    pub(crate) at: Instant,
+    /// Gossip proof
+    pub(crate) proof: GossipProof,
 }
 
 #[derive(NetworkBehaviour)]
@@ -101,13 +109,63 @@ impl Network {
         }
     }
 
+    fn handle_event(&mut self, event: SwarmEvent<BehaviorEvent>) {
+        match event {
+            SwarmEvent::Behaviour(event) => match event {
+                BehaviorEvent::Discovery(event) => {
+                    if let KadEvent::RoutablePeer { peer, address } = event {
+                        debug!("Discovered routable peer {peer:?} at address {address:?}");
+                        if let Err(err) = self.swarm.dial(address.clone()) {
+                            error!("Failed to dial discovered peer {address:?}: {err:?}");
+                        }
+                    }
+                }
+                BehaviorEvent::PotNotifications(event) => match event {
+                    NotificationsEvent::ProtocolOpen { peer_id, role, .. } => {
+                        info!("📡 PoT slot stream opened with peer[{peer_id}] with role: {role:?}");
+                        self.add_peer_role(peer_id, role);
+                    }
+                    NotificationsEvent::ProtocolClosed { peer_id } => {
+                        info!("❌ PoT slot stream closed with peer[{peer_id}]");
+                    }
+                    NotificationsEvent::Notification { peer_id, message } => {
+                        debug!("New Slot: {} from peer {peer_id:?}", message.slot);
+                        if let Err(err) = self.pot_sink.send(PoTInfo {
+                            at: Instant::now(),
+                            proof: message,
+                        }) {
+                            error!("❌ Failed to send new slot message: {err:?}");
+                        }
+                    }
+                },
+                BehaviorEvent::BlockAnnounce(event) => {
+                    if let NotificationsEvent::ProtocolOpen { peer_id, role, .. } = event {
+                        info!("New peer[{peer_id:?}] block announced with role: {role:?}");
+                        self.add_peer_role(peer_id, role);
+                    }
+                }
+                BehaviorEvent::ConnectionLimits(_) => {}
+            },
+            SwarmEvent::ConnectionClosed {
+                peer_id,
+                num_established,
+                ..
+            } => {
+                if num_established == 0 {
+                    debug!("Peer[{peer_id:?}] connection closed");
+                    self.authorities.remove(&peer_id);
+                    self.fullnodes.remove(&peer_id);
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub(crate) async fn run(&mut self) -> Result<(), Error> {
         // Dial bootnodes
         for addr in &self.bootnodes {
             if let Err(err) = self.swarm.dial(addr.clone()) {
                 error!("Failed to dial {addr:?}: {err:?}");
-            } else {
-                info!("🛰️ Connected to bootnode {addr:?}");
             }
 
             if let Some(peer_id) = extract_peer_id(addr) {
@@ -127,9 +185,7 @@ impl Network {
                     // Query discovery periodically
                     info!("🔍 Starting periodic peer discovery...");
                     // Do 50 queries randomly
-                    for _ in 0..50 {
-                        self.swarm.behaviour_mut().discovery.get_closest_peers(PeerId::random());
-                    }
+                    self.swarm.behaviour_mut().discovery.get_closest_peers(PeerId::random());
 
                     // Log currently connected peers
                     let connected_peers = self.swarm.connected_peers().count();
@@ -138,48 +194,8 @@ impl Network {
                     info!("🤝 Full nodes: {:?}", self.fullnodes.len());
                 }
 
-                event = self.swarm.select_next_some() => match event {
-                    SwarmEvent::Behaviour(event) => {
-                        match event {
-                            BehaviorEvent::Discovery(event) => {
-                                if let KadEvent::RoutablePeer { peer, address } = event {
-                                    debug!("Discovered routable peer {peer:?} at address {address:?}");
-                                    if let Err(err) = self.swarm.dial(address.clone()) {
-                                        error!("Failed to dial discovered peer {address:?}: {err:?}");
-                                    }
-                                }
-                            }
-                            BehaviorEvent::PotNotifications(event) => match event {
-                                NotificationsEvent::ProtocolOpen { peer_id, role, .. } => {
-                                    info!("📡 PoT slot stream opened with peer[{peer_id}] with role: {role:?}");
-                                    self.add_peer_role(peer_id, role);
-                                }
-                                NotificationsEvent::ProtocolClosed { peer_id } => {
-                                    info!("❌ PoT slot stream closed with peer[{peer_id}]");
-                                }
-                                NotificationsEvent::Notification { peer_id, message,  } => {
-                                    debug!("New Slot: {} from peer {peer_id:?}", message.slot);
-                                    if let Err(err) = self.pot_sink.send(message){
-                                        error!("❌ Failed to send new slot message: {err:?}");
-                                    }
-                                }
-                            },
-                            BehaviorEvent::BlockAnnounce(event) => if let NotificationsEvent::ProtocolOpen { peer_id, role, .. } = event {
-                                info!("New peer[{peer_id:?}] block announced with role: {role:?}");
-                                self.add_peer_role(peer_id, role);
-                            }
-                            BehaviorEvent::ConnectionLimits(_) => {}
-                        }
-                    }
-                    SwarmEvent::ConnectionClosed{ peer_id, num_established,..} => {
-                        if num_established == 0{
-                            debug!("Peer[{peer_id:?}] connection closed");
-                            self.authorities.remove(&peer_id);
-                            self.fullnodes.remove(&peer_id);
-                        }
-
-                    }
-                    _ => {}
+                event = self.swarm.select_next_some() => {
+                    self.handle_event(event);
                }
             }
         }
