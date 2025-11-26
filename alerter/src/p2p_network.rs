@@ -90,10 +90,12 @@ impl Network {
     fn add_peer_role(&mut self, peer: PeerId, role: ProtocolRole) {
         match role {
             ProtocolRole::FullNode => {
+                self.authorities.remove(&peer);
                 self.fullnodes.insert(peer);
             }
             ProtocolRole::LightNode => {}
             ProtocolRole::Authority => {
+                self.fullnodes.remove(&peer);
                 self.authorities.insert(peer);
             }
         }
@@ -171,6 +173,7 @@ impl Network {
                     }
                     SwarmEvent::ConnectionClosed{ peer_id, num_established,..} => {
                         if num_established == 0{
+                            debug!("Peer[{peer_id:?}] connection closed");
                             self.authorities.remove(&peer_id);
                             self.fullnodes.remove(&peer_id);
                         }
